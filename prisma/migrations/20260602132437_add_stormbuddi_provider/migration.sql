@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "CRMProvider" ADD VALUE 'STORMBUDDI';

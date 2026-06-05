@@ -1,0 +1,456 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// MULTI-TENANT
+// ─────────────────────────────────────────────
+
+model Tenant {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  industry    Industry?
+  plan        String   @default("free")
+  isActive    Boolean  @default(true)
+  settings    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users         User[]
+  agents        Agent[]
+  conversations Conversation[]
+  tasks         Task[]
+  approvals     Approval[]
+  knowledgeDocs KnowledgeDocument[]
+  documents     GeneratedDocument[]
+  crmConnections CRMConnection[]
+  webhooks      Webhook[]
+  auditLogs     AuditLog[]
+  commLogs      CommunicationLog[]
+}
+
+// ─────────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  tenantId  String
+  email     String   @unique
+  name      String
+  password  String
+  role      UserRole @default(USER)
+  avatar    String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  messages      Message[]
+  tasks         Task[]               @relation("TaskAssignee")
+  approvals     Approval[]           @relation("ApprovalReviewer")
+  resetTokens   PasswordResetToken[]
+}
+
+// ─────────────────────────────────────────────
+// AGENTS
+// ─────────────────────────────────────────────
+
+model Agent {
+  id           String      @id @default(cuid())
+  tenantId     String
+  name         String
+  role         String
+  industry     Industry
+  avatar       String?
+  prompt       String      @db.Text
+  status       AgentStatus @default(ACTIVE)
+  permissions  String[]
+  tools        String[]
+  approvalRules Json       @default("{}")
+  isTemplate   Boolean     @default(false)
+  templateId   String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+  tasks         Task[]
+  approvals     Approval[]
+  knowledgeDocs AgentKnowledge[]
+  crmAccess     AgentCRMAccess[]
+}
+
+model AgentTemplate {
+  id            String     @id @default(cuid())
+  name          String
+  role          String
+  industries    Industry[]
+  description   String
+  defaultPrompt String     @db.Text
+  tools         String[]
+  avatar        String?
+  isPublic      Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+}
+
+// ─────────────────────────────────────────────
+// CHAT
+// ─────────────────────────────────────────────
+
+model Conversation {
+  id        String   @id @default(cuid())
+  tenantId  String
+  agentId   String
+  userId    String?
+  title       String?
+  channel     String   @default("INTERNAL")
+  callerPhone String?
+  callerEmail String?
+  status      String   @default("OPEN")
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent    Agent     @relation(fields: [agentId], references: [id])
+  messages Message[]
+}
+
+model Message {
+  id             String      @id @default(cuid())
+  conversationId String
+  userId         String?
+  agentId        String?
+  role           MessageRole
+  content        String      @db.Text
+  metadata       Json        @default("{}")
+  createdAt      DateTime    @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id])
+}
+
+// ─────────────────────────────────────────────
+// TASKS
+// ─────────────────────────────────────────────
+
+model Task {
+  id               String       @id @default(cuid())
+  tenantId         String
+  agentId          String?
+  assigneeId       String?
+  title            String
+  description      String?      @db.Text
+  intent           String       @default("general_task")
+  priority         TaskPriority @default(MEDIUM)
+  status           TaskStatus   @default(PENDING)
+  result           Json?
+  requiresApproval Boolean      @default(false)
+  dueDate          DateTime?
+  metadata         Json         @default("{}")
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent    Agent?    @relation(fields: [agentId], references: [id])
+  assignee User?     @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  approval Approval?
+}
+
+// ─────────────────────────────────────────────
+// APPROVALS
+// ─────────────────────────────────────────────
+
+model Approval {
+  id              String         @id @default(cuid())
+  tenantId        String
+  taskId          String?        @unique
+  agentId         String?
+  approverId      String?
+  type            String         @default("general")
+  title           String?
+  description     String?        @db.Text
+  status          ApprovalStatus @default(PENDING)
+  payload         Json?
+  rejectionReason String?
+  notes           String?        @db.Text
+  resolvedAt      DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  task     Task?  @relation(fields: [taskId], references: [id])
+  agent    Agent? @relation(fields: [agentId], references: [id])
+  approver User?  @relation("ApprovalReviewer", fields: [approverId], references: [id])
+}
+
+// ─────────────────────────────────────────────
+// KNOWLEDGE BASE
+// ─────────────────────────────────────────────
+
+model KnowledgeDocument {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  fileType  String
+  fileUrl   String
+  fileSize  Int
+  status    String   @default("processing")
+  createdAt DateTime @default(now())
+
+  tenant  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  chunks  KnowledgeChunk[]
+  agents  AgentKnowledge[]
+}
+
+model KnowledgeChunk {
+  id         String                      @id @default(cuid())
+  documentId String
+  content    String                      @db.Text
+  embedding  Json?
+  metadata   Json                        @default("{}")
+  chunkIndex Int
+  createdAt  DateTime                    @default(now())
+
+  document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+}
+
+model AgentKnowledge {
+  agentId    String
+  documentId String
+
+  agent    Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, documentId])
+}
+
+// ─────────────────────────────────────────────
+// DOCUMENTS
+// ─────────────────────────────────────────────
+
+model GeneratedDocument {
+  id         String   @id @default(cuid())
+  tenantId   String
+  agentId    String?
+  title      String
+  type       String
+  format     String   @default("PDF")
+  fileUrl    String?
+  content    Json?
+  status     String   @default("generating")
+  createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────
+// CRM
+// ─────────────────────────────────────────────
+
+model CRMConnection {
+  id        String      @id @default(cuid())
+  tenantId  String
+  provider  CRMProvider
+  name      String
+  baseUrl   String?
+  apiKey    String?
+  config    Json        @default("{}")
+  isActive  Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agentAccess AgentCRMAccess[]
+}
+
+model AgentCRMAccess {
+  agentId       String
+  connectionId  String
+  permissions   String[]
+
+  agent      Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  connection CRMConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, connectionId])
+}
+
+// ─────────────────────────────────────────────
+// PASSWORD RESET
+// ─────────────────────────────────────────────
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────
+// COMMUNICATIONS (SMS / WhatsApp / Voice)
+// ─────────────────────────────────────────────
+
+model CommunicationLog {
+  id          String          @id @default(cuid())
+  tenantId    String
+  channel     CommChannel     // SMS | WHATSAPP | VOICE
+  direction   CommDirection   // INBOUND | OUTBOUND
+  from        String
+  to          String
+  body        String?         @db.Text
+  status      String          @default("sent")
+  twilioSid   String?
+  durationSec Int?            // for calls
+  agentId     String?
+  conversationId String?
+  metadata    Json            @default("{}")
+  createdAt   DateTime        @default(now())
+
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+enum CommChannel {
+  SMS
+  WHATSAPP
+  VOICE
+}
+
+enum CommDirection {
+  INBOUND
+  OUTBOUND
+}
+
+// ─────────────────────────────────────────────
+// WEBHOOKS
+// ─────────────────────────────────────────────
+
+model Webhook {
+  id        String   @id @default(cuid())
+  tenantId  String
+  url       String
+  events    String[]
+  secret    String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  logs   WebhookLog[]
+}
+
+model WebhookLog {
+  id         String   @id @default(cuid())
+  webhookId  String
+  event      String
+  payload    Json
+  statusCode Int?
+  success    Boolean
+  createdAt  DateTime @default(now())
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────
+// AUDIT
+// ─────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String?
+  action    String
+  resource  String
+  resourceId String?
+  metadata  Json     @default("{}")
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum Industry {
+  ROOFING
+  CAR_DEALERSHIP
+  CLEANING
+  SECURITY
+  PROPERTY_MANAGEMENT
+  HEALTHCARE
+  CONSTRUCTION
+  REAL_ESTATE
+  HVAC
+  LANDSCAPING
+  PEST_CONTROL
+  INSURANCE
+  HUMAN_RESOURCES
+  OTHER
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_OWNER
+  TENANT_ADMIN
+  MANAGER
+  USER
+  VIEWER
+}
+
+enum AgentStatus {
+  ACTIVE
+  INACTIVE
+  DRAFT
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  PROCESSING
+  REQUIRES_APPROVAL
+  PENDING_APPROVAL
+  APPROVED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum CRMProvider {
+  LARAVEL
+  HUBSPOT
+  SALESFORCE
+  ZOHO
+  JOBNIMBUS
+  STORMBUDDI
+  CUSTOM
+}

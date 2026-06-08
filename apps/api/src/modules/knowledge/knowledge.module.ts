@@ -7,7 +7,7 @@ import { AIModule } from '../../ai/ai.module'
 @Module({
   imports: [
     AIModule,
-    MulterModule.register({ dest: './uploads' }),
+    MulterModule.register(),
   ],
   providers: [KnowledgeService],
   controllers: [KnowledgeController],

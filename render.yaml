@@ -3,8 +3,13 @@ services:
     name: ai-workforce-api
     runtime: node
     plan: starter
-    buildCommand: corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile && pnpm db:generate && pnpm exec prisma migrate deploy --schema=./prisma/schema.prisma && pnpm turbo run build --filter=@ai-workforce/api
+    buildCommand: corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile && pnpm db:generate && pnpm turbo run build --filter=@ai-workforce/api
+    preDeployCommand: pnpm exec prisma migrate deploy --schema=./prisma/schema.prisma && pnpm db:seed
     startCommand: pnpm --filter @ai-workforce/api start
+    disk:
+      name: ai-workforce-api-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
@@ -16,6 +21,10 @@ services:
         fromDatabase:
           name: ai-workforce-db
           property: connectionString
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: GENERATED_DOCS_DIR
+        value: /var/data/generated-docs
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_EXPIRES_IN
@@ -38,12 +47,11 @@ services:
         sync: false
       - key: ELEVENLABS_VOICE_ID
         value: 21m00Tcm4TlvDq8ikWAM
-      - key: REDIS_HOST
-        sync: false
-      - key: REDIS_PORT
-        value: "6379"
-      - key: REDIS_PASSWORD
-        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: ai-workforce-redis
+          property: connectionString
       - key: SMTP_HOST
         value: smtp.office365.com
       - key: SMTP_PORT
@@ -78,6 +86,12 @@ services:
         value: production
       - key: NEXT_PUBLIC_API_URL
         value: https://ai-workforce-api.onrender.com/api/v1
+
+  - type: keyvalue
+    name: ai-workforce-redis
+    plan: starter
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
 
 databases:
   - name: ai-workforce-db

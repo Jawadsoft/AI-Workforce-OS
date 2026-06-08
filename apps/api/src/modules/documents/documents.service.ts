@@ -133,7 +133,7 @@ const TEMPLATES: Record<string, (data: any, company: string) => string> = {
 @Injectable()
 export class DocumentsService {
   private readonly logger = new Logger(DocumentsService.name)
-  private readonly outputDir = path.join(process.cwd(), 'generated-docs')
+  private readonly outputDir = process.env.GENERATED_DOCS_DIR || path.join(process.cwd(), 'generated-docs')
 
   constructor(
     private readonly prisma: PrismaService,
@@ -226,10 +226,15 @@ Respond ONLY with valid JSON matching the template fields for a ${input.type}.`
     const doc = await this.prisma.generatedDocument.findFirst({ where: { id, tenantId } })
     if (!doc) throw new NotFoundException('Document not found')
     if (doc.fileUrl) {
-      const fp = path.join(process.cwd(), doc.fileUrl)
+      const fp = this.resolveStoredFile(doc.fileUrl)
       if (fs.existsSync(fp)) fs.unlinkSync(fp)
     }
     return this.prisma.generatedDocument.delete({ where: { id } })
+  }
+
+  resolveStoredFile(fileUrl: string) {
+    const filename = path.basename(fileUrl)
+    return path.join(this.outputDir, filename)
   }
 
   getTemplateTypes() {

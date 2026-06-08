@@ -39,8 +39,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 @Injectable()
 export class KnowledgeService {
   private readonly logger = new Logger(KnowledgeService.name)
-  // Upload dir — in production swap for S3
-  private readonly uploadDir = path.join(process.cwd(), 'uploads')
+  private readonly uploadDir = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads')
 
   constructor(
     private readonly prisma: PrismaService,
@@ -260,8 +259,13 @@ export class KnowledgeService {
     await this.prisma.knowledgeChunk.deleteMany({ where: { documentId: id } })
     await this.prisma.agentKnowledge.deleteMany({ where: { documentId: id } })
     // Delete file
-    const filePath = path.join(process.cwd(), doc.fileUrl)
+    const filePath = this.resolveStoredFile(doc.fileUrl)
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
     return this.prisma.knowledgeDocument.delete({ where: { id } })
+  }
+
+  private resolveStoredFile(fileUrl: string) {
+    const filename = path.basename(fileUrl)
+    return path.join(this.uploadDir, filename)
   }
 }

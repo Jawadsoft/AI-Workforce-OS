@@ -47,7 +47,7 @@ export class DocumentsController {
     const doc = await this.service.findAll(tenantId).then(docs => docs.find(d => d.id === id))
     if (!doc?.fileUrl) return res.status(404).json({ message: 'Not found' })
 
-    const filePath = path.join(process.cwd(), doc.fileUrl)
+    const filePath = this.service.resolveStoredFile(doc.fileUrl)
     if (!fs.existsSync(filePath)) return res.status(404).json({ message: 'File not found on disk' })
 
     const ext = path.extname(filePath)

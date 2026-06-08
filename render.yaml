@@ -95,4 +95,4 @@ services:
 
 databases:
   - name: ai-workforce-db
-    plan: starter
+    plan: basic-1gb

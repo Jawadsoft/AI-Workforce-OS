@@ -3,7 +3,7 @@ services:
     name: ai-workforce-api
     runtime: node
     plan: starter
-    buildCommand: corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile --prod=false && pnpm db:generate && pnpm exec turbo run build --filter=@ai-workforce/api
+    buildCommand: NODE_ENV=development corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile --prod=false && pnpm db:generate && pnpm exec turbo run build --filter=@ai-workforce/api
     preDeployCommand: pnpm exec prisma migrate deploy --schema=./prisma/schema.prisma && pnpm db:seed
     startCommand: pnpm --filter @ai-workforce/api start
     disk:
@@ -32,7 +32,7 @@ services:
       - key: DEFAULT_AI_PROVIDER
         value: openai
       - key: OPENAI_API_KEY
-        sync: false
+        sync: true
       - key: OPENAI_MODEL
         value: gpt-4o
       - key: ANTHROPIC_API_KEY
@@ -79,7 +79,7 @@ services:
     name: ai-workforce-web
     runtime: node
     plan: starter
-    buildCommand: corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile --prod=false && pnpm exec turbo run build --filter=@ai-workforce/web
+    buildCommand: NODE_ENV=development corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile --prod=false && pnpm exec turbo run build --filter=@ai-workforce/web
     startCommand: pnpm --filter @ai-workforce/web start
     envVars:
       - key: NODE_ENV

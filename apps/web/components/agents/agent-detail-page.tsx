@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck } from 'lucide-react'
+import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck, CheckSquare, FileText } from 'lucide-react'
 import { AgentCRMPermissions } from './agent-crm-permissions'
 
 const TABS = ['Overview', 'Configuration', 'Brain Memory', 'CRM Access', 'Tasks', 'Conversations']

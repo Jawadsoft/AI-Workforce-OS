@@ -6,8 +6,8 @@ const PUBLIC_ROUTES = ['/login', '/register', '/forgot-password', '/onboarding']
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  // Super admin has its own auth — skip tenant middleware entirely
-  if (pathname.startsWith('/super-admin')) {
+  // Super admin and public widget have their own auth — skip tenant middleware
+  if (pathname.startsWith('/super-admin') || pathname.startsWith('/widget')) {
     return NextResponse.next()
   }
 

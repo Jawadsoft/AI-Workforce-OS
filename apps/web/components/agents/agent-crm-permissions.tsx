@@ -124,7 +124,7 @@ export function AgentCRMPermissions({ agentId, agentRole }: AgentCRMPermissionsP
         toast({ title: `Access revoked from ${conn.name}` })
       } else {
         await api.post(`/crm/connections/${conn.id}/grant/${agentId}`, { permissions: effectiveDefaults })
-        setAccess(prev => [...prev, { connectionId: conn.id, permissions: defaults }])
+        setAccess(prev => [...prev, { connectionId: conn.id, permissions: effectiveDefaults }])
         toast({ title: `Access granted to ${conn.name}` })
       }
     } catch {

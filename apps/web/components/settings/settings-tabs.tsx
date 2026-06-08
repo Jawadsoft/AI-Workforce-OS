@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Brain, Building2, Key, Mail, Bell, Shield } from 'lucide-react'
+import { Brain, Building2, Key, Mail, Bell, Shield, Code2 } from 'lucide-react'
 import { BrainPanel } from '@/components/brain/brain-panel'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
@@ -9,6 +9,7 @@ import { toast } from 'sonner'
 const TABS = [
   { id: 'brain', label: 'Business Brain', icon: Brain },
   { id: 'company', label: 'Company', icon: Building2 },
+  { id: 'widget', label: 'Chat Widget', icon: Code2 },
   { id: 'email', label: 'Email / SMTP', icon: Mail },
   { id: 'api', label: 'API Keys', icon: Key },
   { id: 'security', label: 'Security', icon: Shield },
@@ -42,6 +43,7 @@ export function SettingsTabs() {
       <div className="flex-1 min-w-0">
         {active === 'brain' && <BrainPanel />}
         {active === 'company' && <CompanySettings />}
+        {active === 'widget' && <WidgetSettings />}
         {active === 'email' && <EmailSettings />}
         {active === 'api' && <APISettings />}
         {active === 'security' && <SecuritySettings />}
@@ -429,7 +431,175 @@ function SecuritySettings() {
   )
 }
 
-// ?? Notifications ??????????????????????????????????????????????????????????????
+// ── Widget Settings ───────────────────────────────────────────────
+
+function WidgetSettings() {
+  const [agents, setAgents] = useState<any[]>([])
+  const [selectedAgent, setSelectedAgent] = useState('')
+  const [copied, setCopied] = useState(false)
+  const [widgetConfig, setWidgetConfig] = useState({
+    welcomeMessage: '',
+    primaryColor: '#6366f1',
+    placeholder: 'Type a message...',
+    collectName: false,
+    collectEmail: false,
+    collectPhone: false,
+  })
+  const [saving, setSaving] = useState(false)
+  const [tenantId, setTenantId] = useState('')
+
+  useEffect(() => {
+    api.get('/agents').then(r => {
+      const active = (r.data ?? []).filter((a: any) => a.status === 'ACTIVE')
+      setAgents(active)
+      if (active.length > 0) setSelectedAgent(active[0].id)
+    })
+    api.get('/auth/me').then(r => setTenantId(r.data?.tenantId ?? '')).catch(() => {})
+  }, [])
+
+  const apiUrl = typeof window !== 'undefined'
+    ? `${window.location.protocol}//${window.location.hostname}:3001/api/v1`
+    : 'http://localhost:3001/api/v1'
+  const frontendUrl = typeof window !== 'undefined'
+    ? `${window.location.protocol}//${window.location.hostname}:3000`
+    : 'http://localhost:3000'
+
+  const snippet = tenantId && selectedAgent
+    ? `<script>\n  window.AIWORKFORCE_TENANT = "${tenantId}";\n  window.AIWORKFORCE_AGENT  = "${selectedAgent}";\n</script>\n<script src="${apiUrl}/public/widget.js" async></script>`
+    : ''
+
+  const previewUrl = tenantId && selectedAgent
+    ? `${frontendUrl}/widget/${tenantId}/${selectedAgent}`
+    : ''
+
+  function copySnippet() {
+    navigator.clipboard.writeText(snippet)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  async function saveWidgetConfig() {
+    setSaving(true)
+    try {
+      await api.patch('/tenants/settings', { widget: { ...widgetConfig, enabled: true } })
+      toast.success('Widget settings saved')
+    } catch {
+      toast.error('Failed to save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <div>
+        <h2 className="text-lg font-semibold">Customer Chat Widget</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Embed a chat widget on your website so customers can talk to your AI agent in real time.
+        </p>
+      </div>
+
+      {/* Agent selector */}
+      <div className="rounded-lg border border-border p-5 space-y-4">
+        <h3 className="font-medium">Choose Agent</h3>
+        <select
+          value={selectedAgent}
+          onChange={e => setSelectedAgent(e.target.value)}
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          {agents.map(a => (
+            <option key={a.id} value={a.id}>{a.name} — {a.role}</option>
+          ))}
+        </select>
+        {previewUrl && (
+          <a href={previewUrl} target="_blank" rel="noreferrer"
+            className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline">
+            Preview widget in new tab →
+          </a>
+        )}
+      </div>
+
+      {/* Widget customization */}
+      <div className="rounded-lg border border-border p-5 space-y-4">
+        <h3 className="font-medium">Customization</h3>
+        <div>
+          <label className="text-sm font-medium">Welcome Message</label>
+          <input
+            value={widgetConfig.welcomeMessage}
+            onChange={e => setWidgetConfig(f => ({ ...f, welcomeMessage: e.target.value }))}
+            placeholder="Hi! I'm here to help. How can I assist you today?"
+            className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+        <div className="flex gap-4">
+          <div className="flex-1">
+            <label className="text-sm font-medium">Input Placeholder</label>
+            <input
+              value={widgetConfig.placeholder}
+              onChange={e => setWidgetConfig(f => ({ ...f, placeholder: e.target.value }))}
+              className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium">Primary Color</label>
+            <div className="flex items-center gap-2 mt-1">
+              <input
+                type="color"
+                value={widgetConfig.primaryColor}
+                onChange={e => setWidgetConfig(f => ({ ...f, primaryColor: e.target.value }))}
+                className="w-10 h-9 rounded border border-border cursor-pointer"
+              />
+              <input
+                value={widgetConfig.primaryColor}
+                onChange={e => setWidgetConfig(f => ({ ...f, primaryColor: e.target.value }))}
+                className="w-24 rounded-md border border-border bg-background px-2 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+          </div>
+        </div>
+        <div>
+          <label className="text-sm font-medium block mb-2">Collect visitor info before chat starts</label>
+          <div className="flex gap-4">
+            {[['collectName', 'Name'], ['collectEmail', 'Email'], ['collectPhone', 'Phone']].map(([key, label]) => (
+              <label key={key} className="flex items-center gap-2 cursor-pointer text-sm">
+                <input
+                  type="checkbox"
+                  checked={widgetConfig[key as keyof typeof widgetConfig] as boolean}
+                  onChange={e => setWidgetConfig(f => ({ ...f, [key]: e.target.checked }))}
+                  className="w-4 h-4 rounded"
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        </div>
+        <button onClick={saveWidgetConfig} disabled={saving}
+          className="bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors disabled:opacity-50">
+          {saving ? 'Saving...' : 'Save Widget Settings'}
+        </button>
+      </div>
+
+      {/* Embed snippet */}
+      <div className="rounded-lg border border-border p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-medium">Embed Code</h3>
+          <button onClick={copySnippet}
+            className="text-xs text-primary hover:underline flex items-center gap-1">
+            {copied ? '✓ Copied!' : 'Copy snippet'}
+          </button>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Paste this before the closing <code className="bg-muted px-1 rounded text-xs">&lt;/body&gt;</code> tag on your website.
+        </p>
+        <pre className="bg-muted rounded-lg p-4 text-xs overflow-x-auto select-all whitespace-pre-wrap">
+          {snippet || 'Select an agent above to generate your embed code.'}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+// ── Notifications ─────────────────────────────────────────────────
 
 function NotificationSettings() {
   return (

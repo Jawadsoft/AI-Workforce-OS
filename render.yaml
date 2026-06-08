@@ -1,7 +1,7 @@
 services:
   - type: web
     name: ai-workforce-api
-    env: node
+    runtime: node
     plan: starter
     buildCommand: corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile && pnpm db:generate && pnpm exec prisma migrate deploy --schema=./prisma/schema.prisma && pnpm turbo run build --filter=@ai-workforce/api
     startCommand: pnpm --filter @ai-workforce/api start
@@ -69,7 +69,7 @@ services:
 
   - type: web
     name: ai-workforce-web
-    env: node
+    runtime: node
     plan: starter
     buildCommand: corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile && pnpm turbo run build --filter=@ai-workforce/web
     startCommand: pnpm --filter @ai-workforce/web start

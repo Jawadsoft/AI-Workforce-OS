@@ -80,6 +80,7 @@ interface Template {
   id: string; name: string; role: string; description: string
   industries: string[]; isPublic: boolean; avatar?: string; tools: string[]
 }
+interface TenantAgent { id: string; name: string; role: string; status: string }
 
 const emptyConfig = { industry: '', crmProvider: '', crmName: '', crmBaseUrl: '', crmApiKey: '' }
 
@@ -98,6 +99,10 @@ export default function SuperAdminDashboard() {
   const [configForm, setConfigForm] = useState(emptyConfig)
   const [configSaving, setConfigSaving] = useState(false)
   const [configError, setConfigError] = useState('')
+  const [widgetTenant, setWidgetTenant] = useState<Tenant | null>(null)
+  const [widgetAgents, setWidgetAgents] = useState<TenantAgent[]>([])
+  const [widgetLoading, setWidgetLoading] = useState(false)
+  const [copiedLink, setCopiedLink] = useState('')
 
   const api = useSAApi()
 
@@ -141,6 +146,20 @@ export default function SuperAdminDashboard() {
     if (!confirm('Delete this template?')) return
     await api.delete(`/super-admin/templates/${id}`)
     loadData()
+  }
+
+  async function openWidgetModal(t: Tenant) {
+    setWidgetTenant(t)
+    setWidgetAgents([])
+    setWidgetLoading(true)
+    try {
+      const res = await api.get(`/super-admin/tenants/${t.id}`)
+      setWidgetAgents((res.data.agents ?? []).filter((a: TenantAgent) => a.status === 'ACTIVE'))
+    } catch {
+      setWidgetAgents([])
+    } finally {
+      setWidgetLoading(false)
+    }
   }
 
   function openConfigModal(t: Tenant) {
@@ -237,6 +256,7 @@ export default function SuperAdminDashboard() {
                 onToggle={toggleTenant}
                 onDelete={deleteTenant}
                 onConfigure={openConfigModal}
+                onWidget={openWidgetModal}
               />
             )}
             {tab === 'Marketplace' && (
@@ -253,6 +273,101 @@ export default function SuperAdminDashboard() {
           </>
         )}
       </main>
+
+      {/* Widget Links Modal */}
+      {widgetTenant && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-lg bg-gray-900 rounded-2xl border border-gray-700 p-6 space-y-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-white">Widget Links</h2>
+                <p className="text-sm text-gray-400 mt-0.5">{widgetTenant.name} — copy a link to test or embed</p>
+              </div>
+              <button onClick={() => setWidgetTenant(null)} className="text-gray-500 hover:text-white text-xl leading-none">×</button>
+            </div>
+
+            {widgetLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : widgetAgents.length === 0 ? (
+              <p className="text-gray-500 text-sm text-center py-6">No active agents found for this tenant.</p>
+            ) : (
+              <div className="space-y-3">
+                {widgetAgents.map(agent => {
+                  const frontendBase = typeof window !== 'undefined'
+                    ? `${window.location.protocol}//${window.location.hostname}:3000`
+                    : 'http://localhost:3000'
+                  const widgetLink = `${frontendBase}/widget/${widgetTenant.id}/${agent.id}`
+                  const isCopied = copiedLink === agent.id
+
+                  return (
+                    <div key={agent.id} className="bg-gray-800 rounded-xl p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium text-white text-sm">{agent.name}</p>
+                          <p className="text-xs text-gray-400">{agent.role}</p>
+                        </div>
+                        <div className="flex gap-2">
+                          <a
+                            href={widgetLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs bg-indigo-900/40 text-indigo-400 hover:bg-indigo-900/70 px-2.5 py-1.5 rounded-lg transition-colors"
+                          >
+                            Preview
+                          </a>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(widgetLink)
+                              setCopiedLink(agent.id)
+                              setTimeout(() => setCopiedLink(''), 2000)
+                            }}
+                            className={`text-xs px-2.5 py-1.5 rounded-lg transition-colors font-medium ${isCopied ? 'bg-green-900/40 text-green-400' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                          >
+                            {isCopied ? 'Copied!' : 'Copy Link'}
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-xs text-gray-500 font-mono break-all bg-gray-900 rounded-lg px-3 py-2">
+                        {widgetLink}
+                      </p>
+                    </div>
+                  )
+                })}
+
+                {/* Embed snippet for first agent */}
+                <div className="mt-4 pt-4 border-t border-gray-700 space-y-2">
+                  <p className="text-xs text-gray-400 font-medium uppercase tracking-wider">Embed Snippet (first agent)</p>
+                  {widgetAgents[0] && (() => {
+                    const apiBase = typeof window !== 'undefined'
+                      ? `${window.location.protocol}//${window.location.hostname}:3001/api/v1`
+                      : 'http://localhost:3001/api/v1'
+                    const snippet = `<script>\n  window.AIWORKFORCE_TENANT = "${widgetTenant.id}";\n  window.AIWORKFORCE_AGENT  = "${widgetAgents[0].id}";\n</script>\n<script src="${apiBase}/public/widget.js" async></script>`
+                    return (
+                      <div className="relative">
+                        <pre className="bg-gray-950 rounded-lg p-3 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap font-mono">
+                          {snippet}
+                        </pre>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(snippet)
+                            setCopiedLink('snippet')
+                            setTimeout(() => setCopiedLink(''), 2000)
+                          }}
+                          className="absolute top-2 right-2 text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 px-2 py-1 rounded transition-colors"
+                        >
+                          {copiedLink === 'snippet' ? 'Copied!' : 'Copy'}
+                        </button>
+                      </div>
+                    )
+                  })()}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Configure Tenant Modal */}
       {editingTenant && (
@@ -454,13 +569,14 @@ function OverviewTab({ stats, tenants }: { stats: Stats | null; tenants: Tenant[
 
 // ── Tenants Tab ───────────────────────────────────────────────────
 
-function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure }: {
+function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure, onWidget }: {
   tenants: Tenant[]
   search: string
   onSearch: (v: string) => void
   onToggle: (id: string, isActive: boolean) => void
   onDelete: (id: string) => void
   onConfigure: (t: Tenant) => void
+  onWidget: (t: Tenant) => void
 }) {
   return (
     <div className="space-y-6">
@@ -517,6 +633,12 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => onWidget(t)}
+                      className="text-xs px-2.5 py-1 rounded-md font-medium bg-purple-900/40 text-purple-400 hover:bg-purple-900/70 transition-colors"
+                    >
+                      Widget
+                    </button>
                     <button
                       onClick={() => onConfigure(t)}
                       className="text-xs px-2.5 py-1 rounded-md font-medium bg-indigo-900/40 text-indigo-400 hover:bg-indigo-900/70 transition-colors"

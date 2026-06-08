@@ -18,6 +18,7 @@ import { AIModule } from './ai/ai.module'
 import { CommunicationsModule } from './modules/communications/communications.module'
 import { EmailModule } from './modules/email/email.module'
 import { SuperAdminModule } from './modules/super-admin/super-admin.module'
+import { PublicChatModule } from './modules/public-chat/public-chat.module'
 import { PrismaModule } from './common/prisma/prisma.module'
 import { QueueModule } from './queue/queue.module'
 import { RealtimeModule } from './realtime/realtime.module'
@@ -46,6 +47,7 @@ import { RealtimeModule } from './realtime/realtime.module'
     CommunicationsModule,
     EmailModule,
     SuperAdminModule,
+    PublicChatModule,
   ],
 })
 export class AppModule {}

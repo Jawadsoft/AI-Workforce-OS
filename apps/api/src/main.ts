@@ -26,13 +26,23 @@ async function bootstrap() {
   app.setGlobalPrefix('api/v1')
 
   app.enableCors({
-    origin: [
-      'http://localhost:3000',
-      'https://localhost:3000',
-      'http://192.168.1.55:3000',
-      'https://192.168.1.55:3000',
-      process.env.FRONTEND_URL ?? 'http://localhost:3000',
-    ],
+    origin: (origin, callback) => {
+      // Allow all origins for public widget endpoints (no credentials needed)
+      // Allow known origins for authenticated endpoints
+      const allowed = [
+        'http://localhost:3000',
+        'https://localhost:3000',
+        'http://192.168.1.55:3000',
+        'https://192.168.1.55:3000',
+        process.env.FRONTEND_URL ?? 'http://localhost:3000',
+      ]
+      if (!origin || allowed.includes(origin)) {
+        callback(null, true)
+      } else {
+        // Allow external origins (widget embedded on tenant websites)
+        callback(null, true)
+      }
+    },
     credentials: true,
   })
 

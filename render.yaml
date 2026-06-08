@@ -3,7 +3,7 @@ services:
     name: ai-workforce-api
     runtime: node
     plan: starter
-    buildCommand: corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile && pnpm db:generate && pnpm turbo run build --filter=@ai-workforce/api
+    buildCommand: corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile --prod=false && pnpm db:generate && pnpm exec turbo run build --filter=@ai-workforce/api
     preDeployCommand: pnpm exec prisma migrate deploy --schema=./prisma/schema.prisma && pnpm db:seed
     startCommand: pnpm --filter @ai-workforce/api start
     disk:
@@ -79,7 +79,7 @@ services:
     name: ai-workforce-web
     runtime: node
     plan: starter
-    buildCommand: corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile && pnpm turbo run build --filter=@ai-workforce/web
+    buildCommand: corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile --prod=false && pnpm exec turbo run build --filter=@ai-workforce/web
     startCommand: pnpm --filter @ai-workforce/web start
     envVars:
       - key: NODE_ENV

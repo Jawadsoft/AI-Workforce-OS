@@ -1,9 +1,13 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
 import { PrismaService } from '../../common/prisma/prisma.service'
+import { CrmService } from '../crm/crm.service'
 
 @Injectable()
 export class TasksService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly crm: CrmService,
+  ) {}
 
   findAll(tenantId: string, filters?: { status?: string; agentId?: string; limit?: number }) {
     const statusFilter = filters?.status
@@ -63,6 +67,40 @@ export class TasksService {
     return this.prisma.task.updateMany({
       where: { id, tenantId },
       data: { status: 'FAILED' },
+    })
+  }
+
+  async pushToCRM(tenantId: string, taskId: string) {
+    const task = await this.prisma.task.findFirst({ where: { id: taskId, tenantId } })
+    if (!task) throw new NotFoundException('Task not found')
+    if (task.pushedToCRM) throw new BadRequestException('Task already pushed to CRM')
+
+    // find active CRM connection
+    const connection = await this.prisma.cRMConnection.findFirst({
+      where: { tenantId, isActive: true },
+    })
+    if (!connection) throw new BadRequestException('No active CRM connection found')
+
+    let crmTaskId: string | null = null
+
+    try {
+      const result = await this.crm.createCRMTask(tenantId, {
+        title: task.title,
+        description: task.description ?? '',
+      })
+      crmTaskId = (result as any)?.id ?? null
+    } catch (err: any) {
+      throw new BadRequestException(`CRM push failed: ${err.message}`)
+    }
+
+    return this.prisma.task.update({
+      where: { id: taskId },
+      data: {
+        pushedToCRM: true,
+        pushedToCRMAt: new Date(),
+        crmTaskId: crmTaskId ?? undefined,
+        crmProvider: connection.provider,
+      },
     })
   }
 }

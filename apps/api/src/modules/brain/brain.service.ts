@@ -180,6 +180,56 @@ export class BrainService {
     return { success: true }
   }
 
+  // ── Directly edit scraped brain fields ───────────────────────────
+  // Lets tenant owner correct/override any auto-extracted data
+
+  async updateScrapedData(tenantId: string, data: {
+    companyName?: string
+    tagline?: string
+    companyDescription?: string
+    summary?: string
+    industry?: string
+    services?: string[]
+    targetCustomers?: string
+    uniqueSellingPoints?: string[]
+    serviceAreas?: string[]
+    phone?: string
+    email?: string
+    address?: string
+    pricingSignals?: string
+    businessRules?: string
+    brandVoice?: string
+    teamSize?: string
+    yearsInBusiness?: string
+  }) {
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } })
+    const existingSettings = (tenant?.settings as any) ?? {}
+    const existingBrain = existingSettings.brain ?? {}
+
+    // Merge only provided fields (don't wipe unrelated ones)
+    const updatedBrain = { ...existingBrain }
+    for (const [key, value] of Object.entries(data)) {
+      if (value !== undefined) updatedBrain[key] = value
+    }
+    updatedBrain.manuallyEdited = true
+    updatedBrain.editedAt = new Date().toISOString()
+
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { settings: { ...existingSettings, brain: updatedBrain } },
+    })
+
+    // Update industry on tenant record if changed
+    if (data.industry && VALID_INDUSTRIES.includes(data.industry)) {
+      await this.prisma.tenant.update({
+        where: { id: tenantId },
+        data: { industry: data.industry as any },
+      })
+    }
+
+    return { success: true, brain: updatedBrain }
+  }
+
   // ── CRM guide helpers ─────────────────────────────────────────────
 
   getCrmGuide(provider: string) {

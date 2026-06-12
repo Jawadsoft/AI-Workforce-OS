@@ -3,6 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
 import { CrmContextService } from '../crm/crm-context.service'
 import { BrainService } from '../brain/brain.service'
+import { ChatService } from '../chat/chat.service'
 
 // Maps CRM event types → agent roles that should handle them
 const EVENT_ROLE_MAP: Record<string, string[]> = {
@@ -48,6 +49,7 @@ export class WebhooksService {
     private readonly ai: AIService,
     private readonly crmCtx: CrmContextService,
     private readonly brain: BrainService,
+    private readonly chat: ChatService,
   ) {}
 
   // ── Called when a CRM webhook event arrives ───────────────────────
@@ -146,7 +148,43 @@ ${agent.prompt}`
     })
 
     this.logger.log(`Webhook handled: agent=${agent.name}, conversation=${conversation.id}`)
+
+    // Post a proactive briefing into the agent's primary thread
+    try {
+      const briefingContent = this.buildBriefingMessage(payload, agentReply)
+      await this.chat.postBriefing(tenantId, agent.id, briefingContent, payload.event)
+    } catch (err: any) {
+      this.logger.warn(`Failed to post briefing: ${err.message}`)
+    }
+
     return { handled: true, agentName: agent.name, conversationId: conversation.id }
+  }
+
+  private buildBriefingMessage(payload: CRMWebhookPayload, agentReply: string): string {
+    const d = payload.data
+    const name = d.name ?? d.email ?? d.phone ?? 'Unknown'
+    const eventEmojis: Record<string, string> = {
+      'lead.created': '🆕',
+      'lead.updated': '🔄',
+      'job.created': '🔨',
+      'job.scheduled': '📅',
+      'job.completed': '✅',
+      'proposal.sent': '📄',
+      'proposal.accepted': '🎉',
+      'proposal.declined': '❌',
+      'invoice.overdue': '⚠️',
+      'message.received': '💬',
+      'appointment.booked': '📆',
+    }
+    const emoji = eventEmojis[payload.event] ?? '📌'
+    const eventLabel = payload.event.replace('.', ' ').replace(/\b\w/g, c => c.toUpperCase())
+
+    return `${emoji} **${eventLabel}** — ${name}
+
+${agentReply}
+
+---
+*Handled automatically. Reply here if you want me to take further action.*`
   }
 
   // ── Helper: create a human-readable trigger message ───────────────

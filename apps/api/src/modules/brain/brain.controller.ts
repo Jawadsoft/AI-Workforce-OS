@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Patch, Body, Param, UseGuards } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
-import { IsString, IsOptional } from 'class-validator'
+import { IsString, IsOptional, IsArray } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { CurrentTenant } from '../../common/decorators/tenant.decorator'
 import { BrainService } from './brain.service'
@@ -16,6 +16,26 @@ class ManualContextDto {
   @IsOptional() @IsString() forbiddenTopics?: string
   @IsOptional() @IsString() escalationContacts?: string
   @IsOptional() @IsString() uniqueSellingPoints?: string
+}
+
+class UpdateScrapedDataDto {
+  @IsOptional() @IsString() companyName?: string
+  @IsOptional() @IsString() tagline?: string
+  @IsOptional() @IsString() companyDescription?: string
+  @IsOptional() @IsString() summary?: string
+  @IsOptional() @IsString() industry?: string
+  @IsOptional() @IsArray() services?: string[]
+  @IsOptional() @IsString() targetCustomers?: string
+  @IsOptional() @IsArray() uniqueSellingPoints?: string[]
+  @IsOptional() @IsArray() serviceAreas?: string[]
+  @IsOptional() @IsString() phone?: string
+  @IsOptional() @IsString() email?: string
+  @IsOptional() @IsString() address?: string
+  @IsOptional() @IsString() pricingSignals?: string
+  @IsOptional() @IsString() businessRules?: string
+  @IsOptional() @IsString() brandVoice?: string
+  @IsOptional() @IsString() teamSize?: string
+  @IsOptional() @IsString() yearsInBusiness?: string
 }
 
 @ApiTags('Brain')
@@ -41,6 +61,12 @@ export class BrainController {
   @ApiOperation({ summary: 'Save manual business context overrides' })
   saveManualContext(@CurrentTenant() tenantId: string, @Body() dto: ManualContextDto) {
     return this.service.saveManualContext(tenantId, dto)
+  }
+
+  @Patch('scraped-data')
+  @ApiOperation({ summary: 'Directly edit any auto-extracted brain field (company name, services, description, etc.)' })
+  updateScrapedData(@CurrentTenant() tenantId: string, @Body() dto: UpdateScrapedDataDto) {
+    return this.service.updateScrapedData(tenantId, dto)
   }
 
   @Get('crm-guides')

@@ -144,10 +144,20 @@ export class TenantsService {
     })
   }
 
-  async saveSettings(tenantId: string, dto: Record<string, string>) {
+  async saveSettings(tenantId: string, dto: Record<string, any>) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } })
-    const existing = (tenant?.settings as Record<string, string>) || {}
-    const merged = { ...existing, ...Object.fromEntries(Object.entries(dto).filter(([, v]) => v !== undefined && v !== '')) }
+    const existing = (tenant?.settings as Record<string, any>) || {}
+    // Deep-merge top-level keys so nested objects (e.g. widget, brain) are merged not overwritten
+    const merged: Record<string, any> = { ...existing }
+    for (const [key, value] of Object.entries(dto)) {
+      if (value !== undefined) {
+        if (typeof value === 'object' && value !== null && !Array.isArray(value) && typeof existing[key] === 'object') {
+          merged[key] = { ...(existing[key] as object), ...value }
+        } else {
+          merged[key] = value
+        }
+      }
+    }
     await this.prisma.tenant.update({ where: { id: tenantId }, data: { settings: merged } })
     return { success: true }
   }

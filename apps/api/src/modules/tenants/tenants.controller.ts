@@ -47,6 +47,12 @@ export class TenantsController {
     return this.service.getSettings(tenantId)
   }
 
+  @Patch('settings')
+  @ApiOperation({ summary: 'Update tenant settings (deep-merges nested objects like widget, brain)' })
+  updateSettings(@CurrentTenant() tenantId: string, @Body() dto: Record<string, any>) {
+    return this.service.saveSettings(tenantId, dto)
+  }
+
   @Get('onboarding-status')
   @ApiOperation({ summary: 'Check if onboarding is complete' })
   async onboardingStatus(@CurrentTenant() tenantId: string) {

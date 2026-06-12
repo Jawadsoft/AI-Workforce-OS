@@ -1,9 +1,10 @@
-import { Controller, Get, Post, Body, Param, Query, UseGuards, Res, Headers } from '@nestjs/common'
+import { Controller, Get, Post, Body, Param, Query, UseGuards, Res, Headers, Inject, forwardRef } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { IsString, IsOptional } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { CurrentTenant, CurrentUser } from '../../common/decorators/tenant.decorator'
 import { ChatService } from './chat.service'
+import { PublicChatService } from '../public-chat/public-chat.service'
 import type { Response } from 'express'
 
 class CreateConversationDto {
@@ -23,7 +24,10 @@ class SendMessageDto {
 @UseGuards(JwtAuthGuard)
 @Controller('chat')
 export class ChatController {
-  constructor(private readonly service: ChatService) {}
+  constructor(
+    private readonly service: ChatService,
+    @Inject(forwardRef(() => PublicChatService)) private readonly publicChat: PublicChatService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'List all conversations' })
@@ -85,5 +89,21 @@ export class ChatController {
   @ApiOperation({ summary: 'Preview the full system prompt sent to this agent' })
   getSystemPrompt(@CurrentTenant() tenantId: string, @Param('agentId') agentId: string) {
     return this.service.getAgentSystemPrompt(tenantId, agentId).then((prompt) => ({ prompt }))
+  }
+
+  @Get('widget-sessions/active')
+  @ApiOperation({ summary: 'List currently active widget chat sessions with customer names' })
+  getActiveSessions(@CurrentTenant() tenantId: string) {
+    return this.publicChat.getActiveSessions(tenantId)
+  }
+
+  @Get('agents/:agentId/primary')
+  @ApiOperation({ summary: 'Get or create the persistent primary conversation with this agent' })
+  getPrimary(
+    @CurrentTenant() tenantId: string,
+    @CurrentUser() user: any,
+    @Param('agentId') agentId: string,
+  ) {
+    return this.service.getOrCreatePrimaryConversation(tenantId, agentId, user.id)
   }
 }

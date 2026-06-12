@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import {
   Brain, RefreshCw, Loader2, Globe, CheckCircle, ChevronDown, ChevronUp,
-  Save, Phone, Mail, MapPin, Star, Users, Award, DollarSign, Link2
+  Save, Phone, Mail, MapPin, Star, Users, Award, DollarSign, Link2, Pencil, X
 } from 'lucide-react'
 import { WebsiteAnalyzer } from './website-analyzer'
 import { CRMSetupGuideModal } from './crm-setup-guide'
@@ -51,18 +51,25 @@ function TagList({ items, color = 'default' }: { items: string[]; color?: 'defau
     : 'bg-muted text-foreground'
   return (
     <div className="flex flex-wrap gap-1.5">
-      {items.map((item) => (
-        <span key={item} className={`text-xs px-2 py-0.5 rounded-full ${cls}`}>{item}</span>
+      {items.map((item, i) => (
+        <span key={`${item}-${i}`} className={`text-xs px-2 py-0.5 rounded-full ${cls}`}>{item}</span>
       ))}
     </div>
   )
 }
+
+const INDUSTRY_OPTIONS = [
+  'ROOFING','HVAC','CLEANING','SECURITY','CONSTRUCTION','LANDSCAPING',
+  'PEST_CONTROL','REAL_ESTATE','INSURANCE','HUMAN_RESOURCES','PROPERTY_MANAGEMENT','HEALTHCARE','OTHER',
+]
 
 export function BrainPanel() {
   const qc = useQueryClient()
   const [showReanalyze, setShowReanalyze] = useState(false)
   const [showGuide, setShowGuide] = useState<string | null>(null)
   const [showManual, setShowManual] = useState(false)
+  const [showEdit, setShowEdit] = useState(false)
+  const [editData, setEditData] = useState<Record<string, any>>({})
   const [manual, setManual] = useState({
     targetCustomerProfile: '',
     competitors: '',
@@ -85,6 +92,43 @@ export function BrainPanel() {
     },
   })
 
+  const editMutation = useMutation({
+    mutationFn: () => api.patch('/brain/scraped-data', {
+      ...editData,
+      services: editData.services ? editData.services.split(',').map((s: string) => s.trim()).filter(Boolean) : undefined,
+      serviceAreas: editData.serviceAreas ? editData.serviceAreas.split(',').map((s: string) => s.trim()).filter(Boolean) : undefined,
+      uniqueSellingPoints: editData.uniqueSellingPoints ? editData.uniqueSellingPoints.split('\n').map((s: string) => s.trim()).filter(Boolean) : undefined,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['brain-profile'] })
+      setShowEdit(false)
+    },
+  })
+
+  const openEdit = () => {
+    if (!brain) return
+    setEditData({
+      companyName: brain.companyName ?? '',
+      tagline: brain.tagline ?? '',
+      companyDescription: brain.companyDescription ?? '',
+      summary: brain.summary ?? '',
+      industry: brain.industry ?? '',
+      services: (brain.services ?? []).join(', '),
+      targetCustomers: brain.targetCustomers ?? '',
+      uniqueSellingPoints: (brain.uniqueSellingPoints ?? []).join('\n'),
+      serviceAreas: (brain.serviceAreas ?? []).join(', '),
+      phone: brain.phone ?? '',
+      email: brain.email ?? '',
+      address: brain.address ?? '',
+      pricingSignals: brain.pricingSignals ?? '',
+      businessRules: brain.businessRules ?? '',
+      brandVoice: brain.brandVoice ?? '',
+      teamSize: brain.teamSize ?? '',
+      yearsInBusiness: brain.yearsInBusiness ?? '',
+    })
+    setShowEdit(true)
+  }
+
   const brain = data?.brain ?? null
   const mc = brain?.manualContext ?? {}
 
@@ -104,6 +148,187 @@ export function BrainPanel() {
     <div className="space-y-5">
       {showGuide && <CRMSetupGuideModal provider={showGuide} onClose={() => setShowGuide(null)} />}
 
+      {/* Edit Brain Modal */}
+      {showEdit && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-2xl bg-card border border-border rounded-xl shadow-xl flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+              <div>
+                <h2 className="font-semibold">Edit Brain Data</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">Correct any information that was extracted incorrectly</p>
+              </div>
+              <button onClick={() => setShowEdit(false)} className="text-muted-foreground hover:text-foreground transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 p-5 space-y-4">
+              {/* Basic identity */}
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { key: 'companyName', label: 'Company Name' },
+                  { key: 'tagline', label: 'Tagline' },
+                  { key: 'teamSize', label: 'Team Size' },
+                  { key: 'yearsInBusiness', label: 'Years in Business' },
+                  { key: 'phone', label: 'Phone' },
+                  { key: 'email', label: 'Email' },
+                ].map(({ key, label }) => (
+                  <div key={key}>
+                    <label className="text-xs font-medium">{label}</label>
+                    <input
+                      value={editData[key] ?? ''}
+                      onChange={e => setEditData((d: any) => ({ ...d, [key]: e.target.value }))}
+                      className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </div>
+                ))}
+              </div>
+
+              {/* Industry */}
+              <div>
+                <label className="text-xs font-medium">Industry</label>
+                <select
+                  value={editData.industry ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, industry: e.target.value }))}
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none"
+                >
+                  <option value="">-- select --</option>
+                  {INDUSTRY_OPTIONS.map(i => (
+                    <option key={i} value={i}>{INDUSTRY_LABELS[i] ?? i}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Address */}
+              <div>
+                <label className="text-xs font-medium">Address / Location</label>
+                <input
+                  value={editData.address ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, address: e.target.value }))}
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+
+              {/* Brand voice */}
+              <div>
+                <label className="text-xs font-medium">Brand Voice</label>
+                <input
+                  value={editData.brandVoice ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, brandVoice: e.target.value }))}
+                  placeholder="e.g. Professional, friendly, direct"
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+
+              {/* Summary */}
+              <div>
+                <label className="text-xs font-medium">One-line Summary</label>
+                <input
+                  value={editData.summary ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, summary: e.target.value }))}
+                  placeholder="e.g. Licensed roofing contractor serving Dallas–Fort Worth since 2005"
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+
+              {/* Company description */}
+              <div>
+                <label className="text-xs font-medium">Company Description</label>
+                <textarea
+                  value={editData.companyDescription ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, companyDescription: e.target.value }))}
+                  rows={3}
+                  placeholder="Describe what your company does, who you serve, your specialties..."
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+                />
+              </div>
+
+              {/* Services */}
+              <div>
+                <label className="text-xs font-medium">Services (comma separated)</label>
+                <input
+                  value={editData.services ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, services: e.target.value }))}
+                  placeholder="e.g. Roof Replacement, Hail Damage Repair, Emergency Tarping, Gutters"
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+
+              {/* Service areas */}
+              <div>
+                <label className="text-xs font-medium">Service Areas (comma separated)</label>
+                <input
+                  value={editData.serviceAreas ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, serviceAreas: e.target.value }))}
+                  placeholder="e.g. Dallas, Fort Worth, Plano, Arlington"
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+
+              {/* Target customers */}
+              <div>
+                <label className="text-xs font-medium">Target Customers</label>
+                <textarea
+                  value={editData.targetCustomers ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, targetCustomers: e.target.value }))}
+                  rows={2}
+                  placeholder="e.g. Homeowners with storm/hail damage, insurance claims, residential roofing"
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+                />
+              </div>
+
+              {/* USPs */}
+              <div>
+                <label className="text-xs font-medium">Unique Selling Points (one per line)</label>
+                <textarea
+                  value={editData.uniqueSellingPoints ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, uniqueSellingPoints: e.target.value }))}
+                  rows={3}
+                  placeholder="Licensed & insured&#10;Free storm damage inspection&#10;Works directly with insurance companies&#10;Lifetime workmanship warranty"
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+                />
+              </div>
+
+              {/* Pricing */}
+              <div>
+                <label className="text-xs font-medium">Pricing / Cost Signals</label>
+                <input
+                  value={editData.pricingSignals ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, pricingSignals: e.target.value }))}
+                  placeholder="e.g. Most roofs $8k–$20k depending on size. Free estimates."
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+
+              {/* Business rules */}
+              <div>
+                <label className="text-xs font-medium">Policies & Guarantees</label>
+                <textarea
+                  value={editData.businessRules ?? ''}
+                  onChange={e => setEditData((d: any) => ({ ...d, businessRules: e.target.value }))}
+                  rows={2}
+                  placeholder="e.g. All work guaranteed for 5 years. We match any written quote."
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 px-5 py-4 border-t border-border shrink-0">
+              <button onClick={() => setShowEdit(false)} className="px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors">
+                Cancel
+              </button>
+              <button
+                onClick={() => editMutation.mutate()}
+                disabled={editMutation.isPending}
+                className="flex items-center gap-1.5 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                {editMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -113,13 +338,24 @@ export function BrainPanel() {
             <p className="text-xs text-muted-foreground">AI agents use this in every conversation</p>
           </div>
         </div>
-        <button
-          onClick={() => setShowReanalyze(!showReanalyze)}
-          className="flex items-center gap-1.5 text-sm border border-border px-3 py-1.5 rounded-md hover:bg-accent transition-colors"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          {brain ? 'Re-analyze' : 'Analyze website'}
-        </button>
+        <div className="flex items-center gap-2">
+          {brain && (
+            <button
+              onClick={openEdit}
+              className="flex items-center gap-1.5 text-sm border border-border px-3 py-1.5 rounded-md hover:bg-accent transition-colors"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              Edit
+            </button>
+          )}
+          <button
+            onClick={() => setShowReanalyze(!showReanalyze)}
+            className="flex items-center gap-1.5 text-sm border border-border px-3 py-1.5 rounded-md hover:bg-accent transition-colors"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            {brain ? 'Re-analyze' : 'Analyze website'}
+          </button>
+        </div>
       </div>
 
       {/* Re-analyze */}
@@ -162,9 +398,16 @@ export function BrainPanel() {
             <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-green-500/5">
               <div className="flex items-center gap-2">
                 <CheckCircle className="w-4 h-4 text-green-500" />
-                <span className="text-sm font-medium">Auto-detected from website</span>
-                {brain.pagesScraped?.length > 0 && (
+                <span className="text-sm font-medium">
+                  {brain.manuallyEdited ? 'Manually edited' : 'Auto-detected from website'}
+                </span>
+                {!brain.manuallyEdited && brain.pagesScraped?.length > 0 && (
                   <span className="text-xs text-muted-foreground">({brain.pagesScraped.length} pages scraped)</span>
+                )}
+                {brain.manuallyEdited && (
+                  <span className="text-xs bg-blue-500/10 text-blue-600 px-2 py-0.5 rounded-full">
+                    custom
+                  </span>
                 )}
               </div>
               <div className="flex items-center gap-2">

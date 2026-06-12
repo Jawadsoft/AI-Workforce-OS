@@ -5,17 +5,24 @@ import type { ChatMessage, AIResponse } from '../ai.service'
 
 @Injectable()
 export class ClaudeProvider {
-  private client: Anthropic
+  private client?: Anthropic
 
-  constructor(private readonly config: ConfigService) {
-    this.client = new Anthropic({ apiKey: this.config.get('ANTHROPIC_API_KEY') })
+  constructor(private readonly config: ConfigService) {}
+
+  private getClient(): Anthropic {
+    if (!this.client) {
+      const apiKey = this.config.get<string>('ANTHROPIC_API_KEY')
+      if (!apiKey) throw new Error('ANTHROPIC_API_KEY is required to use Claude features')
+      this.client = new Anthropic({ apiKey })
+    }
+    return this.client
   }
 
   async chat(messages: ChatMessage[]): Promise<AIResponse> {
     const system = messages.find((m) => m.role === 'system')?.content
     const userMessages = messages.filter((m) => m.role !== 'system')
 
-    const response = await this.client.messages.create({
+    const response = await this.getClient().messages.create({
       model: this.config.get('CLAUDE_MODEL') ?? 'claude-3-5-sonnet-20241022',
       max_tokens: 4096,
       system,
@@ -32,7 +39,7 @@ export class ClaudeProvider {
     const system = messages.find((m) => m.role === 'system')?.content
     const userMessages = messages.filter((m) => m.role !== 'system')
 
-    const stream = this.client.messages.stream({
+    const stream = this.getClient().messages.stream({
       model: this.config.get('CLAUDE_MODEL') ?? 'claude-3-5-sonnet-20241022',
       max_tokens: 4096,
       system,

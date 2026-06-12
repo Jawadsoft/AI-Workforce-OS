@@ -16,14 +16,21 @@ export interface ToolCallResult {
 
 @Injectable()
 export class OpenAIProvider {
-  private client: OpenAI
+  private client?: OpenAI
 
-  constructor(private readonly config: ConfigService) {
-    this.client = new OpenAI({ apiKey: this.config.get('OPENAI_API_KEY') })
+  constructor(private readonly config: ConfigService) {}
+
+  private getClient(): OpenAI {
+    if (!this.client) {
+      const apiKey = this.config.get<string>('OPENAI_API_KEY')
+      if (!apiKey) throw new Error('OPENAI_API_KEY is required to use OpenAI features')
+      this.client = new OpenAI({ apiKey })
+    }
+    return this.client
   }
 
   async chat(messages: ChatMessage[]): Promise<AIResponse> {
-    const response = await this.client.chat.completions.create({
+    const response = await this.getClient().chat.completions.create({
       model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
       messages,
     })
@@ -62,7 +69,7 @@ export class OpenAIProvider {
     }))
 
     for (let round = 0; round < maxRounds; round++) {
-      const response = await this.client.chat.completions.create({
+      const response = await this.getClient().chat.completions.create({
         model,
         messages: currentMessages,
         tools: openaiTools,
@@ -105,7 +112,7 @@ export class OpenAIProvider {
     }
 
     // Exceeded rounds — ask for final answer without tools
-    const fallback = await this.client.chat.completions.create({
+    const fallback = await this.getClient().chat.completions.create({
       model,
       messages: currentMessages,
     })
@@ -113,7 +120,7 @@ export class OpenAIProvider {
   }
 
   async *stream(messages: ChatMessage[]): AsyncGenerator<string> {
-    const stream = await this.client.chat.completions.create({
+    const stream = await this.getClient().chat.completions.create({
       model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
       messages,
       stream: true,
@@ -125,7 +132,7 @@ export class OpenAIProvider {
   }
 
   async embed(text: string): Promise<number[]> {
-    const response = await this.client.embeddings.create({
+    const response = await this.getClient().embeddings.create({
       model: 'text-embedding-3-small',
       input: text,
     })

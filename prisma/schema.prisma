@@ -105,18 +105,19 @@ model AgentTemplate {
 // ─────────────────────────────────────────────
 
 model Conversation {
-  id        String   @id @default(cuid())
-  tenantId  String
-  agentId   String
-  userId    String?
+  id          String   @id @default(cuid())
+  tenantId    String
+  agentId     String
+  userId      String?
   title       String?
   channel     String   @default("INTERNAL")
   callerPhone String?
   callerEmail String?
   status      String   @default("OPEN")
-  metadata  Json     @default("{}")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  isPrimary   Boolean  @default(false)
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   agent    Agent     @relation(fields: [agentId], references: [id])
@@ -130,6 +131,7 @@ model Message {
   agentId        String?
   role           MessageRole
   content        String      @db.Text
+  briefingType   String?
   metadata       Json        @default("{}")
   createdAt      DateTime    @default(now())
 
@@ -155,6 +157,10 @@ model Task {
   requiresApproval Boolean      @default(false)
   dueDate          DateTime?
   metadata         Json         @default("{}")
+  crmTaskId        String?
+  crmProvider      String?
+  pushedToCRM      Boolean      @default(false)
+  pushedToCRMAt    DateTime?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
 

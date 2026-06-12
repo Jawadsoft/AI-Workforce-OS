@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { CheckCircle, Clock, AlertCircle, XCircle, Plus, Loader2 } from 'lucide-react'
+import { CheckCircle, Clock, AlertCircle, XCircle, Plus, Loader2, Upload, Link2 } from 'lucide-react'
 
 const STATUS_CONFIG: Record<string, { label: string; icon: any; color: string }> = {
   PENDING: { label: 'Pending', icon: Clock, color: 'text-muted-foreground' },
@@ -49,6 +49,11 @@ export function TasksPage() {
 
   const completeMutation = useMutation({
     mutationFn: (id: string) => api.patch(`/tasks/${id}`, { status: 'COMPLETED' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
+  })
+
+  const pushCRMMutation = useMutation({
+    mutationFn: (id: string) => api.post(`/tasks/${id}/push-to-crm`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
   })
 
@@ -161,6 +166,28 @@ export function TasksPage() {
                   )}
                   {task.agent?.name && (
                     <span className="text-xs text-muted-foreground">{task.agent.name}</span>
+                  )}
+                  {/* CRM sync status */}
+                  {task.pushedToCRM ? (
+                    <span className="flex items-center gap-1 text-xs text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full font-medium">
+                      <CheckCircle className="w-3 h-3" />
+                      Synced
+                      {task.crmProvider && <span className="opacity-70">· {task.crmProvider}</span>}
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => pushCRMMutation.mutate(task.id)}
+                      disabled={pushCRMMutation.isPending && pushCRMMutation.variables === task.id}
+                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors px-2 py-1 rounded hover:bg-primary/10 disabled:opacity-50"
+                      title="Push this task to CRM"
+                    >
+                      {pushCRMMutation.isPending && pushCRMMutation.variables === task.id ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Upload className="w-3 h-3" />
+                      )}
+                      Push to CRM
+                    </button>
                   )}
                   {task.status !== 'COMPLETED' && (
                     <button

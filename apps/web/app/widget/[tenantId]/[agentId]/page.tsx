@@ -92,6 +92,26 @@ export default function WidgetPage() {
     }
   }, [tenantId, agentId, apiBase])
 
+  // Poll for new messages every 4 seconds (picks up operator replies injected server-side)
+  useEffect(() => {
+    if (!sessionId) return
+    const interval = setInterval(async () => {
+      if (streaming) return // don't poll while a stream is active
+      try {
+        const res = await fetch(`${apiBase}/public/widget/${tenantId}/session/${sessionId}/messages`)
+        const msgs = await res.json()
+        if (Array.isArray(msgs)) {
+          setMessages(prev => {
+            // Only update if there are more messages than we currently have
+            if (msgs.length > prev.length) return msgs
+            return prev
+          })
+        }
+      } catch { /* ignore poll errors */ }
+    }, 4000)
+    return () => clearInterval(interval)
+  }, [sessionId, streaming, tenantId, apiBase])
+
   // Scroll to bottom on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -184,28 +204,72 @@ export default function WidgetPage() {
 
       {/* Visitor info collection */}
       {collectingInfo && !infoSubmitted ? (
-        <form onSubmit={submitVisitorInfo} className="flex-1 flex flex-col justify-center px-5 gap-4">
-          <p className="text-gray-600 text-center">{config.welcomeMessage}</p>
-          <p className="text-xs text-center text-gray-400">Please share a few details to get started.</p>
+        <form onSubmit={submitVisitorInfo} className="flex-1 flex flex-col justify-center px-5 gap-3">
+          {/* Avatar */}
+          <div className="flex flex-col items-center gap-2 mb-1">
+            <div className="w-14 h-14 rounded-full overflow-hidden bg-gray-100 flex items-center justify-center text-2xl border-2" style={{ borderColor: primary }}>
+              {config.agentAvatar
+                ? <img src={config.agentAvatar} alt="" className="w-full h-full object-cover" />
+                : '🤖'}
+            </div>
+            <p className="font-semibold text-gray-800 text-center">{config.agentName}</p>
+            <p className="text-xs text-gray-500 text-center">{config.welcomeMessage}</p>
+          </div>
+
+          <div className="text-xs font-medium text-gray-500 text-center mb-1">
+            Quick intro before we chat 👋
+          </div>
+
           {config.collectName && (
-            <input value={visitorInfo.name} onChange={e => setVisitorInfo(f => ({ ...f, name: e.target.value }))}
-              placeholder="Your name" required
-              className="w-full border rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2"
-              style={{ ['--tw-ring-color' as any]: primary }} />
+            <div>
+              <label className="text-xs font-medium text-gray-600 mb-1 block">Your name <span className="text-red-400">*</span></label>
+              <input
+                value={visitorInfo.name}
+                onChange={e => setVisitorInfo(f => ({ ...f, name: e.target.value }))}
+                placeholder="e.g. John Smith"
+                required
+                autoFocus
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-transparent focus:ring-2 transition-all"
+                style={{ ['--tw-ring-color' as any]: primary }}
+              />
+            </div>
           )}
           {config.collectEmail && (
-            <input type="email" value={visitorInfo.email} onChange={e => setVisitorInfo(f => ({ ...f, email: e.target.value }))}
-              placeholder="Your email" required
-              className="w-full border rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2" />
+            <div>
+              <label className="text-xs font-medium text-gray-600 mb-1 block">Email <span className="text-gray-400 font-normal">(optional)</span></label>
+              <input
+                type="email"
+                value={visitorInfo.email}
+                onChange={e => setVisitorInfo(f => ({ ...f, email: e.target.value }))}
+                placeholder="you@example.com"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 transition-all"
+                style={{ ['--tw-ring-color' as any]: primary }}
+              />
+            </div>
           )}
           {config.collectPhone && (
-            <input type="tel" value={visitorInfo.phone} onChange={e => setVisitorInfo(f => ({ ...f, phone: e.target.value }))}
-              placeholder="Your phone number"
-              className="w-full border rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2" />
+            <div>
+              <label className="text-xs font-medium text-gray-600 mb-1 block">Phone <span className="text-gray-400 font-normal">(optional)</span></label>
+              <input
+                type="tel"
+                value={visitorInfo.phone}
+                onChange={e => setVisitorInfo(f => ({ ...f, phone: e.target.value }))}
+                placeholder="+1 (555) 000-0000"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 transition-all"
+                style={{ ['--tw-ring-color' as any]: primary }}
+              />
+            </div>
           )}
-          <button type="submit" className="w-full py-2.5 rounded-lg text-white font-medium" style={{ background: primary }}>
-            Start Chat
+
+          <button
+            type="submit"
+            disabled={config.collectName && !visitorInfo.name.trim()}
+            className="w-full py-2.5 rounded-lg text-white font-medium mt-1 disabled:opacity-50 transition-opacity"
+            style={{ background: primary }}
+          >
+            Start Chat →
           </button>
+          <p className="text-center text-xs text-gray-300">We respect your privacy</p>
         </form>
       ) : (
         <>
@@ -218,7 +282,9 @@ export default function WidgetPage() {
                   {config.agentAvatar ? <img src={config.agentAvatar} alt="" className="w-full h-full object-cover" /> : '🤖'}
                 </div>
                 <div className="bg-gray-100 rounded-2xl rounded-tl-none px-3 py-2 max-w-[80%] text-gray-700 leading-relaxed">
-                  {config.welcomeMessage}
+                  {visitorInfo.name
+                    ? `Hi ${visitorInfo.name}! ${config.welcomeMessage}`
+                    : config.welcomeMessage}
                 </div>
               </div>
             )}

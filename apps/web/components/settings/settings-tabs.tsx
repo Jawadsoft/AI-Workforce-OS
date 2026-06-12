@@ -441,7 +441,7 @@ function WidgetSettings() {
     welcomeMessage: '',
     primaryColor: '#6366f1',
     placeholder: 'Type a message...',
-    collectName: false,
+    collectName: true,
     collectEmail: false,
     collectPhone: false,
   })
@@ -512,10 +512,28 @@ function WidgetSettings() {
           ))}
         </select>
         {previewUrl && (
-          <a href={previewUrl} target="_blank" rel="noreferrer"
-            className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline">
-            Preview widget in new tab →
-          </a>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Direct Chat Link</label>
+            <p className="text-xs text-muted-foreground">Share this URL directly with customers — no website needed.</p>
+            <div className="flex items-center gap-2">
+              <input
+                readOnly
+                value={previewUrl}
+                className="flex-1 rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground select-all focus:outline-none"
+                onFocus={e => e.target.select()}
+              />
+              <button
+                onClick={() => { navigator.clipboard.writeText(previewUrl); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
+                className="shrink-0 px-3 py-2 bg-primary text-primary-foreground text-sm rounded-md hover:bg-primary/90 transition-colors"
+              >
+                {copied ? '✓ Copied!' : 'Copy'}
+              </button>
+              <a href={previewUrl} target="_blank" rel="noreferrer"
+                className="shrink-0 px-3 py-2 border border-border rounded-md text-sm hover:bg-accent transition-colors">
+                Open ↗
+              </a>
+            </div>
+          </div>
         )}
       </div>
 

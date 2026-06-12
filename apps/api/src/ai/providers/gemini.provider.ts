@@ -5,14 +5,21 @@ import type { ChatMessage, AIResponse } from '../ai.service'
 
 @Injectable()
 export class GeminiProvider {
-  private client: GoogleGenerativeAI
+  private client?: GoogleGenerativeAI
 
-  constructor(private readonly config: ConfigService) {
-    this.client = new GoogleGenerativeAI(this.config.get('GEMINI_API_KEY') ?? '')
+  constructor(private readonly config: ConfigService) {}
+
+  private getClient(): GoogleGenerativeAI {
+    if (!this.client) {
+      const apiKey = this.config.get<string>('GEMINI_API_KEY')
+      if (!apiKey) throw new Error('GEMINI_API_KEY is required to use Gemini features')
+      this.client = new GoogleGenerativeAI(apiKey)
+    }
+    return this.client
   }
 
   async chat(messages: ChatMessage[]): Promise<AIResponse> {
-    const model = this.client.getGenerativeModel({
+    const model = this.getClient().getGenerativeModel({
       model: this.config.get('GEMINI_MODEL') ?? 'gemini-1.5-pro',
     })
 
@@ -26,7 +33,7 @@ export class GeminiProvider {
   }
 
   async *stream(messages: ChatMessage[]): AsyncGenerator<string> {
-    const model = this.client.getGenerativeModel({
+    const model = this.getClient().getGenerativeModel({
       model: this.config.get('GEMINI_MODEL') ?? 'gemini-1.5-pro',
     })
 

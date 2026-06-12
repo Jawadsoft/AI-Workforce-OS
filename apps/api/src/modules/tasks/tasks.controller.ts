@@ -53,4 +53,9 @@ export class TasksController {
   remove(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.remove(tenantId, id)
   }
+
+  @Post(':id/push-to-crm')
+  pushToCRM(@CurrentTenant() tenantId: string, @Param('id') id: string) {
+    return this.service.pushToCRM(tenantId, id)
+  }
 }

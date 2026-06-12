@@ -5,6 +5,8 @@ import { CrmService } from '../crm/crm.service'
 import { CrmContextService } from '../crm/crm-context.service'
 import { BrainService } from '../brain/brain.service'
 import { KnowledgeService } from '../knowledge/knowledge.service'
+import { TasksService } from '../tasks/tasks.service'
+import { EmailService } from '../email/email.service'
 
 // Regex patterns to extract caller identity from first message
 const PHONE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/
@@ -62,6 +64,58 @@ const CRM_TOOL_DEFINITIONS = [
     description: 'Update any record in the CRM (customer, job, proposal, etc.)',
     parameters: { type: 'object', properties: { model: { type: 'string', description: 'Record type e.g. customer, job, lead' }, id: { type: 'string' }, data: { type: 'object', description: 'Fields to update' } }, required: ['model', 'id', 'data'] },
   },
+  {
+    name: 'create_internal_task',
+    description: 'Create an internal task or follow-up action that needs to be tracked by the team. Use when a user asks to schedule something, follow up, or when you identify work that needs to be assigned or tracked internally.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short task title' },
+        description: { type: 'string', description: 'Task details and context' },
+        priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Task priority' },
+        dueDate: { type: 'string', description: 'ISO date string for due date, optional' },
+      },
+      required: ['title', 'description'],
+    },
+  },
+  {
+    name: 'request_approval',
+    description: 'Create an approval request that needs human sign-off before proceeding. Use when a decision requires manager or owner approval.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'What needs to be approved' },
+        description: { type: 'string', description: 'Details of what is being approved and why' },
+        type: { type: 'string', description: 'Category e.g. budget, quote, refund, schedule, hr' },
+      },
+      required: ['title', 'description'],
+    },
+  },
+  {
+    name: 'reply_to_widget_session',
+    description: 'Send a message directly to a customer who is currently in a website widget chat session. Use this when the business owner asks you to reply to or message a specific customer. The sessionId can be found in the briefing summary at the bottom of the widget chat update.',
+    parameters: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'The widget session ID from the briefing card (shown as "Session ID: ..." at the bottom)' },
+        message: { type: 'string', description: 'The message to send to the customer' },
+      },
+      required: ['sessionId', 'message'],
+    },
+  },
+  {
+    name: 'contact_customer',
+    description: 'Smart contact tool: automatically sends via website chat if the customer sent a message within the last 10 minutes, or falls back to email if they have left and an email was collected. Use this as the DEFAULT way to reply to any widget customer. Always prefer this over email when the customer is likely still in the chat.',
+    parameters: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'The widget session ID from the briefing card' },
+        message: { type: 'string', description: 'The message or follow-up to send to the customer' },
+        subject: { type: 'string', description: 'Email subject line (only used when sending by email, optional)' },
+      },
+      required: ['sessionId', 'message'],
+    },
+  },
 ]
 
 @Injectable()
@@ -75,6 +129,8 @@ export class ChatService {
     private readonly crmCtx: CrmContextService,
     private readonly brain: BrainService,
     private readonly knowledge: KnowledgeService,
+    private readonly tasks: TasksService,
+    private readonly email: EmailService,
   ) {}
 
   async findAll(tenantId: string, agentId?: string) {
@@ -120,6 +176,55 @@ export class ChatService {
       where: { conversationId },
       orderBy: { createdAt: 'asc' },
     })
+  }
+
+  // ── Primary (persistent) conversation per agent ───────────────────
+  // One conversation per tenant+agent that never gets deleted.
+  // Rachel posts proactive briefings here when she handles events.
+
+  async getOrCreatePrimaryConversation(tenantId: string, agentId: string, userId?: string) {
+    const existing = await this.prisma.conversation.findFirst({
+      where: { tenantId, agentId, isPrimary: true },
+      include: { agent: { select: { id: true, name: true, role: true, avatar: true } } },
+    })
+    if (existing) return existing
+
+    const agent = await this.prisma.agent.findFirst({ where: { id: agentId, tenantId } })
+    if (!agent) throw new NotFoundException('Agent not found')
+
+    return this.prisma.conversation.create({
+      data: {
+        tenantId,
+        agentId,
+        userId: userId ?? null,
+        channel: 'INTERNAL',
+        title: `Chat with ${agent.name}`,
+        status: 'OPEN',
+        isPrimary: true,
+        metadata: { isPrimaryThread: true } as any,
+      },
+      include: { agent: { select: { id: true, name: true, role: true, avatar: true } } },
+    })
+  }
+
+  // ── Post a proactive briefing from agent into primary thread ──────
+  // Called by webhook handler, widget end-of-session, etc.
+
+  async postBriefing(tenantId: string, agentId: string, content: string, briefingType: string) {
+    const conv = await this.getOrCreatePrimaryConversation(tenantId, agentId)
+    await this.prisma.message.create({
+      data: {
+        conversationId: conv.id,
+        role: 'ASSISTANT',
+        content,
+        briefingType,
+      },
+    })
+    await this.prisma.conversation.update({
+      where: { id: conv.id },
+      data: { updatedAt: new Date() },
+    })
+    return conv.id
   }
 
   async sendMessage(tenantId: string, conversationId: string, content: string) {
@@ -194,7 +299,7 @@ export class ChatService {
     let aiReply = ''
     try {
       if (hasCrmTools) {
-        aiReply = await this.runWithToolDispatch(tenantId, conv.agent, enrichedSystemPrompt, messages, callerCustomerId)
+        aiReply = await this.runWithToolDispatch(tenantId, conv.agent, enrichedSystemPrompt, messages, callerCustomerId, undefined)
       } else {
         aiReply = await this.ai.chat(enrichedSystemPrompt, messages)
       }
@@ -235,9 +340,12 @@ export class ChatService {
     systemPrompt: string,
     messages: { role: 'user' | 'assistant'; content: string }[],
     defaultCustomerId?: string,
+    emit?: (data: object) => void,
   ): Promise<string> {
+    // Always include internal tools so agent can create tasks/approvals/widget replies/emails
+    const internalToolNames = ['create_internal_task', 'request_approval', 'reply_to_widget_session', 'contact_customer']
     const allowedTools = CRM_TOOL_DEFINITIONS.filter(t =>
-      agent.tools?.includes(t.name) || agent.tools?.includes('crm_all')
+      agent.tools?.includes(t.name) || agent.tools?.includes('crm_all') || internalToolNames.includes(t.name)
     )
 
     if (!allowedTools.length) {
@@ -249,7 +357,136 @@ export class ChatService {
       messages,
       allowedTools,
       async (toolName, params) => {
-        // Inject default customer ID when agent already knows the caller
+        // ── Internal task creation ─────────────────────────
+        if (toolName === 'create_internal_task') {
+          try {
+            const task = await this.tasks.create(tenantId, {
+              title: params.title,
+              description: params.description,
+              priority: params.priority ?? 'MEDIUM',
+              agentId: agent.id,
+              dueDate: params.dueDate ? new Date(params.dueDate) : undefined,
+            })
+            emit?.({ action_card: { type: 'task', id: task.id, title: task.title, description: task.description, priority: task.priority, status: task.status } })
+            return `Task created: "${task.title}" (ID: ${task.id})`
+          } catch (err: any) {
+            return `Failed to create task: ${err.message}`
+          }
+        }
+
+        // ── Approval request ───────────────────────────────
+        if (toolName === 'request_approval') {
+          try {
+            const approval = await this.prisma.approval.create({
+              data: {
+                tenantId,
+                agentId: agent.id,
+                type: params.type ?? 'general',
+                title: params.title,
+                description: params.description,
+                status: 'PENDING',
+              },
+            })
+            emit?.({ action_card: { type: 'approval', id: approval.id, title: approval.title, description: approval.description, approvalType: approval.type } })
+            return `Approval request created: "${approval.title}" (ID: ${approval.id})`
+          } catch (err: any) {
+            return `Failed to create approval: ${err.message}`
+          }
+        }
+
+        // ── Smart contact: widget if active, email if idle ─
+        if (toolName === 'contact_customer') {
+          try {
+            const widgetConv = await this.prisma.conversation.findFirst({
+              where: { id: params.sessionId, tenantId, channel: 'WIDGET' },
+              include: {
+                messages: {
+                  where: { role: 'USER' },
+                  orderBy: { createdAt: 'desc' },
+                  take: 1,
+                },
+              },
+            })
+            if (!widgetConv) return `Widget session ${params.sessionId} not found`
+
+            const meta = widgetConv.metadata as any
+            // Use last USER message time (most reliable activity indicator)
+            const lastUserMessage = widgetConv.messages[0]
+            const lastActivity = lastUserMessage?.createdAt ?? widgetConv.updatedAt
+            const idleMs = Date.now() - new Date(lastActivity).getTime()
+            // Active if customer sent a message within the last 10 minutes
+            const isActive = idleMs < 10 * 60 * 1000
+
+            const visitorName = meta?.visitorName || 'Customer'
+            const visitorEmail = meta?.callerEmail
+
+            if (isActive) {
+              // Send via widget chat
+              await this.prisma.message.create({
+                data: { conversationId: params.sessionId, role: 'ASSISTANT', content: params.message },
+              })
+              await this.prisma.conversation.update({
+                where: { id: params.sessionId },
+                data: { updatedAt: new Date() },
+              })
+              this.logger.log(`[contact_customer] Widget reply sent to session ${params.sessionId}`)
+              return `✅ Message delivered to ${visitorName} via website chat: "${params.message}"`
+            } else if (visitorEmail) {
+              // Session idle — fall back to email
+              const tenant = await this.prisma.tenant.findUnique({
+                where: { id: tenantId },
+                select: { settings: true, name: true },
+              })
+              const companyName = (tenant?.settings as any)?.brain?.companyName || tenant?.name || 'Us'
+              const subject = params.subject || `Follow-up from ${companyName}`
+              await this.email.send({
+                tenantId,
+                to: visitorEmail,
+                subject,
+                html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto">
+                  <p>Hi ${visitorName},</p>
+                  <p>${params.message.replace(/\n/g, '<br>')}</p>
+                  <p style="color:#64748b;font-size:13px;margin-top:24px;">— ${companyName}</p>
+                </div>`,
+                text: `Hi ${visitorName},\n\n${params.message}\n\n— ${companyName}`,
+              })
+              this.logger.log(`[contact_customer] Email sent to ${visitorEmail}`)
+              return `✅ Customer left the chat — email sent to ${visitorEmail}: "${params.message}"`
+            } else {
+              return `⚠️ Customer session is idle (${Math.round(idleMs / 60000)} min ago) and no email was collected. Cannot reach them automatically.`
+            }
+          } catch (err: any) {
+            return `Failed to contact customer: ${err.message}`
+          }
+        }
+
+        // ── Reply to widget customer ───────────────────────
+        if (toolName === 'reply_to_widget_session') {
+          try {
+            const widgetConv = await this.prisma.conversation.findFirst({
+              where: { id: params.sessionId, tenantId, channel: 'WIDGET' },
+            })
+            if (!widgetConv) return `Widget session ${params.sessionId} not found`
+
+            await this.prisma.message.create({
+              data: {
+                conversationId: params.sessionId,
+                role: 'ASSISTANT',
+                content: params.message,
+              },
+            })
+            await this.prisma.conversation.update({
+              where: { id: params.sessionId },
+              data: { updatedAt: new Date() },
+            })
+            this.logger.log(`[Widget Reply] sent to session ${params.sessionId}`)
+            return `Message delivered to the customer: "${params.message}"`
+          } catch (err: any) {
+            return `Failed to send widget reply: ${err.message}`
+          }
+        }
+
+        // ── CRM tools ──────────────────────────────────────
         if (!params.customerId && defaultCustomerId) {
           params.customerId = defaultCustomerId
         }
@@ -330,7 +567,7 @@ export class ChatService {
     if (hasCrmTools) {
       // Run tool dispatch loop (non-streaming), then stream the final response
       try {
-        fullReply = await this.runWithToolDispatch(tenantId, conv.agent, systemPrompt, messages)
+        fullReply = await this.runWithToolDispatch(tenantId, conv.agent, systemPrompt, messages, undefined, emit)
       } catch (err: any) {
         fullReply = `I encountered an issue fetching data: ${err?.message ?? 'Unknown error'}.`
       }
@@ -397,8 +634,42 @@ Today is ${today}.
 You ALWAYS act as a real employee of this business — never break character, never say you're an AI unless directly asked.
 Respond in the brand voice described below. Be helpful, concise, and professional.`
 
+    // Always include internal action tool instructions
+    const internalToolsSection = `
+
+INTERNAL ACTION TOOLS (always available):
+You have access to these internal tools you should use proactively:
+
+1. create_internal_task — Use whenever you identify work that needs to be tracked or followed up on.
+   Always create a task rather than just saying "I'll follow up" — actually create it.
+
+2. request_approval — Use when a decision needs sign-off from the business owner or manager.
+   Examples: refund, discount, schedule change, large purchase. Create an approval instead of deciding yourself.
+
+3. contact_customer (USE THIS BY DEFAULT for customer follow-ups) — Smart tool that automatically:
+   - Sends via website CHAT if the customer's last message was within 10 minutes (they are likely still on the page)
+   - Falls back to EMAIL only if the customer's last message was more than 10 minutes ago AND an email was collected
+   ALWAYS call contact_customer. Do not just say you did it — actually invoke the tool.
+   When the owner says "send via chat", "reply via chat", "tell them" — ALWAYS use contact_customer, not email.
+   The tool decides the channel automatically based on recency — you do not need to decide.
+
+4. reply_to_widget_session — Only use this when you are certain the customer is still active in the chat. Otherwise prefer contact_customer.
+
+HANDLING MULTIPLE CONCURRENT CUSTOMER SESSIONS:
+- Each briefing card contains a 🔑 Session ID line and the customer's name.
+- ALWAYS map customer names to session IDs using the briefing cards you received.
+- When the owner says "tell Mac" or "reply to Jorge" — look up the session ID that matches that customer name from your recent briefings.
+- NEVER guess or mix up sessions. If you are unsure which session ID belongs to which customer, ask the owner to clarify.
+- Example: owner says "tell Mac I'll confirm tomorrow" → find the briefing for Mac → use his session ID → call contact_customer with that session ID and the message.
+- The session ID looks like: cmqay1ss80003av2trjxplg86
+
+When chatting with the business owner/manager directly (in the internal chat thread):
+- You will receive briefing updates about customer website chats after they go quiet.
+- Each briefing shows 🔑 Session ID and the customer name prominently.
+- Be proactive: flag things that need attention without being asked.`
+
     const footer = `\nAGENT-SPECIFIC INSTRUCTIONS:\n${agent.prompt}`
 
-    return `${header}${brainContext}${crmContextBlock}${ragContext}${footer}`
+    return `${header}${brainContext}${internalToolsSection}${crmContextBlock}${ragContext}${footer}`
   }
 }

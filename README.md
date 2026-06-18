@@ -12,7 +12,6 @@
 - Redis 7+
 
 ## Quick Start
-123
 ### 1. Clone & Install
 
 ```bash

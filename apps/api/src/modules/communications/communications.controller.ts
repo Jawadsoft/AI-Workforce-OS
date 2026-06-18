@@ -10,7 +10,7 @@ import {
   UseGuards,
   HttpCode,
 } from '@nestjs/common'
-import { Request, Response } from 'express'
+import type { Request, Response } from 'express'
 import { CommunicationsService } from './communications.service'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { CurrentTenant } from '../../common/decorators/tenant.decorator'

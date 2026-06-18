@@ -11,7 +11,7 @@ import {
   HttpCode,
   Patch,
 } from '@nestjs/common'
-import { Response } from 'express'
+import type { Response } from 'express'
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { CurrentTenant } from '../../common/decorators/tenant.decorator'

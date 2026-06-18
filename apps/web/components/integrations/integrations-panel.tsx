@@ -33,7 +33,7 @@ import {
 
 interface ConnectedAccount {
   id: string
-  provider: 'google' | 'microsoft'
+  provider: 'google' | 'microsoft' | 'imap'
   accountEmail: string
   accountName: string | null
   status: 'active' | 'expired' | 'revoked'

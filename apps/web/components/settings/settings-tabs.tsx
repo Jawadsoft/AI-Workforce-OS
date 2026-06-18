@@ -1,8 +1,9 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Brain, Building2, Key, Mail, Bell, Shield, Code2 } from 'lucide-react'
+import { Brain, Building2, Key, Mail, Bell, Shield, Code2, Plug2 } from 'lucide-react'
 import { BrainPanel } from '@/components/brain/brain-panel'
+import { IntegrationsPanel } from '@/components/integrations/integrations-panel'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
 
@@ -11,6 +12,7 @@ const TABS = [
   { id: 'company', label: 'Company', icon: Building2 },
   { id: 'widget', label: 'Chat Widget', icon: Code2 },
   { id: 'email', label: 'Email / SMTP', icon: Mail },
+  { id: 'integrations', label: 'Integrations', icon: Plug2 },
   { id: 'api', label: 'API Keys', icon: Key },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -18,6 +20,22 @@ const TABS = [
 
 export function SettingsTabs() {
   const [active, setActive] = useState('brain')
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const tab = params.get('tab')
+      if (tab && TABS.some(t => t.id === tab)) {
+        setActive(tab)
+        const connected = params.get('connected')
+        const error = params.get('error')
+        if (connected) toast.success(`${connected.charAt(0).toUpperCase() + connected.slice(1)} account connected successfully!`)
+        if (error) toast.error(`Connection failed: ${decodeURIComponent(error)}`)
+        // Clean URL
+        window.history.replaceState({}, '', window.location.pathname)
+      }
+    }
+  }, [])
 
   return (
     <div className="flex gap-6">
@@ -45,6 +63,7 @@ export function SettingsTabs() {
         {active === 'company' && <CompanySettings />}
         {active === 'widget' && <WidgetSettings />}
         {active === 'email' && <EmailSettings />}
+        {active === 'integrations' && <IntegrationsPanel />}
         {active === 'api' && <APISettings />}
         {active === 'security' && <SecuritySettings />}
         {active === 'notifications' && <NotificationSettings />}
@@ -192,6 +211,22 @@ function EmailSettings() {
               <option value="25">25 - Plain</option>
             </select>
           </div>
+        </div>
+
+        <div className="flex items-center justify-between p-3 rounded-lg border border-border">
+          <div>
+            <p className="text-sm font-medium">SMTP Secure (SSL/TLS)</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Enable for port 465 (SSL). Leave off for port 587 (STARTTLS) or 25.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setForm((f) => ({ ...f, smtpSecure: f.smtpSecure === 'true' ? 'false' : 'true' }))}
+            className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${form.smtpSecure === 'true' ? 'bg-primary' : 'bg-muted-foreground/30'}`}
+          >
+            <div className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${form.smtpSecure === 'true' ? 'left-6' : 'left-1'}`} />
+          </button>
         </div>
 
         <div className="grid grid-cols-2 gap-4">

@@ -227,6 +227,16 @@ export class ChatService {
     return conv.id
   }
 
+  /** Post an email briefing to any active primary agent thread for the tenant */
+  async postEmailBriefing(tenantId: string, content: string): Promise<void> {
+    const agent = await this.prisma.agent.findFirst({
+      where: { tenantId, status: 'ACTIVE' },
+      orderBy: { createdAt: 'asc' },
+    })
+    if (!agent) return
+    await this.postBriefing(tenantId, agent.id, content, 'email_briefing')
+  }
+
   async sendMessage(tenantId: string, conversationId: string, content: string) {
     const conv = await this.prisma.conversation.findFirst({
       where: { id: conversationId, tenantId },

@@ -3,11 +3,23 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Send, MessageSquare, Loader2, Zap, Globe } from 'lucide-react'
+import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle } from 'lucide-react'
 import { CRMRecordCard } from './crm-record-card'
 import { ChatActionCard, type ActionCard } from './action-cards'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1'
+
+type FilterTab = 'all' | 'chat' | 'email' | 'calls' | 'whatsapp' | 'website' | 'crm'
+
+const FILTER_TABS: { id: FilterTab; label: string; icon: React.ReactNode; match: (b?: string | null) => boolean; comingSoon?: boolean }[] = [
+  { id: 'all',      label: 'All',        icon: <LayoutList className="w-3.5 h-3.5" />,    match: () => true },
+  { id: 'chat',     label: 'Agent Chat', icon: <MessageSquare className="w-3.5 h-3.5" />, match: (b) => !b },
+  { id: 'email',    label: 'Emails',     icon: <Mail className="w-3.5 h-3.5" />,          match: (b) => b === 'email_briefing' },
+  { id: 'calls',    label: 'Calls',      icon: <Phone className="w-3.5 h-3.5" />,         match: (b) => b === 'call_briefing',             comingSoon: true },
+  { id: 'whatsapp', label: 'WhatsApp',   icon: <MessageCircle className="w-3.5 h-3.5" />, match: (b) => b === 'whatsapp_briefing', comingSoon: true },
+  { id: 'website',  label: 'Website',    icon: <Globe className="w-3.5 h-3.5" />,         match: (b) => b === 'widget' },
+  { id: 'crm',      label: 'CRM',        icon: <Zap className="w-3.5 h-3.5" />,           match: (b) => !!b && !['email_briefing','call_briefing','whatsapp_briefing','widget'].includes(b) },
+]
 
 interface Message {
   id: string
@@ -59,6 +71,7 @@ export function ChatPage() {
   const [sending, setSending] = useState(false)
   const [streamingMsg, setStreamingMsg] = useState<string | null>(null)
   const [pendingCards, setPendingCards] = useState<ActionCard[]>([])
+  const [activeFilter, setActiveFilter] = useState<FilterTab>('chat')
   const abortRef = useRef<AbortController | null>(null)
 
   // ── Load active agents ─────────────────────────────────────────────
@@ -80,6 +93,7 @@ export function ChatPage() {
       setConversationId(primaryQuery.data.id)
       setPendingCards([])
       setStreamingMsg(null)
+      setActiveFilter('chat')
     }
   }, [primaryQuery.data?.id])
 
@@ -91,10 +105,22 @@ export function ChatPage() {
     refetchInterval: 5000, // Poll for new briefings
   })
 
-  const messages: Message[] = [
+  const allMessages: Message[] = [
     ...dbMessages,
     ...(streamingMsg !== null ? [{ id: '__stream__', role: 'ASSISTANT' as const, content: streamingMsg, createdAt: new Date().toISOString(), streaming: true }] : []),
   ]
+
+  const activeTab = FILTER_TABS.find(t => t.id === activeFilter) ?? FILTER_TABS[0]
+  const messages = allMessages.filter(m => {
+    // Streaming message always shows
+    if (m.id === '__stream__') return activeFilter === 'all' || activeFilter === 'chat'
+    return activeTab.match(m.briefingType)
+  })
+
+  // Count per tab (excluding streaming)
+  const tabCounts = Object.fromEntries(
+    FILTER_TABS.map(t => [t.id, dbMessages.filter((m: Message) => t.match(m.briefingType)).length])
+  )
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -218,21 +244,59 @@ export function ChatPage() {
         ) : (
           <div className="flex-1 flex flex-col min-w-0">
             {/* Header */}
-            <div className="px-4 py-3 border-b border-border flex items-center gap-3">
-              {selectedAgent?.avatar ? (
-                <img src={selectedAgent.avatar} alt={selectedAgent.name} className="w-8 h-8 rounded-full object-cover" />
-              ) : (
-                <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary">
-                  {selectedAgent?.name?.[0] ?? 'A'}
+            <div className="border-b border-border">
+              <div className="px-4 py-3 flex items-center gap-3">
+                {selectedAgent?.avatar ? (
+                  <img src={selectedAgent.avatar} alt={selectedAgent.name} className="w-8 h-8 rounded-full object-cover" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary">
+                    {selectedAgent?.name?.[0] ?? 'A'}
+                  </div>
+                )}
+                <div className="flex-1">
+                  <p className="text-sm font-semibold">{selectedAgent?.name}</p>
+                  <p className="text-xs text-muted-foreground">{selectedAgent?.role}</p>
                 </div>
-              )}
-              <div className="flex-1">
-                <p className="text-sm font-semibold">{selectedAgent?.name}</p>
-                <p className="text-xs text-muted-foreground">{selectedAgent?.role}</p>
+                <div className="flex items-center gap-1.5 text-xs text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                  Active
+                </div>
               </div>
-              <div className="flex items-center gap-1.5 text-xs text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                Active
+
+              {/* Filter tabs */}
+              <div className="flex items-center gap-0.5 px-3 pb-0 overflow-x-auto">
+                {FILTER_TABS.map(tab => {
+                  const count = tabCounts[tab.id] ?? 0
+                  const isActive = activeFilter === tab.id
+                  // Hide tabs with zero messages (except All, Chat, and comingSoon tabs)
+                  if (count === 0 && tab.id !== 'all' && tab.id !== 'chat' && !tab.comingSoon) return null
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => !tab.comingSoon && setActiveFilter(tab.id)}
+                      title={tab.comingSoon ? 'Coming soon' : undefined}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
+                        tab.comingSoon
+                          ? 'border-transparent text-muted-foreground/50 cursor-default'
+                          : isActive
+                            ? 'border-primary text-primary'
+                            : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border'
+                      }`}
+                    >
+                      {tab.icon}
+                      {tab.label}
+                      {tab.comingSoon ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground/70 font-medium">Soon</span>
+                      ) : tab.id !== 'all' && count > 0 ? (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+                          isActive ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'
+                        }`}>
+                          {count}
+                        </span>
+                      ) : null}
+                    </button>
+                  )
+                })}
               </div>
             </div>
 
@@ -241,12 +305,27 @@ export function ChatPage() {
               {messages.length === 0 && !streamingMsg && (
                 <div className="text-center py-16">
                   <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary mx-auto mb-4">
-                    {selectedAgent?.name?.[0] ?? 'A'}
+                    {activeFilter === 'email' ? '📧' : activeFilter === 'calls' ? '📞' : activeFilter === 'website' ? '🌐' : activeFilter === 'crm' ? '⚡' : (selectedAgent?.name?.[0] ?? 'A')}
                   </div>
-                  <p className="text-sm font-medium">{selectedAgent?.name} is ready</p>
-                  <p className="text-xs text-muted-foreground mt-1 max-w-xs mx-auto">
-                    Ask anything, assign tasks, or wait — {selectedAgent?.name} will update you here when they handle things on your behalf.
-                  </p>
+                  {activeFilter === 'all' || activeFilter === 'chat' ? (
+                    <>
+                      <p className="text-sm font-medium">{selectedAgent?.name} is ready</p>
+                      <p className="text-xs text-muted-foreground mt-1 max-w-xs mx-auto">
+                        Ask anything, assign tasks, or wait — {selectedAgent?.name} will update you here when they handle things on your behalf.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-medium">No {activeTab.label.toLowerCase()} updates yet</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {activeFilter === 'email' && 'Email scan results will appear here.'}
+                        {activeFilter === 'calls' && 'Inbound call briefings will appear here.'}
+                        {activeFilter === 'whatsapp' && 'WhatsApp messages will appear here once integrated.'}
+                        {activeFilter === 'website' && 'Website chat updates will appear here.'}
+                        {activeFilter === 'crm' && 'CRM events (leads, jobs, proposals) will appear here.'}
+                      </p>
+                    </>
+                  )}
                 </div>
               )}
 

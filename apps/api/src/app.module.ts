@@ -22,11 +22,14 @@ import { PublicChatModule } from './modules/public-chat/public-chat.module'
 import { PrismaModule } from './common/prisma/prisma.module'
 import { QueueModule } from './queue/queue.module'
 import { RealtimeModule } from './realtime/realtime.module'
+import { IntegrationsModule } from './modules/integrations/integrations.module'
+import { ScheduleModule } from '@nestjs/schedule'
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
+    ScheduleModule.forRoot(),
     PrismaModule,
     QueueModule,
     RealtimeModule,
@@ -48,6 +51,7 @@ import { RealtimeModule } from './realtime/realtime.module'
     EmailModule,
     SuperAdminModule,
     PublicChatModule,
+    IntegrationsModule,
   ],
 })
 export class AppModule {}

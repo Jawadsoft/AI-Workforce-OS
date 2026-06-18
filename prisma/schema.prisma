@@ -29,10 +29,13 @@ model Tenant {
   approvals     Approval[]
   knowledgeDocs KnowledgeDocument[]
   documents     GeneratedDocument[]
-  crmConnections CRMConnection[]
-  webhooks      Webhook[]
-  auditLogs     AuditLog[]
-  commLogs      CommunicationLog[]
+  crmConnections    CRMConnection[]
+  webhooks          Webhook[]
+  auditLogs         AuditLog[]
+  commLogs          CommunicationLog[]
+  connectedAccounts ConnectedAccount[]
+  emailAgentRules   EmailAgentRule[]
+  processedEmails   ProcessedEmail[]
 }
 
 // ─────────────────────────────────────────────
@@ -85,6 +88,7 @@ model Agent {
   approvals     Approval[]
   knowledgeDocs AgentKnowledge[]
   crmAccess     AgentCRMAccess[]
+  emailRules    EmailAgentRule[]
 }
 
 model AgentTemplate {
@@ -382,6 +386,76 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────
+// INTEGRATIONS — CONNECTED ACCOUNTS
+// ─────────────────────────────────────────────
+
+model ConnectedAccount {
+  id                   String   @id @default(cuid())
+  tenantId             String
+  provider             String   // 'google' | 'microsoft'
+  accountEmail         String
+  accountName          String?
+  encryptedAccessToken String   @db.Text
+  encryptedRefreshToken String? @db.Text
+  scopes               String[] // granted scopes
+  expiresAt            DateTime?
+  status               String   @default("active") // active | expired | revoked
+  metadata             Json     @default("{}") // imap host/port/secure, display name, etc.
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  processedEmails ProcessedEmail[]
+
+  @@unique([tenantId, provider, accountEmail])
+}
+
+model EmailAgentRule {
+  id                  String   @id @default(cuid())
+  tenantId            String
+  emailType           String   // lead_inquiry | complaint | quote_request | etc.
+  mode                String   @default("notify_only") // auto_reply | auto_draft | approval_required | notify_only | block
+  replyTemplate       String?  @db.Text
+  confidenceThreshold Int      @default(80)
+  isActive            Boolean  @default(true)
+  assignedAgentId     String?  // which agent writes/sends replies for this email type
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenant        Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignedAgent Agent? @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, emailType])
+}
+
+model ProcessedEmail {
+  id                 String   @id @default(cuid())
+  tenantId           String
+  connectedAccountId String
+  gmailMessageId     String
+  threadId           String?
+  fromEmail          String
+  fromName           String?
+  subject            String?
+  receivedAt         DateTime
+  classification     String?  // email type
+  confidence         Int?
+  extractedData      Json     @default("{}")
+  action             String?  // replied | drafted | archived | flagged | escalated | blocked
+  status             String   @default("pending") // pending | actioned | skipped | failed
+  draftReplyId       String?  // Gmail draft ID if draft was created
+  approvalId         String?
+  taskId             String?
+  errorMessage       String?
+  createdAt          DateTime @default(now())
+
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([connectedAccountId, gmailMessageId])
 }
 
 // ─────────────────────────────────────────────

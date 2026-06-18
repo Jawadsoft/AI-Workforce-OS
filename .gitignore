@@ -1,42 +1,109 @@
+# ─────────────────────────────────────────────
 # Dependencies
+# ─────────────────────────────────────────────
 node_modules/
 .pnpm-store/
 package-lock.json
+yarn.lock
 
+# ─────────────────────────────────────────────
 # Build outputs
+# ─────────────────────────────────────────────
 .next/
 dist/
 build/
 out/
+.output/
+*.tsbuildinfo
 
-# Environment variables
+# ─────────────────────────────────────────────
+# Environment variables  ← NEVER commit these
+# ─────────────────────────────────────────────
 .env
 .env.local
 .env.*.local
+.env.production
+.env.staging
+Copy.env
+*.env.copy
 
+# ─────────────────────────────────────────────
 # Turbo
+# ─────────────────────────────────────────────
 .turbo/
 
+# ─────────────────────────────────────────────
 # Prisma
+# ─────────────────────────────────────────────
 prisma/generated/
 
+# ─────────────────────────────────────────────
 # Logs
+# ─────────────────────────────────────────────
 *.log
 npm-debug.log*
 pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+logs/
 
-# OS
+# ─────────────────────────────────────────────
+# OS files
+# ─────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
-# IDE
+# ─────────────────────────────────────────────
+# IDE / Editor
+# ─────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
-# Testing
+# ─────────────────────────────────────────────
+# Testing & Coverage
+# ─────────────────────────────────────────────
 coverage/
+.nyc_output/
+test-results/
+playwright-report/
 
-# Uploads (local dev)
+# ─────────────────────────────────────────────
+# Uploads (local dev only)
+# ─────────────────────────────────────────────
 uploads/
+public/uploads/
+
+# ─────────────────────────────────────────────
+# Scripts output / temp files
+# ─────────────────────────────────────────────
+scripts/*.output.js
+scripts/temp/
+tmp/
+temp/
+
+# ─────────────────────────────────────────────
+# Certificates (local HTTPS dev)
+# ─────────────────────────────────────────────
+*.pem
+*.key
+*.crt
+*.p12
+certs/
+
+# ─────────────────────────────────────────────
+# Misc
+# ─────────────────────────────────────────────
+*.tgz
+*.zip
+.cache/
+.parcel-cache/

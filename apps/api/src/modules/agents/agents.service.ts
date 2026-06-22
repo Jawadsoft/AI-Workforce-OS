@@ -46,6 +46,7 @@ export class AgentsService {
 
   update(tenantId: string, id: string, data: Partial<{
     name: string
+    role: string
     prompt: string
     tools: string[]
     permissions: string[]
@@ -89,6 +90,22 @@ export class AgentsService {
   async installTemplate(tenantId: string, templateId: string) {
     const template = await this.prisma.agentTemplate.findUnique({ where: { id: templateId } })
     if (!template) throw new NotFoundException('Template not found')
+
+    // Return existing active agent if already installed — prevents duplicates
+    const existing = await this.prisma.agent.findFirst({
+      where: { tenantId, templateId },
+    })
+    if (existing) {
+      // Re-activate if it was deactivated
+      if (existing.status !== 'ACTIVE') {
+        return this.prisma.agent.update({
+          where: { id: existing.id },
+          data: { status: 'ACTIVE' },
+        })
+      }
+      return existing
+    }
+
     return this.prisma.agent.create({
       data: {
         tenantId,

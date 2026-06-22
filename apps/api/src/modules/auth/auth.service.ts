@@ -20,11 +20,11 @@ export class AuthService {
     const slug = data.companyName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
 
     const tenant = await this.prisma.tenant.create({
-      data: { name: data.companyName, slug: `${slug}-${Date.now()}` },
+      data: { name: data.companyName, slug: `${slug}-${Date.now()}`, isApproved: false },
     })
 
     const hashed = await bcrypt.hash(data.password, 12)
-    const user = await this.prisma.user.create({
+    await this.prisma.user.create({
       data: {
         email: data.email,
         name: data.name,
@@ -34,17 +34,27 @@ export class AuthService {
       },
     })
 
-    return this.signToken(user.id, user.tenantId, user.role)
+    return {
+      pending: true,
+      message: 'Your account has been created and is awaiting approval from our team. We will notify you once your account is active.',
+    }
   }
 
   async login(email: string, password: string) {
-    const user = await this.prisma.user.findUnique({ where: { email } })
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      include: { tenant: { select: { isApproved: true } } },
+    })
     if (!user) throw new UnauthorizedException('Invalid credentials')
 
     const valid = await bcrypt.compare(password, user.password)
     if (!valid) throw new UnauthorizedException('Invalid credentials')
 
     if (!user.isActive) throw new UnauthorizedException('Account is deactivated')
+
+    if (user.role !== 'SUPER_ADMIN' && !user.tenant?.isApproved) {
+      throw new UnauthorizedException('Your account is pending approval. Please wait for an admin to activate your account.')
+    }
 
     return this.signToken(user.id, user.tenantId, user.role)
   }

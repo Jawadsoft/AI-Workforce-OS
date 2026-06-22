@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Query, UseGuards, Res, Headers, Inject, forwardRef } from '@nestjs/common'
+import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, Res, Headers, Inject, forwardRef } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { IsString, IsOptional } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
@@ -105,5 +105,11 @@ export class ChatController {
     @Param('agentId') agentId: string,
   ) {
     return this.service.getOrCreatePrimaryConversation(tenantId, agentId, user.id)
+  }
+
+  @Delete(':id/messages')
+  @ApiOperation({ summary: 'Clear all messages in a conversation' })
+  clearMessages(@CurrentTenant() tenantId: string, @Param('id') id: string) {
+    return this.service.clearMessages(tenantId, id)
   }
 }

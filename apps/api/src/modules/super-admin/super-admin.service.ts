@@ -41,6 +41,7 @@ export class SuperAdminService {
       slug: t.slug,
       industry: t.industry,
       isActive: t.isActive,
+      isApproved: t.isApproved,
       createdAt: t.createdAt,
       owner: t.users[0] ?? null,
       stats: {
@@ -49,6 +50,45 @@ export class SuperAdminService {
         users: t._count.users,
       },
     }))
+  }
+
+  async listPendingTenants() {
+    const tenants = await this.prisma.tenant.findMany({
+      where: { isApproved: false },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        users: {
+          where: { role: 'TENANT_OWNER' },
+          select: { id: true, name: true, email: true },
+          take: 1,
+        },
+      },
+    })
+
+    return tenants.map(t => ({
+      id: t.id,
+      name: t.name,
+      slug: t.slug,
+      industry: t.industry,
+      createdAt: t.createdAt,
+      owner: t.users[0] ?? null,
+    }))
+  }
+
+  async approveTenant(id: string) {
+    const tenant = await this.prisma.tenant.findUnique({ where: { id } })
+    if (!tenant) throw new NotFoundException('Tenant not found')
+    await this.prisma.tenant.update({ where: { id }, data: { isApproved: true, isActive: true } })
+    await this.prisma.user.updateMany({ where: { tenantId: id }, data: { isActive: true } })
+    return { success: true, message: 'Tenant approved and activated' }
+  }
+
+  async rejectTenant(id: string) {
+    const tenant = await this.prisma.tenant.findUnique({ where: { id } })
+    if (!tenant) throw new NotFoundException('Tenant not found')
+    await this.prisma.user.updateMany({ where: { tenantId: id }, data: { isActive: false } })
+    await this.prisma.tenant.delete({ where: { id } })
+    return { success: true, message: 'Tenant rejected and removed' }
   }
 
   async getTenant(id: string) {

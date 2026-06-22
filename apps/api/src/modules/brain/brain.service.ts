@@ -13,12 +13,39 @@ const VALID_INDUSTRIES = [
 
 const VALID_CRMS = ['HUBSPOT', 'SALESFORCE', 'JOBNIMBUS', 'LARAVEL', 'ZOHO', 'CUSTOM', 'NONE']
 
-// Pages most likely to have rich business info — try these paths
+// Keywords that indicate a page has useful business knowledge
+const HIGH_VALUE_KEYWORDS = [
+  'about', 'service', 'solution', 'what-we-do', 'offering',
+  'pricing', 'price', 'rate', 'cost', 'quote', 'package',
+  'faq', 'help', 'question',
+  'team', 'staff', 'people', 'meet',
+  'how', 'process', 'work',
+  'area', 'location', 'coverage', 'where',
+  'testimonial', 'review', 'case-study', 'portfolio',
+  'contact', 'get-in-touch',
+]
+
+// Pages most likely to have rich business info — tried in priority order
 const DISCOVERY_PATHS = [
-  '/about', '/about-us', '/who-we-are', '/our-story', '/company',
-  '/services', '/our-services', '/what-we-do', '/solutions',
-  '/contact', '/contact-us', '/get-in-touch',
-  '/home',
+  // Services
+  '/services', '/our-services', '/what-we-do', '/solutions', '/offerings',
+  '/cleaning-services', '/maintenance-services', '/handyman-services',
+  // About
+  '/about', '/about-us', '/who-we-are', '/our-story', '/company', '/our-company',
+  // Pricing
+  '/pricing', '/prices', '/rates', '/cost', '/how-much', '/price-list',
+  // FAQ
+  '/faq', '/faqs', '/frequently-asked-questions', '/questions', '/help',
+  // Team
+  '/team', '/our-team', '/staff', '/meet-the-team', '/people',
+  // Process / How it works
+  '/how-it-works', '/process', '/our-process', '/how-we-work',
+  // Areas
+  '/areas', '/areas-we-cover', '/locations', '/service-areas', '/coverage',
+  // Social proof
+  '/testimonials', '/reviews', '/case-studies', '/portfolio', '/gallery',
+  // Contact
+  '/contact', '/contact-us', '/get-in-touch', '/get-a-quote', '/free-quote',
 ]
 
 @Injectable()
@@ -34,9 +61,9 @@ export class BrainService {
 
   async enrich(tenantId: string, websiteUrl: string) {
     const baseUrl = this.normalizeUrl(websiteUrl)
-    this.logger.log(`Enriching tenant ${tenantId} from ${baseUrl}`)
+    this.logger.log(`Deep enriching tenant ${tenantId} from ${baseUrl}`)
 
-    // Step 1: Scrape homepage + key sub-pages
+    // Step 1: Scrape homepage + sitemap-discovered + known sub-pages
     let scraped: Awaited<ReturnType<typeof this.scrapeMultiplePages>>
     try {
       scraped = await this.scrapeMultiplePages(baseUrl)
@@ -44,7 +71,7 @@ export class BrainService {
       throw new BadRequestException(`Could not reach website: ${err.message}`)
     }
 
-    // Step 2: AI extraction (richer schema)
+    // Step 2: AI extraction (deep schema)
     const brain = await this.extractWithAI(scraped)
 
     // Step 3: Persist to tenant settings
@@ -72,12 +99,17 @@ export class BrainService {
       },
     })
 
-    // Auto-apply industry CRM defaults to existing agents
+    // Step 4: Auto-apply industry CRM defaults to existing agents
     if (brain.industry && VALID_INDUSTRIES.includes(brain.industry)) {
       await this.applyIndustryCRMDefaults(tenantId, brain.industry).catch(err =>
         this.logger.warn(`Could not auto-apply industry CRM defaults: ${err.message}`)
       )
     }
+
+    // Step 5: Auto-create knowledge documents from deep brain data
+    await this.createKnowledgeDocs(tenantId, brain).catch(err =>
+      this.logger.warn(`Could not auto-create knowledge docs: ${err.message}`)
+    )
 
     return {
       ...brain,
@@ -261,6 +293,7 @@ export class BrainService {
     if (brain.industry || settings.industry) identity.push(`Industry: ${brain.industry || settings.industry}`)
     if (brain.yearsInBusiness) identity.push(`In business: ${brain.yearsInBusiness} years`)
     if (brain.teamSize) identity.push(`Team size: ${brain.teamSize}`)
+    if (brain.openingHours) identity.push(`Opening hours: ${brain.openingHours}`)
     if (identity.length) sections.push(`COMPANY IDENTITY:\n${identity.map(l => `  • ${l}`).join('\n')}`)
 
     // ── About the business ──
@@ -269,15 +302,39 @@ export class BrainService {
     }
 
     // ── Services ──
-    const services = brain.services?.length ? brain.services : settings.services?.split(',').map((s: string) => s.trim()).filter(Boolean)
-    if (services?.length) {
-      sections.push(`SERVICES WE OFFER:\n${services.map((s: string) => `  • ${s}`).join('\n')}`)
+    if (brain.serviceDetails?.length) {
+      const lines = brain.serviceDetails.map((s: any) => {
+        const parts = [`  • ${s.name}`]
+        if (s.description) parts.push(`: ${s.description}`)
+        if (s.price) parts.push(` (${s.price})`)
+        return parts.join('')
+      })
+      sections.push(`SERVICES WE OFFER:\n${lines.join('\n')}`)
+    } else {
+      const services = brain.services?.length ? brain.services : settings.services?.split(',').map((s: string) => s.trim()).filter(Boolean)
+      if (services?.length) {
+        sections.push(`SERVICES WE OFFER:\n${services.map((s: string) => `  • ${s}`).join('\n')}`)
+      }
+    }
+
+    // ── Pricing table ──
+    const pricingRows = brain.pricingTable?.length ? brain.pricingTable : []
+    if (pricingRows.length) {
+      const lines = pricingRows.map((p: any) => {
+        let line = `  • ${p.item}: ${p.price}`
+        if (p.includes) line += ` — includes: ${p.includes}`
+        return line
+      })
+      sections.push(`PRICING:\n${lines.join('\n')}`)
+    } else {
+      const pricing = mc.priceRange || brain.pricingSignals
+      if (pricing) sections.push(`PRICING INFORMATION:\n  ${pricing}`)
     }
 
     // ── Service areas ──
     const areas = brain.serviceAreas?.length ? brain.serviceAreas : settings.locations?.split(',').map((s: string) => s.trim()).filter(Boolean)
-    if (areas?.length) {
-      sections.push(`SERVICE AREAS:\n  ${areas.join(', ')}`)
+    if (areas?.filter((a: string) => a && a !== 'null').length) {
+      sections.push(`SERVICE AREAS:\n  ${areas.filter((a: string) => a && a !== 'null').join(', ')}`)
     }
 
     // ── Contact info ──
@@ -301,14 +358,40 @@ export class BrainService {
     if (mc.uniqueSellingPoints) usps.push(mc.uniqueSellingPoints)
     if (usps.length) sections.push(`WHAT MAKES US DIFFERENT:\n${usps.map(u => `  ✓ ${u}`).join('\n')}`)
 
+    // ── Guarantees ──
+    if (brain.guarantees?.length) {
+      sections.push(`OUR GUARANTEES:\n${brain.guarantees.map((g: string) => `  ✓ ${g}`).join('\n')}`)
+    }
+
+    // ── Products & equipment used ──
+    if (brain.productsUsed?.length) {
+      sections.push(`PRODUCTS & EQUIPMENT WE USE:\n  ${brain.productsUsed.join(', ')}`)
+    }
+
     // ── Certifications ──
     if (brain.certifications?.length) {
       sections.push(`CERTIFICATIONS & CREDENTIALS:\n  ${brain.certifications.join(', ')}`)
     }
 
-    // ── Pricing ──
-    const pricing = mc.priceRange || brain.pricingSignals
-    if (pricing) sections.push(`PRICING INFORMATION:\n  ${pricing}`)
+    // ── How we work (process) ──
+    if (brain.processSteps?.length) {
+      const steps = brain.processSteps.map((s: any) => `  ${s.step}. ${s.title}${s.description ? ': ' + s.description : ''}`)
+      sections.push(`HOW WE WORK:\n${steps.join('\n')}`)
+    }
+
+    // ── Team members ──
+    if (brain.teamMembers?.length) {
+      const members = brain.teamMembers.map((m: any) => `  • ${m.name}${m.role ? ' — ' + m.role : ''}`)
+      sections.push(`OUR TEAM:\n${members.join('\n')}`)
+    }
+
+    // ── Customer testimonials ──
+    if (brain.testimonials?.length) {
+      const quotes = brain.testimonials.slice(0, 3).map((t: any) =>
+        `  "${t.quote}"${t.author ? ` — ${t.author}` : ''}${t.rating ? ` (${t.rating}★)` : ''}`
+      )
+      sections.push(`WHAT CUSTOMERS SAY:\n${quotes.join('\n')}`)
+    }
 
     // ── Competitors ──
     if (mc.competitors) sections.push(`COMPARED TO COMPETITORS:\n  ${mc.competitors}`)
@@ -330,50 +413,72 @@ export class BrainService {
     return `\n\n${'='.repeat(60)}\nBUSINESS KNOWLEDGE BASE\n(You work here — use this in every response to sound like a real employee)\n${'='.repeat(60)}\n\n${sections.join('\n\n')}\n${'='.repeat(60)}`
   }
 
-  // ── Private: multi-page scraper ───────────────────────────────────
+  // ── Private: deep multi-page scraper ─────────────────────────────
 
   private async scrapeMultiplePages(baseUrl: string) {
-    const pages: { url: string; content: string; title: string; h1s: string[]; h2s: string[]; phone: string; email: string; address: string; metaDesc: string; links: string[] }[] = []
+    const pages: { url: string; content: string; title: string; h1s: string[]; h2s: string[]; phone: string; email: string; address: string; metaDesc: string; links: string[]; structuredData: any[] }[] = []
+    const scrapedUrls = new Set<string>()
 
-    // Step 1: Scrape homepage and discover internal links
+    // Step 1: Scrape homepage
     const homepage = await this.scrapePage(baseUrl)
     pages.push({ url: baseUrl, ...homepage })
+    scrapedUrls.add(baseUrl)
 
-    // Step 2: Discover key sub-pages from homepage nav links
-    const discovered = this.discoverSubPages(baseUrl, homepage.links)
+    // Step 2: Try sitemap for comprehensive URL discovery
+    const sitemapUrls = await this.discoverFromSitemap(baseUrl)
+    this.logger.log(`Sitemap discovered ${sitemapUrls.length} URLs`)
 
-    // Step 3: Scrape up to 4 additional pages in parallel
-    const toScrape = discovered.slice(0, 4)
-    const subResults = await Promise.allSettled(
-      toScrape.map((url) => this.scrapePage(url).then((p) => ({ url, ...p })))
-    )
+    // Step 3: Discover from homepage nav links
+    const navUrls = this.discoverSubPages(baseUrl, homepage.links)
 
-    for (const r of subResults) {
-      if (r.status === 'fulfilled') {
-        pages.push(r.value)
-        this.logger.log(`Scraped sub-page: ${r.value.url}`)
+    // Merge: prioritise nav URLs, then fill from sitemap, deduplicate
+    const allCandidates = [...new Set([...navUrls, ...sitemapUrls])]
+      .filter(u => !scrapedUrls.has(u))
+
+    // Step 4: Scrape up to 12 additional pages in batches of 4
+    const toScrape = allCandidates.slice(0, 12)
+    const batches: string[][] = []
+    for (let i = 0; i < toScrape.length; i += 4) batches.push(toScrape.slice(i, i + 4))
+
+    for (const batch of batches) {
+      const results = await Promise.allSettled(
+        batch.map((url) => this.scrapePage(url).then((p) => ({ url, ...p })))
+      )
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          pages.push(r.value)
+          scrapedUrls.add(r.value.url)
+          this.logger.log(`Scraped: ${r.value.url}`)
+        }
       }
     }
 
-    // Combine all page content
+    // Combine all page content — increased limit for deep analysis
     const combinedText = pages
       .map((p) => `=== ${p.url} ===\n${p.content}`)
       .join('\n\n')
-      .slice(0, 18000) // Keep within GPT context limits
+      .slice(0, 45000)
 
     const allH1s = pages.flatMap((p) => p.h1s ?? []).filter(Boolean)
     const allH2s = pages.flatMap((p) => p.h2s ?? []).filter(Boolean)
+    const allStructuredData = pages.flatMap((p) => p.structuredData ?? [])
+
+    // Extract contact details across all pages (first found wins)
+    const phone = pages.find(p => p.phone)?.phone ?? ''
+    const email = pages.find(p => p.email)?.email ?? ''
+    const address = pages.find(p => p.address)?.address ?? ''
 
     return {
       baseUrl,
       title: homepage.title,
       metaDesc: homepage.metaDesc,
-      phone: homepage.phone,
-      email: homepage.email,
-      address: homepage.address,
-      h1s: [...new Set(allH1s)].slice(0, 15),
-      h2s: [...new Set(allH2s)].slice(0, 20),
+      phone,
+      email,
+      address,
+      h1s: [...new Set(allH1s)].slice(0, 30),
+      h2s: [...new Set(allH2s)].slice(0, 50),
       combinedText,
+      structuredData: allStructuredData,
       pagesScraped: pages.map((p) => p.url),
     }
   }
@@ -383,9 +488,9 @@ export class BrainService {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Language': 'en-GB,en;q=0.9',
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(12000),
     })
 
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
@@ -393,72 +498,185 @@ export class BrainService {
     const html = await res.text()
     const $ = cheerio.load(html)
 
-    // Extract contact details BEFORE removing footer/header (they live there)
-    const phoneRegex = /(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})/g
+    // ── Extract schema.org structured data (ld+json) ──────────────
+    const structuredData: any[] = []
+    $('script[type="application/ld+json"]').each((_, el) => {
+      try {
+        const raw = $(el).html() ?? ''
+        const parsed = JSON.parse(raw)
+        // Handle both single objects and @graph arrays
+        const items = Array.isArray(parsed) ? parsed : (parsed['@graph'] ? parsed['@graph'] : [parsed])
+        structuredData.push(...items)
+      } catch {
+        // ignore malformed ld+json
+      }
+    })
+
+    // ── Extract contact details BEFORE removing footer ────────────
+    // UK phone regex (covers 01xxx, 07xxx, 0800, +44 formats)
+    const phoneRegex = /(\+?44\s?|0)(\d[\s\-]?){9,10}/g
     const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g
     const fullText = $.text()
     const phones = fullText.match(phoneRegex) ?? []
-    const emails = fullText.match(emailRegex)?.filter(e => !e.includes('example') && !e.includes('your@')) ?? []
+    const emails = fullText.match(emailRegex)?.filter(e =>
+      !e.includes('example') && !e.includes('your@') && !e.includes('email@')
+    ) ?? []
 
-    // Try to get address from schema.org or footer
+    // ── Try to get address from schema.org or footer ──────────────
     let address = ''
-    const addressEl = $('[itemtype*="PostalAddress"]').first()
-    if (addressEl.length) address = addressEl.text().replace(/\s+/g, ' ').trim()
+    // Try ld+json LocalBusiness first
+    const localBiz = structuredData.find(d => d['@type'] === 'LocalBusiness' || d['@type'] === 'Organization')
+    if (localBiz?.address) {
+      const a = localBiz.address
+      address = typeof a === 'string' ? a : [a.streetAddress, a.addressLocality, a.postalCode, a.addressCountry].filter(Boolean).join(', ')
+    }
     if (!address) {
+      const addressEl = $('[itemtype*="PostalAddress"]').first()
+      if (addressEl.length) address = addressEl.text().replace(/\s+/g, ' ').trim()
+    }
+    if (!address) {
+      // UK postcode pattern in footer
       const footerText = $('footer').text().replace(/\s+/g, ' ').trim()
-      const addrMatch = footerText.match(/\d+\s+[A-Za-z]+\s+(St|Ave|Blvd|Dr|Rd|Lane|Way|Ct|Court|Street|Avenue|Boulevard|Drive|Road)[^\n,]*,?\s*[A-Za-z]+,\s*[A-Z]{2}\s*\d{5}/i)
-      if (addrMatch) address = addrMatch[0].trim()
+      const postcodeMatch = footerText.match(/[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}/i)
+      if (postcodeMatch) {
+        // Grab surrounding context (50 chars before the postcode)
+        const idx = footerText.indexOf(postcodeMatch[0])
+        address = footerText.slice(Math.max(0, idx - 60), idx + postcodeMatch[0].length).trim()
+      }
     }
 
-    // Collect all internal links for discovery
+    // ── Opening hours from schema.org ─────────────────────────────
+    let openingHours = ''
+    if (localBiz?.openingHours) {
+      openingHours = Array.isArray(localBiz.openingHours) ? localBiz.openingHours.join(', ') : localBiz.openingHours
+    }
+    if (!openingHours && localBiz?.openingHoursSpecification) {
+      openingHours = 'See website for opening hours'
+    }
+
+    // ── Rating / reviews from schema.org ──────────────────────────
+    let rating = ''
+    const ratingData = structuredData.find(d => d.aggregateRating)
+    if (ratingData?.aggregateRating) {
+      const r = ratingData.aggregateRating
+      rating = `${r.ratingValue ?? r.bestRating} stars (${r.reviewCount ?? r.ratingCount ?? '?'} reviews)`
+    }
+
+    // ── FAQ items from schema.org ──────────────────────────────────
+    const faqItems: { question: string; answer: string }[] = []
+    const faqData = structuredData.find(d => d['@type'] === 'FAQPage')
+    if (faqData?.mainEntity) {
+      const entities = Array.isArray(faqData.mainEntity) ? faqData.mainEntity : [faqData.mainEntity]
+      for (const item of entities) {
+        if (item.name && item.acceptedAnswer?.text) {
+          faqItems.push({ question: item.name, answer: item.acceptedAnswer.text })
+        }
+      }
+    }
+
+    // ── Collect all internal links for discovery ───────────────────
     const links: string[] = []
     $('a[href]').each((_, el) => {
       const href = $(el).attr('href') ?? ''
       links.push(href)
     })
 
-    // Now remove noise for content extraction
-    $('script, style, [class*="cookie"], [class*="popup"], [class*="banner"], [class*="modal"], iframe, noscript').remove()
+    // ── Remove noise for content extraction ───────────────────────
+    $('script, style, [class*="cookie"], [class*="popup"], [class*="banner"], [class*="modal"], iframe, noscript, nav, [class*="nav"], [id*="nav"]').remove()
 
     const title = $('title').text().trim()
     const metaDesc = $('meta[name="description"]').attr('content') ?? $('meta[property="og:description"]').attr('content') ?? ''
     const h1s = $('h1').map((_, el) => $(el).text().trim()).get().filter(Boolean)
-    const h2s = $('h2').map((_, el) => $(el).text().trim()).get().filter(Boolean).slice(0, 15)
+    const h2s = $('h2').map((_, el) => $(el).text().trim()).get().filter(Boolean).slice(0, 25)
+    const h3s = $('h3').map((_, el) => $(el).text().trim()).get().filter(Boolean).slice(0, 25)
 
-    // Extract meaningful paragraphs (skip very short ones)
+    // Extract meaningful paragraphs and list items
     const paragraphs: string[] = []
-    $('p, li').each((_, el) => {
+    $('p, li, td, th, [class*="price"], [class*="cost"], [class*="rate"], [class*="service"], [class*="feature"]').each((_, el) => {
       const text = $(el).text().replace(/\s+/g, ' ').trim()
-      if (text.length > 30 && text.length < 500) paragraphs.push(text)
+      if (text.length > 25 && text.length < 800) paragraphs.push(text)
     })
+
+    // Build structured content block for this page
+    const faqBlock = faqItems.length
+      ? `FAQs:\n${faqItems.map(f => `Q: ${f.question}\nA: ${f.answer}`).join('\n')}`
+      : ''
 
     const content = [
       title && `Title: ${title}`,
       metaDesc && `Meta: ${metaDesc}`,
       h1s.length && `H1: ${h1s.join(' | ')}`,
       h2s.length && `H2: ${h2s.join(' | ')}`,
-      ...paragraphs.slice(0, 40),
-    ].filter(Boolean).join('\n').slice(0, 5000)
+      h3s.length && `H3: ${h3s.join(' | ')}`,
+      openingHours && `Opening Hours: ${openingHours}`,
+      rating && `Rating: ${rating}`,
+      faqBlock,
+      ...paragraphs.slice(0, 100),
+    ].filter(Boolean).join('\n').slice(0, 8000)
 
     return {
       title, metaDesc, h1s, h2s, content,
-      phone: phones[0] ?? '',
+      phone: phones[0]?.replace(/\s/g, '') ?? '',
       email: emails[0] ?? '',
       address,
       links,
+      structuredData,
     }
+  }
+
+  // ── Discover from sitemap.xml ─────────────────────────────────────
+
+  private async discoverFromSitemap(baseUrl: string): Promise<string[]> {
+    const sitemapUrls = [`${baseUrl}/sitemap.xml`, `${baseUrl}/sitemap_index.xml`, `${baseUrl}/sitemap`]
+    const found: string[] = []
+
+    for (const sitemapUrl of sitemapUrls) {
+      try {
+        const res = await fetch(sitemapUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+          signal: AbortSignal.timeout(6000),
+        })
+        if (!res.ok) continue
+
+        const xml = await res.text()
+        // Extract all <loc> URLs from sitemap
+        const locMatches = xml.match(/<loc>([^<]+)<\/loc>/gi) ?? []
+        const urls = locMatches
+          .map(m => m.replace(/<\/?loc>/gi, '').trim())
+          .filter(u => {
+            const lower = u.toLowerCase()
+            // Only keep pages likely to contain useful business info
+            const isHighValue = HIGH_VALUE_KEYWORDS.some(k => lower.includes(k))
+            const isSameHost = u.startsWith(baseUrl)
+            // Skip images, PDFs, feeds, tags, archives
+            const isNoise = ['.jpg', '.png', '.pdf', '.xml', '/tag/', '/category/', '/author/', '/page/'].some(n => lower.includes(n))
+            return isSameHost && isHighValue && !isNoise
+          })
+          .slice(0, 20)
+
+        found.push(...urls)
+        if (found.length > 0) {
+          this.logger.log(`Sitemap ${sitemapUrl}: found ${urls.length} high-value URLs`)
+          break
+        }
+      } catch {
+        // sitemap not available — fine, continue with nav discovery
+      }
+    }
+
+    return found
   }
 
   private discoverSubPages(baseUrl: string, links: string[]): string[] {
     const base = new URL(baseUrl)
     const found = new Set<string>()
 
-    // First try known high-value paths
-    for (const path of DISCOVERY_PATHS) {
-      found.add(`${baseUrl}${path}`)
+    // First add known high-value paths from DISCOVERY_PATHS
+    for (const p of DISCOVERY_PATHS) {
+      found.add(`${baseUrl}${p}`)
     }
 
-    // Then check actual links found on the page
+    // Then check actual links found on the page nav
     for (const href of links) {
       try {
         let full: string
@@ -474,26 +692,30 @@ export class BrainService {
 
         if (full === baseUrl || full === baseUrl + '/') continue
 
-        // Prioritise pages with high-value keywords
-        const path = full.toLowerCase()
-        const priority = ['about', 'service', 'what-we-do', 'contact', 'team', 'solution'].some(k => path.includes(k))
-        if (priority) found.add(full)
+        // Keep any page with high-value keyword in path
+        const pathLower = full.toLowerCase()
+        if (HIGH_VALUE_KEYWORDS.some(k => pathLower.includes(k))) found.add(full)
       } catch {
         // ignore bad URLs
       }
     }
 
-    return [...found].slice(0, 5)
+    return [...found]
   }
 
-  // ── Private: AI extraction with rich schema ───────────────────────
+  // ── Private: deep AI extraction ───────────────────────────────────
 
   private async extractWithAI(scraped: {
     title: string; metaDesc: string; phone: string; email: string; address: string
-    h1s: string[]; h2s: string[]; combinedText: string; pagesScraped: string[]
+    h1s: string[]; h2s: string[]; combinedText: string; structuredData: any[]; pagesScraped: string[]
   }) {
+    // Summarise structured data for the prompt
+    const structuredSummary = scraped.structuredData.length
+      ? `\nStructured data (schema.org): ${JSON.stringify(scraped.structuredData.slice(0, 10)).slice(0, 3000)}`
+      : ''
+
     const context = [
-      `Scraped pages: ${scraped.pagesScraped.join(', ')}`,
+      `Scraped pages (${scraped.pagesScraped.length}): ${scraped.pagesScraped.join(', ')}`,
       `Title: ${scraped.title}`,
       `Meta description: ${scraped.metaDesc}`,
       scraped.phone && `Phone found: ${scraped.phone}`,
@@ -501,38 +723,63 @@ export class BrainService {
       scraped.address && `Address found: ${scraped.address}`,
       `H1 headings: ${scraped.h1s.join(' | ')}`,
       `H2 headings: ${scraped.h2s.join(' | ')}`,
+      structuredSummary,
       `\nFull page content:\n${scraped.combinedText}`,
     ].filter(Boolean).join('\n')
 
     const systemPrompt = `You are a senior business intelligence analyst. Analyze multi-page website content and extract comprehensive structured data about the business.
 Return ONLY valid JSON. No markdown, no explanation, no code fences — raw JSON only.
-Be thorough. Extract every detail you can find. Use null for fields you cannot determine.`
+Be extremely thorough — extract every piece of detail you can find including pricing, FAQs, team members, process steps, and testimonials.
+Use null for fields you genuinely cannot determine. Never fabricate information.`
 
-    const userPrompt = `Analyze this business website content and extract ALL of the following into a JSON object:
+    const userPrompt = `Analyze this business website content and extract ALL of the following into a single JSON object:
 
 {
   "companyName": "exact business name",
-  "tagline": "their slogan or tagline if present",
+  "tagline": "their slogan or tagline if present, else null",
   "industry": "ONE of: ROOFING | CAR_DEALERSHIP | CLEANING | SECURITY | PROPERTY_MANAGEMENT | HEALTHCARE | CONSTRUCTION | REAL_ESTATE | OTHER",
   "companyDescription": "2-3 sentences describing what the company does, for whom, and their approach",
-  "services": ["specific service 1", "specific service 2", "...up to 12 services"],
-  "serviceAreas": ["City, STATE", "...all locations/areas mentioned"],
-  "targetCustomers": "describe who their ideal customers are (demographics, situation, needs)",
-  "uniqueSellingPoints": ["USP 1", "USP 2", "...what makes them different or better"],
-  "brandVoice": "one sentence describing their tone (e.g. professional & friendly, no-nonsense experts, warm & caring)",
-  "pricingSignals": "any pricing info found (e.g. 'free estimates', 'from $X', 'competitive rates') or null",
-  "yearsInBusiness": "number or range if mentioned, else null",
+  "services": [
+    { "name": "service name", "description": "what it includes", "price": "price if found, else null" }
+  ],
+  "serviceAreas": ["area or postcode 1", "...all locations/areas/postcodes mentioned"],
+  "targetCustomers": "describe who their ideal customers are",
+  "uniqueSellingPoints": ["USP 1", "USP 2", "...everything that makes them better or different"],
+  "brandVoice": "one sentence describing their tone",
+  "pricingTable": [
+    { "item": "service or package name", "price": "e.g. £140 or From £60", "includes": "what's included" }
+  ],
+  "openingHours": "e.g. Mon-Fri 8am-6pm, Sat 9am-3pm, or null",
+  "faq": [
+    { "question": "question text", "answer": "answer text" }
+  ],
+  "teamMembers": [
+    { "name": "person name", "role": "their title or role" }
+  ],
+  "processSteps": [
+    { "step": 1, "title": "step title", "description": "what happens" }
+  ],
+  "testimonials": [
+    { "quote": "customer quote", "author": "customer name or role", "rating": 5 }
+  ],
+  "guarantees": ["guarantee 1", "guarantee 2", "...any promises or satisfaction guarantees"],
+  "productsUsed": ["product or equipment name", "...chemicals, tools, brands they use"],
+  "certifications": ["certification or accreditation 1", "...any credentials, awards, memberships, insurance"],
+  "yearsInBusiness": "number if mentioned, else null",
   "teamSize": "solo | small (2-10) | medium (11-50) | large (50+)",
-  "certifications": ["certification or license 1", "...any credentials, awards, memberships"],
   "phone": "primary phone number or null",
   "email": "primary contact email or null",
-  "address": "full street address or null",
-  "socialLinks": { "facebook": "url or null", "instagram": "url or null", "linkedin": "url or null" },
-  "businessRules": "any policies, guarantees, or business rules found (e.g. '100% satisfaction guarantee', 'same-day service', 'licensed & insured')",
+  "address": "full street address including postcode or null",
+  "socialLinks": { "facebook": "url or null", "instagram": "url or null", "linkedin": "url or null", "twitter": "url or null" },
+  "businessRules": "any policies or guarantees (e.g. '100% satisfaction guarantee', 'same-day service', 'fully insured')",
   "crmHint": "ONE of: HUBSPOT | SALESFORCE | JOBNIMBUS | LARAVEL | ZOHO | CUSTOM | NONE",
   "confidence": 0-100,
-  "summary": "2-3 sentence business overview suitable for an AI receptionist's knowledge base"
+  "summary": "3-4 sentence business overview suitable for an AI employee's knowledge base — include services, target market, key USPs, and location"
 }
+
+IMPORTANT: For "services" array, extract each distinct service as its own object with name, description, and price (if shown).
+For "pricingTable", extract every pricing item/package you can find.
+For "faq", extract all Q&A pairs found anywhere on the site.
 
 Website content:
 ${context}`
@@ -541,7 +788,6 @@ ${context}`
       const raw = await this.ai.chat(systemPrompt, [{ role: 'user', content: userPrompt }])
       const cleaned = raw.replace(/```json|```/gi, '').trim()
 
-      // Find JSON object boundaries in case there's extra text
       const jsonStart = cleaned.indexOf('{')
       const jsonEnd = cleaned.lastIndexOf('}')
       const jsonStr = jsonStart >= 0 && jsonEnd > jsonStart
@@ -550,17 +796,33 @@ ${context}`
 
       const parsed = JSON.parse(jsonStr)
 
+      // Normalise services — support both string[] and object[]
+      const rawServices = Array.isArray(parsed.services) ? parsed.services : []
+      const services = rawServices.map((s: any) => typeof s === 'string' ? s : s.name).filter(Boolean)
+      const serviceDetails = rawServices.map((s: any) => typeof s === 'string' ? { name: s } : s)
+
       return {
         companyName:        parsed.companyName ?? scraped.title,
         tagline:            parsed.tagline ?? null,
         industry:           VALID_INDUSTRIES.includes(parsed.industry) ? parsed.industry : 'OTHER',
         companyDescription: parsed.companyDescription ?? '',
-        services:           Array.isArray(parsed.services) ? parsed.services : [],
+        services,
+        serviceDetails,
         serviceAreas:       Array.isArray(parsed.serviceAreas) ? parsed.serviceAreas : [],
         targetCustomers:    parsed.targetCustomers ?? '',
         uniqueSellingPoints: Array.isArray(parsed.uniqueSellingPoints) ? parsed.uniqueSellingPoints : [],
         brandVoice:         parsed.brandVoice ?? 'Professional and helpful',
-        pricingSignals:     parsed.pricingSignals ?? null,
+        pricingTable:       Array.isArray(parsed.pricingTable) ? parsed.pricingTable : [],
+        pricingSignals:     parsed.pricingTable?.length
+          ? parsed.pricingTable.map((p: any) => `${p.item}: ${p.price}`).join(' | ')
+          : null,
+        openingHours:       parsed.openingHours ?? null,
+        faq:                Array.isArray(parsed.faq) ? parsed.faq : [],
+        teamMembers:        Array.isArray(parsed.teamMembers) ? parsed.teamMembers : [],
+        processSteps:       Array.isArray(parsed.processSteps) ? parsed.processSteps : [],
+        testimonials:       Array.isArray(parsed.testimonials) ? parsed.testimonials : [],
+        guarantees:         Array.isArray(parsed.guarantees) ? parsed.guarantees : [],
+        productsUsed:       Array.isArray(parsed.productsUsed) ? parsed.productsUsed : [],
         yearsInBusiness:    parsed.yearsInBusiness ?? null,
         teamSize:           parsed.teamSize ?? 'small (2-10)',
         certifications:     Array.isArray(parsed.certifications) ? parsed.certifications : [],
@@ -581,11 +843,20 @@ ${context}`
         industry: 'OTHER',
         companyDescription: scraped.metaDesc,
         services: [] as string[],
+        serviceDetails: [] as any[],
         serviceAreas: [] as string[],
         targetCustomers: '',
         uniqueSellingPoints: [] as string[],
         brandVoice: 'Professional and helpful',
+        pricingTable: [] as any[],
         pricingSignals: null as string | null,
+        openingHours: null as string | null,
+        faq: [] as any[],
+        teamMembers: [] as any[],
+        processSteps: [] as any[],
+        testimonials: [] as any[],
+        guarantees: [] as string[],
+        productsUsed: [] as string[],
         yearsInBusiness: null as string | null,
         teamSize: 'small (2-10)',
         certifications: [] as string[],
@@ -599,6 +870,212 @@ ${context}`
         summary: scraped.metaDesc,
       }
     }
+  }
+
+  // ── Auto-create knowledge documents from brain data ──────────────
+  // Builds structured knowledge docs and creates searchable chunks
+  // so agents can do RAG lookups against the business knowledge base
+
+  private async createKnowledgeDocs(tenantId: string, brain: any): Promise<void> {
+    if (!brain.companyName) return
+
+    // Delete previous brain-generated knowledge docs for this tenant
+    const existing = await this.prisma.knowledgeDocument.findMany({
+      where: { tenantId, fileUrl: { startsWith: 'brain://auto-generated' } },
+      select: { id: true },
+    })
+    for (const doc of existing) {
+      await this.prisma.knowledgeChunk.deleteMany({ where: { documentId: doc.id } })
+      await this.prisma.agentKnowledge.deleteMany({ where: { documentId: doc.id } })
+      await this.prisma.knowledgeDocument.delete({ where: { id: doc.id } })
+    }
+
+    // Get all active agents for this tenant
+    const agents = await this.prisma.agent.findMany({
+      where: { tenantId, status: 'ACTIVE' },
+      select: { id: true },
+    })
+
+    // Build each knowledge document as a text block
+    const docs: { name: string; content: string }[] = []
+
+    // ── Doc 1: Business Profile ────────────────────────────────────
+    const profileParts: string[] = [
+      `BUSINESS PROFILE: ${brain.companyName}`,
+      `─`.repeat(50),
+    ]
+    if (brain.tagline) profileParts.push(`Tagline: ${brain.tagline}`)
+    if (brain.companyDescription) profileParts.push(`About: ${brain.companyDescription}`)
+    if (brain.summary) profileParts.push(`Summary: ${brain.summary}`)
+    if (brain.yearsInBusiness) profileParts.push(`In business: ${brain.yearsInBusiness} years`)
+    if (brain.teamSize) profileParts.push(`Team size: ${brain.teamSize}`)
+    if (brain.phone) profileParts.push(`Phone: ${brain.phone}`)
+    if (brain.email) profileParts.push(`Email: ${brain.email}`)
+    if (brain.address) profileParts.push(`Address: ${brain.address}`)
+    if (brain.openingHours) profileParts.push(`Opening hours: ${brain.openingHours}`)
+    if (brain.uniqueSellingPoints?.length) {
+      profileParts.push(`\nWhat makes us different:\n${brain.uniqueSellingPoints.map((u: string) => `  • ${u}`).join('\n')}`)
+    }
+    if (brain.certifications?.length) {
+      profileParts.push(`Certifications: ${brain.certifications.join(', ')}`)
+    }
+    if (brain.guarantees?.length) {
+      profileParts.push(`Guarantees: ${brain.guarantees.join(' | ')}`)
+    }
+    if (brain.productsUsed?.length) {
+      profileParts.push(`Products/equipment used: ${brain.productsUsed.join(', ')}`)
+    }
+    if (brain.serviceAreas?.filter((a: string) => a && a !== 'null').length) {
+      profileParts.push(`Service areas: ${brain.serviceAreas.filter((a: string) => a && a !== 'null').join(', ')}`)
+    }
+    if (brain.businessRules) profileParts.push(`Policies: ${brain.businessRules}`)
+    docs.push({ name: `${brain.companyName} — Business Profile`, content: profileParts.join('\n') })
+
+    // ── Doc 2: Services & Pricing ──────────────────────────────────
+    const servicesParts: string[] = [
+      `SERVICES & PRICING: ${brain.companyName}`,
+      `─`.repeat(50),
+    ]
+    if (brain.serviceDetails?.length) {
+      servicesParts.push('\nSERVICES:')
+      for (const s of brain.serviceDetails) {
+        let line = `• ${s.name}`
+        if (s.description) line += `\n  ${s.description}`
+        if (s.price) line += `\n  Price: ${s.price}`
+        servicesParts.push(line)
+      }
+    } else if (brain.services?.length) {
+      servicesParts.push('\nSERVICES:\n' + brain.services.map((s: string) => `• ${s}`).join('\n'))
+    }
+    if (brain.pricingTable?.length) {
+      servicesParts.push('\nPRICING GUIDE:')
+      for (const p of brain.pricingTable) {
+        let line = `• ${p.item}: ${p.price}`
+        if (p.includes) line += ` (includes: ${p.includes})`
+        servicesParts.push(line)
+      }
+    }
+    if (servicesParts.length > 2) {
+      docs.push({ name: `${brain.companyName} — Services & Pricing`, content: servicesParts.join('\n') })
+    }
+
+    // ── Doc 3: FAQ ─────────────────────────────────────────────────
+    if (brain.faq?.length) {
+      const faqParts = [
+        `FREQUENTLY ASKED QUESTIONS: ${brain.companyName}`,
+        `─`.repeat(50),
+        '',
+      ]
+      for (const item of brain.faq) {
+        faqParts.push(`Q: ${item.question}`)
+        faqParts.push(`A: ${item.answer}`)
+        faqParts.push('')
+      }
+      docs.push({ name: `${brain.companyName} — FAQ`, content: faqParts.join('\n') })
+    }
+
+    // ── Doc 4: How We Work / Process ──────────────────────────────
+    const processParts: string[] = []
+    if (brain.processSteps?.length) {
+      processParts.push(`HOW WE WORK: ${brain.companyName}`, `─`.repeat(50), '')
+      for (const s of brain.processSteps) {
+        processParts.push(`Step ${s.step}: ${s.title}`)
+        if (s.description) processParts.push(`  ${s.description}`)
+      }
+    }
+    if (brain.teamMembers?.length) {
+      if (!processParts.length) processParts.push(`TEAM: ${brain.companyName}`, `─`.repeat(50), '')
+      processParts.push('\nOUR TEAM:')
+      for (const m of brain.teamMembers) {
+        processParts.push(`• ${m.name}${m.role ? ' — ' + m.role : ''}`)
+      }
+    }
+    if (processParts.length > 0) {
+      docs.push({ name: `${brain.companyName} — How We Work & Team`, content: processParts.join('\n') })
+    }
+
+    // ── Doc 5: Customer Reviews ────────────────────────────────────
+    if (brain.testimonials?.length) {
+      const reviewParts = [
+        `CUSTOMER REVIEWS: ${brain.companyName}`,
+        `─`.repeat(50),
+        '',
+      ]
+      for (const t of brain.testimonials) {
+        reviewParts.push(`"${t.quote}"`)
+        if (t.author) reviewParts.push(`— ${t.author}${t.rating ? ` (${t.rating}/5 stars)` : ''}`)
+        reviewParts.push('')
+      }
+      docs.push({ name: `${brain.companyName} — Customer Reviews`, content: reviewParts.join('\n') })
+    }
+
+    // ── Create docs in DB with chunks and embeddings ───────────────
+    for (const doc of docs) {
+      if (!doc.content || doc.content.length < 50) continue
+
+      const docRecord = await this.prisma.knowledgeDocument.create({
+        data: {
+          tenantId,
+          name: doc.name,
+          fileType: 'txt',
+          fileUrl: `brain://auto-generated/${doc.name.replace(/\s+/g, '-').toLowerCase()}`,
+          fileSize: doc.content.length,
+          status: 'ready',
+        },
+      })
+
+      // Chunk the text content
+      const chunks = this.chunkText(doc.content)
+
+      // Embed and store each chunk
+      for (let i = 0; i < chunks.length; i++) {
+        let embedding: number[] = []
+        try {
+          embedding = await this.ai.embed(chunks[i])
+        } catch {
+          // embedding failure is non-fatal — chunk is still stored without vector
+        }
+        await this.prisma.knowledgeChunk.create({
+          data: {
+            documentId: docRecord.id,
+            content: chunks[i],
+            embedding: embedding as any,
+            chunkIndex: i,
+          },
+        })
+      }
+
+      // Assign doc to every active agent on the tenant
+      for (const agent of agents) {
+        await this.prisma.agentKnowledge.upsert({
+          where: { agentId_documentId: { agentId: agent.id, documentId: docRecord.id } },
+          create: { agentId: agent.id, documentId: docRecord.id },
+          update: {},
+        })
+      }
+
+      this.logger.log(`Knowledge doc created: "${doc.name}" (${chunks.length} chunks, ${agents.length} agents)`)
+    }
+
+    this.logger.log(`Brain knowledge base ready — ${docs.length} documents created for tenant ${tenantId}`)
+  }
+
+  private chunkText(text: string, maxChars = 1500, overlap = 200): string[] {
+    const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(p => p.length > 20)
+    const chunks: string[] = []
+    let current = ''
+
+    for (const para of paragraphs) {
+      if ((current + '\n\n' + para).length > maxChars && current.length > 0) {
+        chunks.push(current.trim())
+        const words = current.split(' ')
+        current = words.slice(-Math.floor(overlap / 6)).join(' ') + '\n\n' + para
+      } else {
+        current = current ? current + '\n\n' + para : para
+      }
+    }
+    if (current.trim()) chunks.push(current.trim())
+    return chunks.filter(c => c.length > 50)
   }
 
   private normalizeUrl(url: string): string {

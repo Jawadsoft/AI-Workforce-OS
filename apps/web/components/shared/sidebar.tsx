@@ -8,6 +8,7 @@ import {
   LayoutDashboard, Users, MessageSquare, CheckSquare,
   Clock, BookOpen, FileText, Plug, UserCog,
   BarChart3, Settings, Zap, PanelLeftClose, PanelLeftOpen, Phone,
+  CloudLightning, Wrench, ChevronDown,
 } from 'lucide-react'
 
 const navItems = [
@@ -25,9 +26,18 @@ const navItems = [
   { label: 'Analytics', href: '/analytics', icon: BarChart3 },
 ]
 
+const toolItems = [
+  { label: 'Storm Data', href: '/storm', icon: CloudLightning },
+]
+
 export function Sidebar() {
   const pathname = usePathname()
   const [isCollapsed, setIsCollapsed] = useState(true)
+  const [toolsOpen, setToolsOpen] = useState(
+    toolItems.some(t => pathname === t.href || pathname.startsWith(t.href + '/'))
+  )
+
+  const isToolsActive = toolItems.some(t => pathname === t.href || pathname.startsWith(t.href + '/'))
 
   return (
     <aside
@@ -62,6 +72,7 @@ export function Sidebar() {
       </div>
 
       <nav className={cn('flex-1 flex flex-col gap-2 overflow-y-auto w-full', isCollapsed && 'items-center px-3')}>
+        {/* Main nav items */}
         {navItems.map((item) => {
           const Icon = item.icon
           const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
@@ -83,6 +94,71 @@ export function Sidebar() {
             </Link>
           )
         })}
+
+        {/* Tools group */}
+        {isCollapsed ? (
+          // Collapsed: show tool icons directly
+          toolItems.map((item) => {
+            const Icon = item.icon
+            const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                title={item.label}
+                className={cn(
+                  'w-10 h-10 flex items-center justify-center rounded-full transition-colors',
+                  isActive
+                    ? 'bg-foreground text-background shadow-sm'
+                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                )}
+              >
+                <Icon className="w-[18px] h-[18px] shrink-0" />
+              </Link>
+            )
+          })
+        ) : (
+          // Expanded: collapsible Tools section
+          <div className="mt-1">
+            <button
+              onClick={() => setToolsOpen(v => !v)}
+              className={cn(
+                'w-full h-10 flex items-center gap-3 rounded-xl px-3 text-sm transition-colors',
+                isToolsActive
+                  ? 'text-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+              )}
+            >
+              <Wrench className="w-[18px] h-[18px] shrink-0" />
+              <span className="flex-1 text-left">Tools</span>
+              <ChevronDown className={cn('w-3.5 h-3.5 transition-transform', toolsOpen && 'rotate-180')} />
+            </button>
+
+            {toolsOpen && (
+              <div className="ml-4 mt-1 flex flex-col gap-1 border-l border-border/50 pl-3">
+                {toolItems.map((item) => {
+                  const Icon = item.icon
+                  const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className={cn(
+                        'h-9 flex items-center gap-2.5 rounded-lg px-2 text-sm transition-colors',
+                        isActive
+                          ? 'bg-foreground text-background shadow-sm'
+                          : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                      )}
+                    >
+                      <Icon className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{item.label}</span>
+                    </Link>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </nav>
 
       <Link

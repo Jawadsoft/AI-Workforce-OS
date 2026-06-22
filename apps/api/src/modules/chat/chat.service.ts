@@ -8,6 +8,7 @@ import { KnowledgeService } from '../knowledge/knowledge.service'
 import { TasksService } from '../tasks/tasks.service'
 import { EmailService } from '../email/email.service'
 import { DocumentsService } from '../documents/documents.service'
+import { StormService } from '../storm/storm.service'
 
 // Regex patterns to extract caller identity from first message
 const PHONE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/
@@ -106,7 +107,7 @@ const CRM_TOOL_DEFINITIONS = [
   },
   {
     name: 'generate_document',
-    description: 'Generate a professional PDF document (estimate, inspection report, invoice, or statement of work) for a customer using AI. Use when a customer needs a quote, report, or document generated.',
+    description: 'Generate a professional PDF document. IMPORTANT: Before calling this tool, you MUST first use ask_user to show the customer a summary of what will be included and get their approval. Only call generate_document after the customer confirms they are happy with the details.',
     parameters: {
       type: 'object',
       properties: {
@@ -130,6 +131,60 @@ const CRM_TOOL_DEFINITIONS = [
       required: ['sessionId', 'message'],
     },
   },
+  {
+    name: 'handoff_to_agent',
+    description: 'MUST USE: Immediately hand off this conversation to a specialist agent. Call this the moment you detect the request needs a specialist — do not explain what you will do, just call the tool. The specialist will reply directly in this conversation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentRole: { type: 'string', description: 'Role keyword of the target agent e.g. "estimator", "insurance specialist", "sales assistant", "field inspector", "executive assistant"' },
+        reason: { type: 'string', description: 'Brief reason why you are handing off' },
+        contextSummary: { type: 'string', description: 'Summary of what the customer needs — passed to the specialist so they have full context' },
+      },
+      required: ['agentRole', 'reason', 'contextSummary'],
+    },
+  },
+  {
+    name: 'ask_user',
+    description: 'Pause and ask the user a clarifying question or request approval before proceeding. Use when you need input before taking action. Optionally provide choice buttons.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The question to ask the user' },
+        choices: { type: 'array', items: { type: 'string' }, description: 'Optional list of button choices e.g. ["Yes, proceed", "No, cancel", "Edit amount"]' },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    name: 'fetch_storm_data',
+    description: 'Query NOAA storm reports stored in the system. Use this to look up hail, tornado, or wind events by state, county, size, and date range. If the user asks about a specific date or date range, pass that date. If they ask about "last 7 days" or "recent", use the days parameter.',
+    parameters: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['hail', 'tornado', 'wind'], description: 'Type of storm event to filter by' },
+        state: { type: 'string', description: 'Two-letter US state code e.g. "TX", "FL"' },
+        minSize: { type: 'number', description: 'Minimum hail size in inches (e.g. 1.0 for roof-damage threshold)' },
+        days: { type: 'number', description: 'How many days back from today to query (default 7, max 30). Use this for "last N days" queries.' },
+        date: { type: 'string', description: 'Specific date to query in YYYY-MM-DD format (e.g. "2026-06-15"). Use this when the user asks about a specific day.' },
+        county: { type: 'string', description: 'County name to filter by (partial match)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'suggest_transfer',
+    description: 'Offer to connect the customer with a colleague who is better suited to handle their request. Use this when the customer asks something outside your area of expertise. Shows the customer a button to switch to the right person.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentRole: { type: 'string', description: 'Role keyword of the colleague e.g. "estimator", "insurance specialist", "sales assistant", "field inspector"' },
+        reason: { type: 'string', description: 'Brief natural-language reason why this colleague is better suited, e.g. "Cris handles all estimates and pricing"' },
+        message: { type: 'string', description: 'Natural message to say to the customer before showing the transfer button, e.g. "That\'s actually my colleague Cris\'s area — want me to connect you with him?"' },
+      },
+      required: ['agentRole', 'reason', 'message'],
+    },
+  },
 ]
 
 @Injectable()
@@ -146,6 +201,7 @@ export class ChatService {
     private readonly tasks: TasksService,
     private readonly email: EmailService,
     private readonly documents: DocumentsService,
+    private readonly storm: StormService,
   ) {}
 
   async findAll(tenantId: string, agentId?: string) {
@@ -191,6 +247,20 @@ export class ChatService {
       where: { conversationId },
       orderBy: { createdAt: 'asc' },
     })
+  }
+
+  // ── Clear all messages in a conversation ─────────────────────────
+
+  async clearMessages(tenantId: string, conversationId: string) {
+    const conv = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, tenantId },
+    })
+    if (!conv) throw new NotFoundException('Conversation not found')
+
+    const { count } = await this.prisma.message.deleteMany({
+      where: { conversationId },
+    })
+    return { cleared: count }
   }
 
   // ── Primary (persistent) conversation per agent ───────────────────
@@ -366,9 +436,31 @@ export class ChatService {
     messages: { role: 'user' | 'assistant'; content: string }[],
     defaultCustomerId?: string,
     emit?: (data: object) => void,
+    handoffDepth = 0,
+    handoffCountRef?: { count: number; lastSpecialistId?: string; lastSpecialistName?: string },
   ): Promise<string> {
-    // Always include internal tools so agent can create tasks/approvals/widget replies/emails/documents
-    const internalToolNames = ['create_internal_task', 'request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document']
+    // Specialists (depth >= 1) cannot handoff further or proactively create tasks — prevents infinite loops
+    const isSpecialist = handoffDepth > 0
+    // Track handoffs across multiple tool rounds in this conversation turn
+    const hcRef = handoffCountRef ?? { count: 0 }
+    // Intake agents (Nora etc.) silently relay via handoff_to_agent.
+    // All other specialists offer transfers via suggest_transfer — never silent relay.
+    const roleLC = (agent.role ?? '').toLowerCase()
+    const isIntakeAgent = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer')
+    const isStormAnalyst = roleLC.includes('storm') || roleLC.includes('analyst') || agent.name?.toLowerCase().includes('arturo')
+
+    const internalToolNames = isSpecialist
+      // Called via handoff: just answer, no routing tools
+      ? ['reply_to_widget_session', 'contact_customer', 'generate_document', 'ask_user']
+      : isIntakeAgent
+        // Intake agent: silent relay to specialists
+        ? ['create_internal_task', 'request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'ask_user']
+        : isStormAnalyst
+          // Storm analyst: gets storm data tool + standard specialist tools
+          ? ['create_internal_task', 'request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', 'fetch_storm_data']
+          // Specialist agent (estimator, inspector, etc.): offer transfers, no silent relay
+          : ['create_internal_task', 'request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user']
+
     const allowedTools = CRM_TOOL_DEFINITIONS.filter(t =>
       agent.tools?.includes(t.name) || agent.tools?.includes('crm_all') || internalToolNames.includes(t.name)
     )
@@ -376,6 +468,10 @@ export class ChatService {
     if (!allowedTools.length) {
       return this.ai.chat(systemPrompt, messages)
     }
+
+    // Specialists (called via handoff) get 1 round max — just answer.
+    // Primary agents get up to 5 rounds to support: gather → confirm → user input → generate flow.
+    const maxRounds = isSpecialist ? 1 : 5
 
     return this.ai.chatWithTools(
       systemPrompt,
@@ -526,6 +622,159 @@ export class ChatService {
           }
         }
 
+        // ── Agent handoff ──────────────────────────────────
+        if (toolName === 'handoff_to_agent') {
+          try {
+            const roleKeyword = (params.agentRole as string).toLowerCase()
+            // Find a matching active agent in the same tenant
+            const allAgents = await this.prisma.agent.findMany({
+              where: { tenantId, status: 'ACTIVE' },
+            })
+            const target = allAgents.find(a =>
+              a.role.toLowerCase().includes(roleKeyword) ||
+              a.name.toLowerCase().includes(roleKeyword)
+            )
+            if (!target) {
+              return `No active agent found with role matching "${params.agentRole}". I'll handle this myself.`
+            }
+
+            // Emit a natural "checking..." typing signal so user sees activity immediately
+            const specialistFirstName = target.name.split('—')[0].split('(')[0].trim().split(' ')[0]
+            emit?.({ checking: true, withName: specialistFirstName })
+
+            // Emit handoff card to frontend (visible to business owner only)
+            emit?.({
+              action_card: {
+                type: 'handoff',
+                fromAgent: { id: agent.id, name: agent.name, role: agent.role },
+                toAgent: { id: target.id, name: target.name, role: target.role },
+                reason: params.reason,
+              },
+            })
+
+            // Build specialist system prompt with handoff context
+            const tenant = await this.prisma.tenant.findUnique({
+              where: { id: tenantId },
+              select: { settings: true, industry: true, name: true },
+            })
+            const mergedSettings = {
+              ...(tenant?.settings as any ?? {}),
+              industry: (tenant?.settings as any)?.brain?.industry ?? tenant?.industry ?? '',
+              tenantName: tenant?.name ?? '',
+            }
+            const brainContext = this.brain.buildAgentContext(mergedSettings)
+            const handoffContext = `\n\n[HANDOFF FROM ${agent.name.toUpperCase()}]: ${params.contextSummary}\nReason for handoff: ${params.reason}`
+            const specialistPrompt = this.buildFullSystemPrompt(target, mergedSettings, brainContext, handoffContext, '', true)
+
+            // Run the specialist agent — depth+1 prevents further handoffs and loops
+            const specialistReply = await this.runWithToolDispatch(
+              tenantId, target, specialistPrompt, messages, defaultCustomerId, emit, handoffDepth + 1, hcRef,
+            )
+
+            // Track this handoff
+            hcRef.count += 1
+            hcRef.lastSpecialistId = target.id
+            hcRef.lastSpecialistName = target.name.split('—')[0].trim()
+
+            this.logger.log(`[Handoff] ${agent.name} → ${target.name}: ${params.reason} (count: ${hcRef.count})`)
+
+            // After 2+ handoffs on the same topic, hint that Nora can offer a direct transfer
+            const transferHint = hcRef.count >= 2
+              ? `\n\n[TRANSFER HINT: This is the ${hcRef.count === 2 ? 'second' : 'third+'} time you've consulted ${hcRef.lastSpecialistName} in this conversation. Naturally offer: "We've been going back and forth — want me to get ${hcRef.lastSpecialistName} to take over the conversation directly so you two can go deeper? Just say the word!" — but only if it feels natural.]`
+              : ''
+
+            // Return specialist answer back to Nora so she can rewrite it naturally.
+            // Nora will deliver it in her own voice — she can mention the specialist by first name.
+            return `[TEAM INPUT — rewrite this answer in your own natural voice. You CAN mention the specialist's first name (e.g., "Cris just got back to me!"). Sound warm and human, not like you are relaying a message.${transferHint}]\n\n${specialistReply}`
+          } catch (err: any) {
+            return `Handoff failed: ${err.message}. I'll handle this directly.`
+          }
+        }
+
+        // ── Ask user a question / approval ─────────────────
+        if (toolName === 'ask_user') {
+          emit?.({
+            action_card: {
+              type: 'ask_user',
+              question: params.question,
+              choices: params.choices ?? [],
+              agentName: agent.name,
+            },
+          })
+          return `[Waiting for user response to: "${params.question}"]`
+        }
+
+        // ── Suggest transfer to a colleague ────────────────
+        if (toolName === 'suggest_transfer') {
+          try {
+            const roleKeyword = (params.agentRole as string).toLowerCase()
+            const allAgents = await this.prisma.agent.findMany({
+              where: { tenantId, status: 'ACTIVE' },
+            })
+            const target = allAgents.find(a =>
+              a.role.toLowerCase().includes(roleKeyword) ||
+              a.name.toLowerCase().includes(roleKeyword)
+            )
+
+            const targetFirstName = target
+              ? target.name.split('—')[0].trim().split(' ')[0]
+              : roleKeyword
+
+            emit?.({
+              action_card: {
+                type: 'transfer',
+                agentId: target?.id,
+                agentDisplayName: targetFirstName,
+                reason: params.reason,
+              },
+            })
+
+            this.logger.log(`[SuggestTransfer] ${agent.name} → ${target?.name ?? params.agentRole}`)
+            return `[Transfer card shown to customer for ${targetFirstName}. Your message "${params.message}" was shown.]`
+          } catch (err: any) {
+            return `Could not find colleague for role "${params.agentRole}".`
+          }
+        }
+
+        // ── Storm data query ───────────────────────────────
+        if (toolName === 'fetch_storm_data') {
+          try {
+            const reports = await this.storm.queryReports(tenantId, {
+              type: params.type as any,
+              state: params.state,
+              minSize: params.minSize,
+              days: Math.min(params.days ?? 7, 30),
+              date: params.date,
+              county: params.county,
+            })
+            if (reports.length === 0) {
+              return 'No storm reports found matching those criteria. NOAA SPC may not have recorded events in that area/timeframe, or the data may not be available yet for very recent dates. Try broader filters (more days, no state filter) or check tomorrow after 7 AM UTC.'
+            }
+            const byType = reports.reduce((acc: Record<string, number>, r) => {
+              acc[r.type] = (acc[r.type] ?? 0) + 1
+              return acc
+            }, {})
+            const largestHail = reports
+              .filter(r => r.type === 'hail' && r.size)
+              .sort((a, b) => (b.size ?? 0) - (a.size ?? 0))[0]
+            const topLines = reports.slice(0, 10).map(r => {
+              const size = r.size ? ` (${r.size.toFixed(2)}")` : ''
+              return `  • ${r.type.toUpperCase()}${size} — ${r.county ? r.county + ' County, ' : ''}${r.state} on ${new Date(r.reportDate).toLocaleDateString()} — ${r.location || 'location unknown'}`
+            })
+            const summary = [
+              `Found ${reports.length} storm reports (${Object.entries(byType).map(([t, c]) => `${c} ${t}`).join(', ')})`,
+              largestHail ? `Largest hail: ${largestHail.size?.toFixed(2)}" in ${largestHail.county || largestHail.state}` : null,
+              '',
+              'Top events:',
+              ...topLines,
+              reports.length > 10 ? `  ... and ${reports.length - 10} more events` : null,
+            ].filter(Boolean).join('\n')
+            return summary
+          } catch (err: any) {
+            return `Error fetching storm data: ${err.message}`
+          }
+        }
+
         // ── CRM tools ──────────────────────────────────────
         if (!params.customerId && defaultCustomerId) {
           params.customerId = defaultCustomerId
@@ -539,6 +788,7 @@ export class ChatService {
           return `Error executing ${toolName}: ${err.message}`
         }
       },
+      maxRounds,
     )
   }
 
@@ -664,7 +914,7 @@ export class ChatService {
 
   // ── Builds the structured system prompt ──────────────────────────
 
-  private buildFullSystemPrompt(agent: any, settings: any, brainContext: string, crmContextBlock: string, ragContext = ''): string {
+  private buildFullSystemPrompt(agent: any, settings: any, brainContext: string, crmContextBlock: string, ragContext = '', isSpecialist = false): string {
     const brain = settings?.brain ?? {}
     const company = brain.companyName || settings.tenantName || 'the company'
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
@@ -674,8 +924,14 @@ Today is ${today}.
 You ALWAYS act as a real employee of this business — never break character, never say you're an AI unless directly asked.
 Respond in the brand voice described below. Be helpful, concise, and professional.`
 
-    // Always include internal action tool instructions
-    const internalToolsSection = `
+    // Specialists do NOT get proactive task creation — they just handle the handed-off request
+    const internalToolsSection = isSpecialist
+      ? `
+
+SPECIALIST MODE — You have been handed off this conversation. Focus solely on answering the customer's need.
+Available tools: contact_customer (to message the customer), generate_document (to create proposals/reports), ask_user (to ask a clarifying question).
+Do NOT create tasks or approvals unprompted. Just handle the request and give a clear response.`
+      : `
 
 INTERNAL ACTION TOOLS (always available):
 You have access to these internal tools you should use proactively:
@@ -708,8 +964,209 @@ When chatting with the business owner/manager directly (in the internal chat thr
 - Each briefing shows 🔑 Session ID and the customer name prominently.
 - Be proactive: flag things that need attention without being asked.`
 
+    const teamCoordinationSection = `
+
+TEAM COORDINATION — MANDATORY RULES:
+You are the primary point of contact. You have a specialist team you can consult instantly.
+You can mention your colleagues by name naturally — just like a real office receptionist would.
+
+HOW TO WORK WITH YOUR TEAM:
+5. handoff_to_agent — Consult a specialist behind the scenes, then YOU deliver the answer.
+   - Call this tool IMMEDIATELY when you need specialist knowledge
+   - The specialist answers, and their answer comes back to YOU as [TEAM INPUT]
+   - YOU then deliver that answer naturally — you stay in the conversation throughout
+
+   BEFORE calling the tool, say something natural like:
+   ✅ "Let me check with Cris on that real quick!"
+   ✅ "One sec, let me loop in our estimator!"
+   ✅ "Give me a moment, checking with the team..."
+
+   AFTER receiving [TEAM INPUT], respond naturally like:
+   ✅ "Okay so Cris just got back to me — for a residential hip roof you're looking at $3,200–$4,800!"
+   ✅ "Just heard back! Our estimator says we can fit you in Thursday for a site visit."
+   ✅ "Good news — Cris says that's doable. Here's what he needs from you..."
+
+   NEVER say (these sound robotic and cold):
+   ❌ "I am transferring you to Cris" / "Cris will handle this from here"
+   ❌ "Someone will reach out to you" / "Our estimator will contact you"
+   ❌ "I'll connect you with..." / "I'll route this to..."
+
+   TRIGGERS — call handoff_to_agent immediately:
+   • "estimate" / "quote" / "cost" / "price" / "proposal"   → handoff to "estimator"
+   • "insurance" / "claim" / "adjuster" / "coverage"        → handoff to "insurance specialist"
+   • "inspection" / "damage" / "site visit" / "assess"      → handoff to "field inspector"
+   • "interested in" / "want to buy" / "sign up"            → handoff to "sales assistant"
+
+6. ask_user — Use for structured choices. Provide 2–4 button options.
+   Example: "Is this residential or commercial?" with buttons [Residential] [Commercial]
+
+SPECIALIST MODE (when you receive [HANDOFF FROM ...]):
+- You are answering internally — your reply goes BACK to the intake agent, not directly to the customer
+- Be concise and factual — the intake agent will deliver your answer in her own voice
+- Do NOT address the customer directly`
+
+    // Inject role-specific handoff triggers based on this agent's role
+    const roleLC = (agent.role ?? '').toLowerCase()
+    let roleHandoffSection = ''
+    if (roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer')) {
+      roleHandoffSection = `
+
+YOUR ROLE — CUSTOMER INTAKE:
+You are the main contact. You have a specialist team you can consult and relay answers from.
+You stay in the conversation the whole time — like a sharp receptionist who knows everyone on the team.
+
+PROCESS:
+1. Greet warmly, get their name and what they need (one natural question)
+2. The moment you know what they need → call handoff_to_agent
+3. BEFORE calling the tool, say something like "Let me check with [specialist] on that!"
+4. AFTER [TEAM INPUT] comes back → deliver it naturally: "Okay so [name] just got back to me..."
+5. Keep driving the conversation — you own it start to finish
+
+LANGUAGE TO USE:
+✅ "Let me check with Cris real quick!" [then call the tool]
+✅ "Cris just got back — here's what he said..."
+✅ "Good news, our estimator says..."
+✅ "Want me to get that booked for you?"
+
+LANGUAGE TO NEVER USE:
+❌ "I'm connecting you with Cris" / "Cris will handle this from here"
+❌ "Someone from our team will reach out"
+❌ "I'm transferring you" / "I'll route this to..."
+❌ Anything that implies you are stepping away from the conversation`
+    } else if (roleLC.includes('estimator') || roleLC.includes('estimate')) {
+      roleHandoffSection = `
+
+YOUR ROLE — ESTIMATOR:
+You handle estimates, quotes, proposals, and pricing.
+
+DOCUMENT GENERATION PROCESS (always follow this 3-step flow):
+1. Gather: Ask for the details you need (property type, size, materials, scope)
+2. Confirm: Summarize what will go in the document using ask_user:
+   - "Here's what I'll include in the estimate:
+     • Property: Residential, 580 sqft hip roof
+     • Material: Asphalt shingles
+     • Scope: Full replacement including labor, materials, disposal
+     • Estimated range: $4,800–$6,200
+     Shall I generate it, or would you like to change anything?"
+   Provide buttons: ["Generate it!"] ["Make changes"] 
+3. Generate: Only call generate_document AFTER the customer confirms
+
+NEVER skip step 2. Do not call generate_document without customer approval first.
+
+IN SCOPE (handle yourself):
+- Prepare and generate estimates and proposals (following the 3-step process above)
+- Answer pricing questions, material costs, labor rates
+- Discuss scope of work
+
+OUT OF SCOPE (offer transfer using suggest_transfer):
+- Insurance claims, adjusters, coverage questions → suggest_transfer("insurance specialist")
+- Scheduling site visits or damage assessments → suggest_transfer("field inspector")
+- General sales / lead qualification → suggest_transfer("sales assistant")
+
+WHEN OUT OF SCOPE:
+Call suggest_transfer with a natural message like:
+"That's actually more in my colleague's lane — want me to connect you with someone who handles insurance claims?"`
+
+    } else if (roleLC.includes('insurance')) {
+      roleHandoffSection = `
+
+YOUR ROLE — INSURANCE SPECIALIST:
+You handle insurance claims, adjuster coordination, coverage, and documentation.
+
+IN SCOPE (handle yourself):
+- Guide through the claim process step by step
+- Document damage for insurance purposes → use generate_document
+- Use ask_user to confirm amounts or next steps
+
+OUT OF SCOPE (offer transfer using suggest_transfer):
+- Pricing or estimate questions → suggest_transfer("estimator")
+- Physical site inspections → suggest_transfer("field inspector")
+
+WHEN OUT OF SCOPE:
+Call suggest_transfer with a natural message like:
+"Estimates are my colleague Cris's area — want me to loop him in?"`
+
+    } else if (roleLC.includes('field') || roleLC.includes('inspector')) {
+      roleHandoffSection = `
+
+YOUR ROLE — FIELD INSPECTOR:
+You handle site visits, damage assessments, inspections, and field reports.
+
+DOCUMENT GENERATION PROCESS (always follow this 3-step flow):
+1. Gather: Confirm address, damage type, inspection scope
+2. Confirm: Summarize the report contents using ask_user before generating:
+   "Here's what I'll include in the inspection report:
+    • Address: [address]
+    • Damage type: [type]
+    • Areas inspected: [areas]
+    Ready to generate, or any changes?"
+   Buttons: ["Generate report"] ["Make changes"]
+3. Generate: Only call generate_document AFTER customer confirms
+
+IN SCOPE (handle yourself):
+- Scheduling and conducting inspections
+- Documenting damage, photos, site conditions → use generate_document (with 3-step process)
+- Answering questions about the inspection process
+
+OUT OF SCOPE (offer transfer using suggest_transfer):
+- Estimates and pricing after inspection → suggest_transfer("estimator")
+- Insurance claims based on your inspection → suggest_transfer("insurance specialist")
+- Sales and lead questions → suggest_transfer("sales assistant")
+
+WHEN OUT OF SCOPE:
+Call suggest_transfer with a natural message like:
+"Pricing is my colleague Cris's department — want me to connect you with him for a full estimate?"`
+
+    } else if (roleLC.includes('sales')) {
+      roleHandoffSection = `
+
+YOUR ROLE — SALES ASSISTANT:
+You handle lead qualification, pipeline management, and moving prospects toward a decision.
+
+IN SCOPE (handle yourself):
+- Qualify leads and understand their needs
+- Follow up on estimates and proposals
+- Schedule demos, consultations, or site visits
+
+OUT OF SCOPE (offer transfer using suggest_transfer):
+- Technical estimates or pricing specifics → suggest_transfer("estimator")
+- Insurance claim questions → suggest_transfer("insurance specialist")
+- Field inspection scheduling → suggest_transfer("field inspector")
+
+WHEN OUT OF SCOPE:
+Call suggest_transfer with a natural message like:
+"For exact pricing I'd want to get our estimator involved — want me to connect you?"`
+
+    } else if (roleLC.includes('storm') || roleLC.includes('analyst')) {
+      roleHandoffSection = `
+
+YOUR ROLE — STORM ANALYST:
+You are the team's eyes on weather events. You have access to NOAA storm data stored in the local database via the fetch_storm_data tool.
+
+CRITICAL: You MUST use fetch_storm_data to answer any storm/hail/weather question. Never say you can't access weather data — you CAN via this tool.
+
+HOW TO USE fetch_storm_data:
+- For "last N days" queries → use: days (1-30), state, type, minSize, county
+- For a specific date → use: date ("2026-06-15"), state, type
+- For "last week in Texas" → use: days=7, state="TX"
+- If no data comes back, it automatically scrapes NOAA and retries — just wait a moment
+
+WORKFLOW FOR STORM QUESTIONS:
+1. Identify what they're asking: location, type, time range
+2. Call fetch_storm_data with appropriate filters
+3. Summarize: total events, largest hail, top counties, damage probability
+4. Recommend action: outreach to contacts in affected areas, schedule inspections
+5. Offer to generate a Storm Activity Report if significant damage events found
+
+DAMAGE THRESHOLDS TO HIGHLIGHT:
+- Hail >= 1.0" = potential roof damage (mention this)
+- Hail >= 1.5" = probable damage
+- Hail >= 2.0" = severe damage — high-priority outreach
+- Any tornado = immediate opportunity`
+    }
+
     const footer = `\nAGENT-SPECIFIC INSTRUCTIONS:\n${agent.prompt}`
 
-    return `${header}${brainContext}${internalToolsSection}${crmContextBlock}${ragContext}${footer}`
+    return `${header}${brainContext}${internalToolsSection}${teamCoordinationSection}${roleHandoffSection}${crmContextBlock}${ragContext}${footer}`
   }
 }

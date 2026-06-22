@@ -8,9 +8,10 @@ import { KnowledgeModule } from '../knowledge/knowledge.module'
 import { TasksModule } from '../tasks/tasks.module'
 import { PublicChatModule } from '../public-chat/public-chat.module'
 import { DocumentsModule } from '../documents/documents.module'
+import { StormModule } from '../storm/storm.module'
 
 @Module({
-  imports: [AIModule, CrmModule, BrainModule, KnowledgeModule, TasksModule, DocumentsModule, forwardRef(() => PublicChatModule)],
+  imports: [AIModule, CrmModule, BrainModule, KnowledgeModule, TasksModule, DocumentsModule, StormModule, forwardRef(() => PublicChatModule)],
   providers: [ChatService],
   controllers: [ChatController],
   exports: [ChatService],

@@ -72,9 +72,13 @@ const INDUSTRY_CRM_MAP: Record<string, string[]> = {
 interface Stats { tenants: number; agents: number; conversations: number; users: number }
 interface Tenant {
   id: string; name: string; slug: string; industry: string | null
-  isActive: boolean; createdAt: string
+  isActive: boolean; isApproved: boolean; createdAt: string
   owner: { name: string; email: string; isActive: boolean } | null
   stats: { agents: number; conversations: number; users: number }
+}
+interface PendingTenant {
+  id: string; name: string; slug: string; industry: string | null; createdAt: string
+  owner: { name: string; email: string } | null
 }
 interface Template {
   id: string; name: string; role: string; description: string
@@ -84,13 +88,14 @@ interface TenantAgent { id: string; name: string; role: string; status: string }
 
 const emptyConfig = { industry: '', crmProvider: '', crmName: '', crmBaseUrl: '', crmApiKey: '' }
 
-const TABS = ['Overview', 'Tenants', 'Marketplace']
+const TABS = ['Overview', 'Approvals', 'Tenants', 'Marketplace']
 
 export default function SuperAdminDashboard() {
   const router = useRouter()
   const [tab, setTab] = useState('Overview')
   const [stats, setStats] = useState<Stats | null>(null)
   const [tenants, setTenants] = useState<Tenant[]>([])
+  const [pendingTenants, setPendingTenants] = useState<PendingTenant[]>([])
   const [templates, setTemplates] = useState<Template[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTenant, setSearchTenant] = useState('')
@@ -109,14 +114,16 @@ export default function SuperAdminDashboard() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [statsRes, tenantsRes, templatesRes] = await Promise.all([
+      const [statsRes, tenantsRes, templatesRes, pendingRes] = await Promise.all([
         api.get('/super-admin/stats'),
         api.get('/super-admin/tenants'),
         api.get('/super-admin/templates'),
+        api.get('/super-admin/tenants/pending'),
       ])
       setStats(statsRes.data)
       setTenants(tenantsRes.data)
       setTemplates(templatesRes.data)
+      setPendingTenants(pendingRes.data)
     } catch {
       router.replace('/super-admin/login')
     } finally {
@@ -134,6 +141,17 @@ export default function SuperAdminDashboard() {
   async function deleteTenant(id: string) {
     if (!confirm('Permanently delete this tenant? All data will be lost.')) return
     await api.delete(`/super-admin/tenants/${id}`)
+    loadData()
+  }
+
+  async function approveTenant(id: string) {
+    await api.post(`/super-admin/tenants/${id}/approve`)
+    loadData()
+  }
+
+  async function rejectTenant(id: string) {
+    if (!confirm('Reject this signup? The account will be permanently removed.')) return
+    await api.post(`/super-admin/tenants/${id}/reject`)
     loadData()
   }
 
@@ -226,9 +244,14 @@ export default function SuperAdminDashboard() {
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${tab === t ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}
+              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center justify-between ${tab === t ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}
             >
-              {t}
+              <span>{t}</span>
+              {t === 'Approvals' && pendingTenants.length > 0 && (
+                <span className="bg-amber-500 text-black text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center">
+                  {pendingTenants.length}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -247,7 +270,14 @@ export default function SuperAdminDashboard() {
           </div>
         ) : (
           <>
-            {tab === 'Overview' && <OverviewTab stats={stats} tenants={tenants} />}
+            {tab === 'Overview' && <OverviewTab stats={stats} tenants={tenants} pendingCount={pendingTenants.length} onViewApprovals={() => setTab('Approvals')} />}
+            {tab === 'Approvals' && (
+              <ApprovalsTab
+                tenants={pendingTenants}
+                onApprove={approveTenant}
+                onReject={rejectTenant}
+              />
+            )}
             {tab === 'Tenants' && (
               <TenantsTab
                 tenants={filteredTenants}
@@ -508,7 +538,9 @@ function DarkInput({ label, placeholder, value, onChange, type = 'text' }: {
 
 // ── Overview Tab ──────────────────────────────────────────────────
 
-function OverviewTab({ stats, tenants }: { stats: Stats | null; tenants: Tenant[] }) {
+function OverviewTab({ stats, tenants, pendingCount, onViewApprovals }: {
+  stats: Stats | null; tenants: Tenant[]; pendingCount: number; onViewApprovals: () => void
+}) {
   const statCards = [
     { label: 'Total Tenants', value: stats?.tenants ?? 0, color: 'text-indigo-400' },
     { label: 'Total Agents', value: stats?.agents ?? 0, color: 'text-emerald-400' },
@@ -522,6 +554,24 @@ function OverviewTab({ stats, tenants }: { stats: Stats | null; tenants: Tenant[
         <h1 className="text-2xl font-bold">Platform Overview</h1>
         <p className="text-gray-400 mt-1">Real-time platform statistics</p>
       </div>
+
+      {pendingCount > 0 && (
+        <div
+          onClick={onViewApprovals}
+          className="flex items-center justify-between bg-amber-900/20 border border-amber-700/40 rounded-xl px-5 py-4 cursor-pointer hover:bg-amber-900/30 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-amber-500/20 flex items-center justify-center">
+              <span className="text-amber-400 text-lg font-bold">!</span>
+            </div>
+            <div>
+              <p className="text-amber-300 font-semibold text-sm">{pendingCount} signup{pendingCount > 1 ? 's' : ''} awaiting approval</p>
+              <p className="text-amber-500/70 text-xs">Review and approve new tenant registrations</p>
+            </div>
+          </div>
+          <span className="text-amber-400 text-sm font-medium">Review →</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {statCards.map(card => (
@@ -563,6 +613,73 @@ function OverviewTab({ stats, tenants }: { stats: Stats | null; tenants: Tenant[
           </table>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── Approvals Tab ─────────────────────────────────────────────────
+
+function ApprovalsTab({ tenants, onApprove, onReject }: {
+  tenants: PendingTenant[]
+  onApprove: (id: string) => void
+  onReject: (id: string) => void
+}) {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">Pending Approvals</h1>
+        <p className="text-gray-400 mt-1">
+          {tenants.length === 0 ? 'No pending signups — all caught up!' : `${tenants.length} signup${tenants.length > 1 ? 's' : ''} waiting for review`}
+        </p>
+      </div>
+
+      {tenants.length === 0 ? (
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-12 flex flex-col items-center justify-center gap-3 text-center">
+          <div className="w-14 h-14 rounded-full bg-green-900/30 flex items-center justify-center">
+            <span className="text-2xl">✓</span>
+          </div>
+          <p className="text-gray-300 font-medium">All caught up</p>
+          <p className="text-gray-500 text-sm">No pending tenant approvals at this time.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {tenants.map(t => (
+            <div key={t.id} className="bg-gray-900 rounded-xl border border-gray-800 p-5 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-amber-900/40 flex items-center justify-center text-amber-400 font-bold text-sm shrink-0">
+                  {t.name.charAt(0).toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <p className="font-semibold text-white truncate">{t.name}</p>
+                  <p className="text-sm text-gray-400 truncate">{t.owner?.email ?? 'No owner'}</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    {t.industry && (
+                      <span className="bg-indigo-900/40 text-indigo-300 text-xs px-2 py-0.5 rounded-full">{t.industry}</span>
+                    )}
+                    <span className="text-xs text-gray-600">
+                      Registered {new Date(t.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => onApprove(t.id)}
+                  className="bg-green-600 hover:bg-green-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => onReject(t.id)}
+                  className="bg-red-900/40 hover:bg-red-900/70 text-red-400 text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -627,9 +744,16 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
                 <td className="px-4 py-3 text-gray-400">{t.stats.users}</td>
                 <td className="px-4 py-3 text-gray-400">{t.stats.agents}</td>
                 <td className="px-4 py-3">
-                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${t.isActive ? 'bg-green-900/40 text-green-400' : 'bg-red-900/40 text-red-400'}`}>
-                    {t.isActive ? 'Active' : 'Suspended'}
-                  </span>
+                  <div className="flex flex-col gap-1">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium w-fit ${t.isActive ? 'bg-green-900/40 text-green-400' : 'bg-red-900/40 text-red-400'}`}>
+                      {t.isActive ? 'Active' : 'Suspended'}
+                    </span>
+                    {!t.isApproved && (
+                      <span className="px-2 py-0.5 rounded-full text-xs font-medium w-fit bg-amber-900/40 text-amber-400">
+                        Pending
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5">

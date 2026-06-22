@@ -24,6 +24,7 @@ import { QueueModule } from './queue/queue.module'
 import { RealtimeModule } from './realtime/realtime.module'
 import { IntegrationsModule } from './modules/integrations/integrations.module'
 import { DocumentTemplatesModule } from './modules/document-templates/document-templates.module'
+import { StormModule } from './modules/storm/storm.module'
 import { ScheduleModule } from '@nestjs/schedule'
 
 @Module({
@@ -54,6 +55,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     PublicChatModule,
     IntegrationsModule,
     DocumentTemplatesModule,
+    StormModule,
   ],
 })
 export class AppModule {}

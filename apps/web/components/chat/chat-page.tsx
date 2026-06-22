@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle } from 'lucide-react'
+import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle, Trash2 } from 'lucide-react'
 import { CRMRecordCard } from './crm-record-card'
 import { ChatActionCard, type ActionCard } from './action-cards'
 
@@ -72,6 +72,8 @@ export function ChatPage() {
   const [streamingMsg, setStreamingMsg] = useState<string | null>(null)
   const [pendingCards, setPendingCards] = useState<ActionCard[]>([])
   const [activeFilter, setActiveFilter] = useState<FilterTab>('chat')
+  const [confirmClear, setConfirmClear] = useState(false)
+  const [checkingWith, setCheckingWith] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   // ── Load active agents ─────────────────────────────────────────────
@@ -161,16 +163,18 @@ export function ChatPage() {
           if (!line.startsWith('data: ')) continue
           try {
             const payload = JSON.parse(line.slice(6))
-            if (payload.token) { accumulated += payload.token; setStreamingMsg(accumulated) }
+            if (payload.token) { accumulated += payload.token; setStreamingMsg(accumulated); setCheckingWith(null) }
+            if (payload.checking) setCheckingWith(payload.withName ?? 'team')
             if (payload.action_card) setPendingCards(prev => [...prev, payload.action_card as ActionCard])
-            if (payload.done) { setStreamingMsg(null); await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] }) }
-            if (payload.error) setStreamingMsg(`Error: ${payload.error}`)
+            if (payload.done) { setStreamingMsg(null); setCheckingWith(null); await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] }) }
+            if (payload.error) { setStreamingMsg(`Error: ${payload.error}`); setCheckingWith(null) }
           } catch { /* partial */ }
         }
       }
     } catch (err: any) {
       if (err.name !== 'AbortError') {
         setStreamingMsg(null)
+        setCheckingWith(null)
         try {
           await api.post(`/chat/${conversationId}/messages`, { content: text })
           await refetchMessages()
@@ -182,6 +186,61 @@ export function ChatPage() {
   }, [message, conversationId, sending, refetchMessages, qc])
 
   const selectedAgent = agents.find((a: any) => a.id === selectedAgentId)
+
+  // When user clicks a choice button in an ask_user card, auto-send it as a message
+  const handleChoiceSelected = useCallback(async (choice: string) => {
+    if (!conversationId || sending) return
+    setSending(true)
+    setStreamingMsg('')
+    setPendingCards([])
+
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    const authToken = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null
+    const url = `${API_BASE}/chat/${conversationId}/stream?content=${encodeURIComponent(choice)}`
+
+    try {
+      const resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${authToken}` },
+        signal: controller.signal,
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const reader = resp.body!.getReader()
+      const decoder = new TextDecoder()
+      let accumulated = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const chunk = decoder.decode(value, { stream: true })
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const payload = JSON.parse(line.slice(6))
+            if (payload.token) { accumulated += payload.token; setStreamingMsg(accumulated); setCheckingWith(null) }
+            if (payload.checking) setCheckingWith(payload.withName ?? 'team')
+            if (payload.action_card) setPendingCards(prev => [...prev, payload.action_card as ActionCard])
+            if (payload.done) { setStreamingMsg(null); setCheckingWith(null); await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] }) }
+          } catch { /* partial */ }
+        }
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') { setStreamingMsg(null); setCheckingWith(null) }
+    } finally {
+      setSending(false)
+    }
+  }, [conversationId, sending, refetchMessages, qc])
+
+  const clearMutation = useMutation({
+    mutationFn: () => api.delete(`/chat/${conversationId}/messages`),
+    onSuccess: () => {
+      setPendingCards([])
+      setStreamingMsg(null)
+      setConfirmClear(false)
+      qc.invalidateQueries({ queryKey: ['messages', conversationId] })
+    },
+  })
 
   return (
     <div className="flex h-[calc(100vh-112px)] border border-border rounded-lg overflow-hidden bg-card">
@@ -257,6 +316,34 @@ export function ChatPage() {
                   <p className="text-sm font-semibold">{selectedAgent?.name}</p>
                   <p className="text-xs text-muted-foreground">{selectedAgent?.role}</p>
                 </div>
+                {/* Clear conversation button */}
+                {!confirmClear ? (
+                  <button
+                    onClick={() => setConfirmClear(true)}
+                    className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                    title="Clear conversation"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-muted-foreground">Clear all?</span>
+                    <button
+                      onClick={() => clearMutation.mutate()}
+                      disabled={clearMutation.isPending}
+                      className="text-xs px-2 py-1 rounded bg-destructive text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50 transition-colors"
+                    >
+                      {clearMutation.isPending ? 'Clearing...' : 'Yes, clear'}
+                    </button>
+                    <button
+                      onClick={() => setConfirmClear(false)}
+                      className="text-xs px-2 py-1 rounded border border-border hover:bg-accent transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-1.5 text-xs text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
                   Active
@@ -364,26 +451,29 @@ export function ChatPage() {
 
                 return (
                   <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[72%] rounded-xl px-4 py-2.5 text-sm ${
-                      isUser
-                        ? 'bg-primary text-primary-foreground rounded-br-none'
-                        : 'bg-muted text-foreground rounded-bl-none'
-                    }`}>
-                      <p className="whitespace-pre-wrap break-words">{msg.content}</p>
-                      {msg.streaming && (
-                        <span className="inline-block w-1.5 h-4 bg-current ml-0.5 animate-pulse rounded-sm align-text-bottom" />
-                      )}
-                      {!msg.streaming && (
-                        <p className={`text-xs mt-1 ${isUser ? 'text-primary-foreground/60' : 'text-muted-foreground'}`}>
-                          {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </p>
-                      )}
+                    <div className="max-w-[72%] space-y-1">
+                      <div className={`rounded-xl px-4 py-2.5 text-sm ${
+                        isUser
+                          ? 'bg-primary text-primary-foreground rounded-br-none'
+                          : 'bg-muted text-foreground rounded-bl-none'
+                      }`}>
+                        <p className="whitespace-pre-wrap break-words">{msg.content}</p>
+                        {msg.streaming && (
+                          <span className="inline-block w-1.5 h-4 bg-current ml-0.5 animate-pulse rounded-sm align-text-bottom" />
+                        )}
+                        {!msg.streaming && (
+                          <p className={`text-xs mt-1 ${isUser ? 'text-primary-foreground/60' : 'text-muted-foreground'}`}>
+                            {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )
               })}
 
-              {sending && streamingMsg === '' && (
+              {/* Generic typing dots — shown while waiting for first token */}
+              {sending && streamingMsg === '' && !checkingWith && (
                 <div className="flex justify-start">
                   <div className="bg-muted rounded-xl px-4 py-3 flex items-center gap-1.5 text-muted-foreground text-sm rounded-bl-none">
                     <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -393,9 +483,35 @@ export function ChatPage() {
                 </div>
               )}
 
+              {/* "Checking with [Name]..." indicator during specialist consultation */}
+              {checkingWith && (
+                <div className="flex justify-start">
+                  <div className="bg-amber-500/8 border border-amber-500/20 rounded-xl px-4 py-2.5 flex items-center gap-2.5 text-sm rounded-bl-none max-w-xs">
+                    <div className="flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                    <span className="text-amber-700 dark:text-amber-400 text-xs font-medium">
+                      Checking with {checkingWith}...
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {pendingCards.map((card, i) => (
-                <div key={`${card.type}-${card.id}-${i}`} className="flex justify-start pl-1">
-                  <ChatActionCard card={card} />
+                <div
+                  key={`${card.type}-${card.id}-${i}`}
+                  className={card.type === 'handoff'
+                    ? 'flex justify-start pl-1 py-0.5'   // compact pill row for handoffs
+                    : 'flex justify-start pl-1'           // full card row for everything else
+                  }
+                >
+                  <ChatActionCard
+                    card={card}
+                    onChoiceSelected={handleChoiceSelected}
+                    onTransfer={(agentId) => setSelectedAgentId(agentId)}
+                  />
                 </div>
               ))}
 

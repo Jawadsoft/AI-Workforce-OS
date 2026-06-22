@@ -65,6 +65,24 @@ export class SuperAdminController {
     return this.service.listTenants()
   }
 
+  @Get('tenants/pending')
+  @ApiOperation({ summary: 'List tenants awaiting approval' })
+  listPendingTenants() {
+    return this.service.listPendingTenants()
+  }
+
+  @Post('tenants/:id/approve')
+  @ApiOperation({ summary: 'Approve a pending tenant signup' })
+  approveTenant(@Param('id') id: string) {
+    return this.service.approveTenant(id)
+  }
+
+  @Post('tenants/:id/reject')
+  @ApiOperation({ summary: 'Reject and delete a pending tenant signup' })
+  rejectTenant(@Param('id') id: string) {
+    return this.service.rejectTenant(id)
+  }
+
   @Get('tenants/:id')
   @ApiOperation({ summary: 'Get tenant detail' })
   getTenant(@Param('id') id: string) {

@@ -17,7 +17,7 @@ interface AuthState {
   isLoading: boolean
   isAuthenticated: boolean
   login: (email: string, password: string) => Promise<void>
-  register: (data: RegisterData) => Promise<void>
+  register: (data: RegisterData) => Promise<{ pending: boolean; message: string }>
   logout: () => void
   fetchMe: () => Promise<void>
 }
@@ -55,10 +55,9 @@ export const useAuthStore = create<AuthState>()(
         set({ isLoading: true })
         try {
           const { data } = await api.post('/auth/register', registerData)
-          const token = data.access_token
-          localStorage.setItem('access_token', token)
-          set({ token, isLoading: false })
-          await get().fetchMe()
+          set({ isLoading: false })
+          // Registration now returns a pending approval response (no token)
+          return data
         } catch (err) {
           set({ isLoading: false })
           throw err

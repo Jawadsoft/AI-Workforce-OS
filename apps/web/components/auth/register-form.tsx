@@ -1,15 +1,14 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuthStore } from '@/stores/auth.store'
-import { Zap, Loader2 } from 'lucide-react'
+import { Zap, Loader2, CheckCircle, Clock } from 'lucide-react'
 
 export function RegisterForm() {
-  const router = useRouter()
   const { register, isLoading } = useAuthStore()
   const [error, setError] = useState('')
+  const [pending, setPending] = useState(false)
   const [form, setForm] = useState({
     companyName: '',
     name: '',
@@ -25,11 +24,46 @@ export function RegisterForm() {
     e.preventDefault()
     setError('')
     try {
-      await register(form)
-      router.push('/onboarding')
+      const result = await register(form)
+      if (result?.pending) {
+        setPending(true)
+      }
     } catch (err: any) {
       setError(err?.response?.data?.message ?? 'Registration failed. Please try again.')
     }
+  }
+
+  if (pending) {
+    return (
+      <div className="space-y-6 text-center">
+        <div className="flex justify-center mb-4">
+          <div className="w-16 h-16 bg-amber-500/10 rounded-full flex items-center justify-center">
+            <Clock className="w-8 h-8 text-amber-500" />
+          </div>
+        </div>
+        <div className="space-y-2">
+          <h1 className="text-2xl font-semibold tracking-tight">Account Pending Approval</h1>
+          <p className="text-muted-foreground text-sm max-w-sm mx-auto">
+            Your account for <span className="font-medium text-foreground">{form.companyName}</span> has been created and is awaiting review by our team.
+          </p>
+        </div>
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-5 py-4 text-sm text-amber-700 dark:text-amber-400 space-y-2">
+          <div className="flex items-center gap-2 font-medium">
+            <CheckCircle className="w-4 h-4 shrink-0" />
+            Account created successfully
+          </div>
+          <p className="text-left text-xs text-muted-foreground leading-relaxed">
+            We will review your details and activate your account shortly. You will be able to log in once an admin approves your request.
+          </p>
+        </div>
+        <p className="text-center text-sm text-muted-foreground">
+          Already approved?{' '}
+          <Link href="/login" className="text-foreground font-medium hover:underline">
+            Sign in
+          </Link>
+        </p>
+      </div>
+    )
   }
 
   return (

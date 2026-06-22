@@ -1,12 +1,16 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck, CheckSquare, FileText } from 'lucide-react'
 import { AgentCRMPermissions } from './agent-crm-permissions'
+import { useAuthStore } from '@/stores/auth.store'
+import { toast } from 'sonner'
+
+const CAN_EDIT_ROLES = ['SUPER_ADMIN', 'TENANT_OWNER', 'TENANT_ADMIN']
 
 const TABS = ['Overview', 'Configuration', 'Brain Memory', 'CRM Access', 'Tasks', 'Conversations']
 const TOOLS = ['create_task', 'crm_update', 'send_email', 'search_knowledge', 'generate_document', 'schedule_appointment']
@@ -36,12 +40,30 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   })
 
   const updateMutation = useMutation({
-    mutationFn: () => api.patch(`/agents/${agentId}`, edited),
+    mutationFn: () => {
+      // Only send fields accepted by UpdateAgentDto
+      const { name, role, prompt, tools, permissions, status, approvalRules } = edited ?? {}
+      const payload: any = {}
+      if (name !== undefined) payload.name = name
+      if (role !== undefined) payload.role = role
+      if (prompt !== undefined) payload.prompt = prompt
+      if (tools !== undefined) payload.tools = tools
+      if (permissions !== undefined) payload.permissions = permissions
+      if (status !== undefined) payload.status = status
+      if (approvalRules !== undefined) payload.approvalRules = approvalRules
+      return api.patch(`/agents/${agentId}`, payload)
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agent', agentId] })
+      qc.invalidateQueries({ queryKey: ['agents'] })
       setEdited(null)
       setSaved(true)
+      toast.success('Agent updated successfully')
       setTimeout(() => setSaved(false), 2000)
+    },
+    onError: (err: any) => {
+      const msg = err?.response?.data?.message ?? 'Failed to save changes'
+      toast.error(msg)
     },
   })
 
@@ -50,6 +72,11 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
       api.post(`/agents/${agentId}/${status === 'ACTIVE' ? 'deactivate' : 'activate'}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['agent', agentId] }),
   })
+
+  const { user, fetchMe, isAuthenticated } = useAuthStore()
+  const canEdit = CAN_EDIT_ROLES.includes(user?.role ?? '')
+
+  useEffect(() => { if (!isAuthenticated) fetchMe() }, [])
 
   if (isLoading || !agent) {
     return (
@@ -83,8 +110,8 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
             </div>
           )}
           <div>
-            <h1 className="text-xl font-semibold">{agent.name}</h1>
-            <p className="text-sm text-muted-foreground">{agent.role}</p>
+            <h1 className="text-xl font-semibold">{data.name}</h1>
+            <p className="text-sm text-muted-foreground">{data.role}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -140,13 +167,34 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
       {/* Configuration */}
       {tab === 'Configuration' && (
         <div className="rounded-lg border border-border bg-card p-5 space-y-5">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm font-medium">Agent Name</label>
+              <input
+                value={data.name ?? ''}
+                readOnly={!canEdit}
+                onChange={canEdit ? (e) => setEdited({ ...(edited ?? agent), name: e.target.value }) : undefined}
+                className={`w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring ${!canEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium">Role / Title</label>
+              <input
+                value={data.role ?? ''}
+                readOnly={!canEdit}
+                onChange={canEdit ? (e) => setEdited({ ...(edited ?? agent), role: e.target.value }) : undefined}
+                className={`w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring ${!canEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+              />
+            </div>
+          </div>
           <div>
             <label className="text-sm font-medium">System Prompt</label>
             <textarea
               value={data.prompt ?? ''}
-              onChange={(e) => setEdited({ ...(edited ?? agent), prompt: e.target.value })}
+              onChange={canEdit ? (e) => setEdited({ ...(edited ?? agent), prompt: e.target.value }) : undefined}
+              readOnly={!canEdit}
               rows={8}
-              className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none font-mono"
+              className={`w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none font-mono ${!canEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
           </div>
           <div>
@@ -156,12 +204,13 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                 <button
                   key={t}
                   type="button"
-                  onClick={() => toggleTool(t)}
+                  onClick={canEdit ? () => toggleTool(t) : undefined}
+                  disabled={!canEdit}
                   className={`text-xs px-3 py-1 rounded-full border transition-colors ${
                     (data.tools ?? []).includes(t)
                       ? 'border-primary bg-primary/10 text-primary'
                       : 'border-border text-muted-foreground hover:border-muted-foreground'
-                  }`}
+                  } ${!canEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
                 >
                   {t.replace(/_/g, ' ')}
                 </button>
@@ -169,7 +218,13 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
             </div>
           </div>
           {edited && (
-            <div className="flex justify-end">
+            <div className="flex items-center justify-end gap-3">
+              <button
+                onClick={() => setEdited(null)}
+                className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Discard
+              </button>
               <button
                 onClick={() => updateMutation.mutate()}
                 disabled={updateMutation.isPending}

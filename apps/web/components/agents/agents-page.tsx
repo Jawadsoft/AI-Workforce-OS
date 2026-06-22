@@ -1,10 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
-import { Plus, Search, Power, Zap, RefreshCw, Loader2 } from 'lucide-react'
+import { Plus, Search, Power, Zap, RefreshCw, Loader2, Pencil, X, Check } from 'lucide-react'
+import { useAuthStore } from '@/stores/auth.store'
+
+const CAN_EDIT_ROLES = ['SUPER_ADMIN', 'TENANT_OWNER', 'TENANT_ADMIN']
 
 const STATUS_COLORS: Record<string, string> = {
   ACTIVE: 'bg-green-500/10 text-green-500',
@@ -17,6 +20,22 @@ export function AgentsPage() {
   const [filter, setFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL')
   const qc = useQueryClient()
   const [resetting, setResetting] = useState(false)
+  const { user, fetchMe, isAuthenticated } = useAuthStore()
+  const canEdit = CAN_EDIT_ROLES.includes(user?.role ?? '')
+
+  useEffect(() => { if (!isAuthenticated) fetchMe() }, [])
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editRole, setEditRole] = useState('')
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name, role }: { id: string; name: string; role: string }) =>
+      api.patch(`/agents/${id}`, { name, role }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agents'] })
+      setEditingId(null)
+    },
+  })
 
   const { data: agents = [], isLoading } = useQuery({
     queryKey: ['agents'],
@@ -135,14 +154,60 @@ export function AgentsPage() {
                   {agent.name[0]}
                 </div>
               )}
-              <div className="flex-1 min-w-0">
-                <Link href={`/agents/${agent.id}`} className="font-medium text-sm hover:underline">{agent.name}</Link>
-                <p className="text-xs text-muted-foreground">{agent.role}</p>
-              </div>
-              <div className="flex items-center gap-3">
+
+              {editingId === agent.id ? (
+                /* ── inline edit mode ── */
+                <div className="flex-1 flex items-center gap-2 min-w-0">
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    placeholder="Agent name"
+                    className="w-36 rounded-md border border-border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <input
+                    value={editRole}
+                    onChange={e => setEditRole(e.target.value)}
+                    placeholder="Role / title"
+                    className="w-36 rounded-md border border-border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <button
+                    onClick={() => renameMutation.mutate({ id: agent.id, name: editName, role: editRole })}
+                    disabled={renameMutation.isPending}
+                    className="p-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                    title="Save"
+                  >
+                    {renameMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                  </button>
+                  <button
+                    onClick={() => setEditingId(null)}
+                    className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground"
+                    title="Cancel"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ) : (
+                /* ── normal display mode ── */
+                <div className="flex-1 min-w-0">
+                  <Link href={`/agents/${agent.id}`} className="font-medium text-sm hover:underline">{agent.name}</Link>
+                  <p className="text-xs text-muted-foreground">{agent.role}</p>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[agent.status] ?? STATUS_COLORS.INACTIVE}`}>
                   {agent.status}
                 </span>
+                {canEdit && editingId !== agent.id && (
+                  <button
+                    onClick={() => { setEditingId(agent.id); setEditName(agent.name); setEditRole(agent.role) }}
+                    title="Rename"
+                    className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                )}
                 <button
                   onClick={() => toggleMutation.mutate({ id: agent.id, status: agent.status })}
                   title={agent.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
@@ -150,7 +215,7 @@ export function AgentsPage() {
                 >
                   <Power className="w-4 h-4" />
                 </button>
-                <Link href={`/agents/${agent.id}`} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+                <Link href={`/agents/${agent.id}`} className="text-xs text-muted-foreground hover:text-foreground transition-colors px-1">
                   Configure
                 </Link>
               </div>

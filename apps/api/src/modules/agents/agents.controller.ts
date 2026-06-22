@@ -2,6 +2,7 @@ import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, Res } fro
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { IsString, IsOptional, IsArray } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
+import { TenantAdminGuard } from '../../common/guards/tenant-admin.guard'
 import { CurrentTenant } from '../../common/decorators/tenant.decorator'
 import { AgentsService } from './agents.service'
 import { ElevenLabsProvider } from '../../ai/providers/elevenlabs.provider'
@@ -18,8 +19,12 @@ class CreateAgentDto {
 
 class UpdateAgentDto {
   @IsOptional() @IsString() name?: string
+  @IsOptional() @IsString() role?: string
   @IsOptional() @IsString() prompt?: string
   @IsOptional() @IsArray() tools?: string[]
+  @IsOptional() @IsArray() permissions?: string[]
+  @IsOptional() @IsString() status?: string
+  @IsOptional() approvalRules?: any
   @IsOptional() @IsArray() permissions?: string[]
 }
 
@@ -68,7 +73,8 @@ export class AgentsController {
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Update agent' })
+  @UseGuards(TenantAdminGuard)
+  @ApiOperation({ summary: 'Update agent (Tenant Admin / Owner only)' })
   update(@CurrentTenant() tenantId: string, @Param('id') id: string, @Body() dto: UpdateAgentDto) {
     return this.service.update(tenantId, id, dto)
   }

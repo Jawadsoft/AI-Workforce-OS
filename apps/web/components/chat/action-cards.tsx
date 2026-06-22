@@ -7,12 +7,13 @@ import {
   CheckCircle, Clock, AlertCircle, Upload, Loader2,
   ThumbsUp, ThumbsDown, ClipboardList, ShieldCheck,
   ChevronDown, ChevronUp, ExternalLink, FileText, Download,
+  ArrowRight, MessageCircleQuestion,
 } from 'lucide-react'
 
 export interface ActionCard {
-  type: 'task' | 'approval' | 'document'
-  id: string
-  title: string
+  type: 'task' | 'approval' | 'document' | 'handoff' | 'ask_user' | 'transfer'
+  id?: string
+  title?: string
   description?: string
   priority?: string
   status?: string
@@ -20,6 +21,17 @@ export interface ActionCard {
   docType?: string
   format?: string
   fileUrl?: string
+  // handoff fields
+  fromAgent?: { id: string; name: string; role: string }
+  toAgent?: { id: string; name: string; role: string }
+  reason?: string
+  // ask_user fields
+  question?: string
+  choices?: string[]
+  agentName?: string
+  // transfer fields
+  agentId?: string
+  agentDisplayName?: string
 }
 
 const PRIORITY_STYLES: Record<string, string> = {
@@ -267,11 +279,147 @@ function DocumentCard({ card }: { card: ActionCard }) {
   )
 }
 
+// ── Agent Handoff Card — compact collapsible pill ─────────────────
+
+function HandoffCard({ card }: { card: ActionCard }) {
+  const [expanded, setExpanded] = useState(false)
+  const toFirstName = card.toAgent?.name?.split('—')[0]?.trim().split(' ')[0] ?? card.toAgent?.name ?? 'specialist'
+  const toRole = card.toAgent?.role ?? ''
+
+  return (
+    <button
+      onClick={() => setExpanded(p => !p)}
+      className="flex items-start gap-1.5 group text-left"
+    >
+      <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-500/8 border border-purple-200/60 dark:border-purple-800/60 hover:bg-purple-500/15 transition-colors">
+        <ArrowRight className="w-3 h-3 text-purple-500 shrink-0" />
+        <span className="text-[11px] text-purple-700 dark:text-purple-400 font-medium">
+          Consulted {toFirstName}
+        </span>
+        <ChevronDown className={`w-3 h-3 text-purple-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+      </div>
+      {expanded && (
+        <div className="mt-1 ml-1 px-2.5 py-2 rounded-lg border border-purple-200/60 dark:border-purple-800/60 bg-purple-500/5 text-[11px] text-muted-foreground space-y-0.5 min-w-[180px]">
+          <p><span className="font-medium text-foreground">{card.fromAgent?.name}</span> → <span className="font-medium text-purple-700 dark:text-purple-400">{card.toAgent?.name}</span></p>
+          {toRole && <p className="text-[10px]">{toRole}</p>}
+          {card.reason && <p className="italic mt-1">"{card.reason}"</p>}
+        </div>
+      )}
+    </button>
+  )
+}
+
+// ── Ask User Card ─────────────────────────────────────────────────
+
+function AskUserCard({ card, onChoiceSelected }: { card: ActionCard; onChoiceSelected?: (choice: string) => void }) {
+  const [chosen, setChosen] = useState<string | null>(null)
+
+  const handleChoiceClick = (choice: string) => {
+    if (chosen) return // already answered
+    setChosen(choice)
+    onChoiceSelected?.(choice)
+  }
+
+  return (
+    <div className="my-2 rounded-xl border border-border bg-card overflow-hidden shadow-sm max-w-sm">
+      <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-500/5 border-b border-border">
+        <div className="w-6 h-6 rounded-full bg-amber-500/10 flex items-center justify-center shrink-0">
+          <MessageCircleQuestion className="w-3.5 h-3.5 text-amber-600" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-foreground">{card.agentName ?? 'Agent'} is asking</p>
+          <p className="text-[10px] text-muted-foreground">Input needed to proceed</p>
+        </div>
+      </div>
+      <div className="px-3 py-3 space-y-3">
+        <p className="text-sm text-foreground">{card.question}</p>
+        {card.choices && card.choices.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {card.choices.map((choice) => (
+              <button
+                key={choice}
+                onClick={() => handleChoiceClick(choice)}
+                disabled={!!chosen}
+                className={`text-xs px-3 py-1.5 rounded-full border transition-colors font-medium disabled:cursor-default
+                  ${chosen === choice
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : chosen
+                      ? 'border-border text-muted-foreground opacity-50'
+                      : 'border-border hover:border-primary hover:bg-primary/5 text-foreground'}`}
+              >
+                {chosen === choice && <CheckCircle className="w-3 h-3 inline mr-1" />}
+                {choice}
+              </button>
+            ))}
+          </div>
+        )}
+        {chosen && (
+          <p className="text-[11px] text-green-600 flex items-center gap-1">
+            <CheckCircle className="w-3 h-3" /> Sent: <strong>{chosen}</strong>
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Transfer to Specialist Card ───────────────────────────────────
+
+function TransferCard({ card, onTransfer }: { card: ActionCard; onTransfer?: (agentId: string) => void }) {
+  const [transferred, setTransferred] = useState(false)
+  return (
+    <div className="my-2 rounded-xl border border-purple-200 bg-purple-50 dark:bg-purple-900/10 dark:border-purple-800 overflow-hidden shadow-sm max-w-sm">
+      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-purple-200 dark:border-purple-800">
+        <div className="w-6 h-6 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center shrink-0">
+          <ArrowRight className="w-3.5 h-3.5 text-purple-600" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-foreground">Talk directly with {card.agentDisplayName ?? 'specialist'}?</p>
+          <p className="text-[10px] text-muted-foreground">Switch to a direct conversation</p>
+        </div>
+      </div>
+      <div className="px-3 py-3 flex items-center gap-2">
+        {!transferred ? (
+          <>
+            <button
+              onClick={() => { setTransferred(true); onTransfer?.(card.agentId!) }}
+              className="text-xs px-3 py-1.5 rounded-full bg-purple-600 text-white hover:bg-purple-700 transition-colors font-medium"
+            >
+              Yes, switch over
+            </button>
+            <button
+              onClick={() => setTransferred(true)}
+              className="text-xs px-3 py-1.5 rounded-full border border-border hover:bg-accent transition-colors"
+            >
+              No, keep chatting here
+            </button>
+          </>
+        ) : (
+          <p className="text-[11px] text-green-600 flex items-center gap-1">
+            <CheckCircle className="w-3 h-3" /> Got it!
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Main export ───────────────────────────────────────────────────
 
-export function ChatActionCard({ card }: { card: ActionCard }) {
+export function ChatActionCard({
+  card,
+  onChoiceSelected,
+  onTransfer,
+}: {
+  card: ActionCard
+  onChoiceSelected?: (choice: string) => void
+  onTransfer?: (agentId: string) => void
+}) {
   if (card.type === 'task') return <TaskCard card={card} />
   if (card.type === 'approval') return <ApprovalCard card={card} />
   if (card.type === 'document') return <DocumentCard card={card} />
+  if (card.type === 'handoff') return <HandoffCard card={card} />
+  if (card.type === 'ask_user') return <AskUserCard card={card} onChoiceSelected={onChoiceSelected} />
+  if (card.type === 'transfer') return <TransferCard card={card} onTransfer={onTransfer} />
   return null
 }

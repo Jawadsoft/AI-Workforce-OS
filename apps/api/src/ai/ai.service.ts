@@ -83,11 +83,12 @@ export class AIService {
     history: { role: 'user' | 'assistant'; content: string }[],
     tools: ToolDefinition[],
     executor: (name: string, params: Record<string, any>) => Promise<string>,
+    maxRounds = 3,
   ): Promise<string> {
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
       ...history,
     ]
-    return this.openai.chatWithTools(messages, tools, executor)
+    return this.openai.chatWithTools(messages, tools, executor, maxRounds)
   }
 }

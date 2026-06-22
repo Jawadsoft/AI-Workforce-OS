@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
+import { useAuthStore } from '@/stores/auth.store'
 
 interface CommSettings {
   twilioAccountSid: string
@@ -23,6 +24,13 @@ interface Agent {
 }
 
 export function CommunicationsSettings() {
+  const { user, fetchMe } = useAuthStore()
+  const tenantId = user?.tenantId
+
+  useEffect(() => {
+    if (!user) fetchMe()
+  }, [])
+
   const [settings, setSettings] = useState<CommSettings>({
     twilioAccountSid: '',
     twilioAuthToken: '',
@@ -213,10 +221,10 @@ export function CommunicationsSettings() {
         </div>
         <div className="p-6 space-y-3">
           {[
-            { label: 'SMS Inbound', url: `/communications/sms/inbound?tenantId={YOUR_TENANT_ID}`, method: 'HTTP POST' },
-            { label: 'WhatsApp Inbound', url: `/communications/whatsapp/inbound?tenantId={YOUR_TENANT_ID}`, method: 'HTTP POST' },
-            { label: 'Voice Inbound', url: `/communications/voice/inbound?tenantId={YOUR_TENANT_ID}`, method: 'HTTP POST' },
-            { label: 'Voice Gather (mid-call)', url: `/communications/voice/gather?tenantId={YOUR_TENANT_ID}`, method: 'HTTP POST' },
+            { label: 'SMS Inbound', url: `/communications/sms/inbound?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}`, method: 'HTTP POST' },
+            { label: 'WhatsApp Inbound', url: `/communications/whatsapp/inbound?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}`, method: 'HTTP POST' },
+            { label: 'Voice Inbound', url: `/communications/voice/inbound?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}`, method: 'HTTP POST' },
+            { label: 'Voice Gather (mid-call)', url: `/communications/voice/gather?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}`, method: 'HTTP POST' },
           ].map((item) => (
             <div key={item.label} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
               <div className="min-w-0 flex-1">

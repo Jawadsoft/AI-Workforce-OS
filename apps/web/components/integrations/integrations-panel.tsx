@@ -700,6 +700,7 @@ export function IntegrationsPanel() {
             {agents.length > 0 && (
               <DefaultAgentSetter
                 agents={agents}
+                rules={rules}
                 onApply={async (agentId) => {
                   try {
                     await Promise.all(
@@ -707,12 +708,25 @@ export function IntegrationsPanel() {
                         api.patch(`/integrations/email-rules/${r.emailType}`, { assignedAgentId: agentId })
                       )
                     )
-                    // refresh rules
                     const res = await api.get('/integrations/email-rules')
                     setRules(res.data)
                     toast.success('Default agent applied to all rules')
                   } catch {
                     toast.error('Failed to apply default agent')
+                  }
+                }}
+                onSmartAssign={async (assignments) => {
+                  try {
+                    await Promise.all(
+                      assignments.map(({ emailType, agentId }) =>
+                        api.patch(`/integrations/email-rules/${emailType}`, { assignedAgentId: agentId })
+                      )
+                    )
+                    const res = await api.get('/integrations/email-rules')
+                    setRules(res.data)
+                    toast.success(`Smart assigned ${assignments.length} rule(s) based on agent roles`)
+                  } catch {
+                    toast.error('Failed to smart assign agents')
                   }
                 }}
               />
@@ -784,30 +798,77 @@ function AccountCard({ account, onDisconnect }: { account: ConnectedAccount; onD
   )
 }
 
+// ── Role → email type keyword mapping ────────────────────────────────────────
+// Maps role keywords to email type keywords so the best agent is auto-picked
+const ROLE_EMAIL_MAP: { roleKeywords: string[]; emailKeywords: string[] }[] = [
+  { roleKeywords: ['sales', 'lead', 'qualification'], emailKeywords: ['lead', 'inquiry', 'sales', 'interest', 'prospect'] },
+  { roleKeywords: ['intake', 'receptionist', 'customer'], emailKeywords: ['general', 'inbound', 'contact', 'welcome', 'new_customer'] },
+  { roleKeywords: ['estimator', 'estimate'], emailKeywords: ['estimate', 'quote', 'quote_request', 'pricing', 'proposal'] },
+  { roleKeywords: ['inspector', 'field', 'inspection'], emailKeywords: ['inspection', 'assessment', 'site_visit', 'survey'] },
+  { roleKeywords: ['insurance', 'claim'], emailKeywords: ['insurance', 'claim', 'adjuster', 'supplement'] },
+  { roleKeywords: ['executive', 'assistant', 'coordinator'], emailKeywords: ['follow_up', 'scheduling', 'appointment', 'meeting'] },
+  { roleKeywords: ['operations', 'project'], emailKeywords: ['project', 'update', 'status', 'work_order'] },
+  { roleKeywords: ['hr', 'human'], emailKeywords: ['hr', 'hiring', 'employment', 'staff'] },
+]
+
+function findBestAgent(emailType: string, agents: AgentOption[]): AgentOption | null {
+  const type = emailType.toLowerCase()
+  for (const mapping of ROLE_EMAIL_MAP) {
+    const emailMatch = mapping.emailKeywords.some(k => type.includes(k))
+    if (!emailMatch) continue
+    const agent = agents.find(a =>
+      mapping.roleKeywords.some(k => a.role.toLowerCase().includes(k) || a.name.toLowerCase().includes(k))
+    )
+    if (agent) return agent
+  }
+  return null
+}
+
 // ── Default Agent Setter ──────────────────────────────────────────────────────
 
 function DefaultAgentSetter({
   agents,
+  rules,
   onApply,
+  onSmartAssign,
 }: {
   agents: AgentOption[]
+  rules: EmailRule[]
   onApply: (agentId: string) => Promise<void>
+  onSmartAssign: (assignments: { emailType: string; agentId: string }[]) => Promise<void>
 }) {
   const [selectedId, setSelectedId] = useState('')
   const [applying, setApplying] = useState(false)
+  const [smartAssigning, setSmartAssigning] = useState(false)
 
   async function apply() {
     if (!selectedId) return
     setApplying(true)
-    try {
-      await onApply(selectedId)
-    } finally {
-      setApplying(false)
+    try { await onApply(selectedId) } finally { setApplying(false) }
+  }
+
+  async function smartAssign() {
+    const assignments: { emailType: string; agentId: string }[] = []
+    for (const rule of rules) {
+      const agent = findBestAgent(rule.emailType, agents)
+      if (agent) assignments.push({ emailType: rule.emailType, agentId: agent.id })
     }
+    if (!assignments.length) { toast.error('No matching agents found for any rule'); return }
+    setSmartAssigning(true)
+    try { await onSmartAssign(assignments) } finally { setSmartAssigning(false) }
   }
 
   return (
-    <div className="flex items-center gap-2 shrink-0">
+    <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+      <button
+        onClick={smartAssign}
+        disabled={smartAssigning}
+        title="Automatically assigns each email type to the best-matching agent based on their role"
+        className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-primary/40 text-primary bg-primary/5 hover:bg-primary/10 transition-colors disabled:opacity-50 whitespace-nowrap"
+      >
+        {smartAssigning ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>✨</span>}
+        Smart Assign by Role
+      </button>
       <select
         value={selectedId}
         onChange={e => setSelectedId(e.target.value)}

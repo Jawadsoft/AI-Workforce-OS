@@ -18,6 +18,7 @@ model Tenant {
   industry    Industry?
   plan        String   @default("free")
   isActive    Boolean  @default(true)
+  isApproved  Boolean  @default(false)
   settings    Json     @default("{}")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -37,6 +38,7 @@ model Tenant {
   connectedAccounts ConnectedAccount[]
   emailAgentRules   EmailAgentRule[]
   processedEmails   ProcessedEmail[]
+  stormReports      StormReport[]
 }
 
 // ─────────────────────────────────────────────
@@ -548,4 +550,30 @@ enum CRMProvider {
   JOBNIMBUS
   STORMBUDDI
   CUSTOM
+}
+
+// ─────────────────────────────────────────────
+// STORM REPORTS (NOAA SPC daily scrape)
+// ─────────────────────────────────────────────
+
+model StormReport {
+  id          String   @id @default(cuid())
+  tenantId    String
+  reportDate  DateTime // the date the storm occurred (UTC)
+  type        String   // "hail" | "tornado" | "wind"
+  time        String?  // original UTC time string e.g. "1930"
+  state       String   // two-letter state e.g. "TX"
+  county      String?
+  location    String?  // e.g. "3 ESE Houston"
+  lat         Float?
+  lon         Float?
+  size        Float?   // hail: inches. wind: mph. tornado: null
+  comments    String?
+  createdAt   DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, reportDate])
+  @@index([tenantId, state])
+  @@index([tenantId, type, reportDate])
 }

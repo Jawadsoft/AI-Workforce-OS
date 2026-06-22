@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { FileText, Download, Trash2, Plus, Loader2, Wand2, X, ChevronRight } from 'lucide-react'
+import { FileText, Download, Trash2, Plus, Loader2, Wand2, X, ChevronRight, LayoutTemplate } from 'lucide-react'
+import Link from 'next/link'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -91,10 +92,16 @@ export function DocumentsPage() {
           <h1 className="text-2xl font-bold">Documents</h1>
           <p className="text-muted-foreground mt-1">Generate professional PDFs — estimates, proposals, reports, invoices.</p>
         </div>
-        <button onClick={() => setShowGenerate(true)}
-          className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors">
-          <Plus className="w-4 h-4" /> Generate Document
-        </button>
+        <div className="flex gap-2">
+          <Link href="/documents/templates"
+            className="flex items-center gap-2 border border-border px-4 py-2 rounded-md text-sm hover:bg-accent transition-colors">
+            <LayoutTemplate className="w-4 h-4" /> Templates
+          </Link>
+          <button onClick={() => setShowGenerate(true)}
+            className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors">
+            <Plus className="w-4 h-4" /> Generate Document
+          </button>
+        </div>
       </div>
 
       {/* Generate Modal */}

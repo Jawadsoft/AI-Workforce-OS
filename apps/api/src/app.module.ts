@@ -23,6 +23,7 @@ import { PrismaModule } from './common/prisma/prisma.module'
 import { QueueModule } from './queue/queue.module'
 import { RealtimeModule } from './realtime/realtime.module'
 import { IntegrationsModule } from './modules/integrations/integrations.module'
+import { DocumentTemplatesModule } from './modules/document-templates/document-templates.module'
 import { ScheduleModule } from '@nestjs/schedule'
 
 @Module({
@@ -52,6 +53,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     SuperAdminModule,
     PublicChatModule,
     IntegrationsModule,
+    DocumentTemplatesModule,
   ],
 })
 export class AppModule {}

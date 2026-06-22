@@ -6,17 +6,20 @@ import { api } from '@/lib/api'
 import {
   CheckCircle, Clock, AlertCircle, Upload, Loader2,
   ThumbsUp, ThumbsDown, ClipboardList, ShieldCheck,
-  ChevronDown, ChevronUp, ExternalLink,
+  ChevronDown, ChevronUp, ExternalLink, FileText, Download,
 } from 'lucide-react'
 
 export interface ActionCard {
-  type: 'task' | 'approval'
+  type: 'task' | 'approval' | 'document'
   id: string
   title: string
   description?: string
   priority?: string
   status?: string
   approvalType?: string
+  docType?: string
+  format?: string
+  fileUrl?: string
 }
 
 const PRIORITY_STYLES: Record<string, string> = {
@@ -195,10 +198,80 @@ function ApprovalCard({ card }: { card: ActionCard }) {
   )
 }
 
+// ── Document Action Card ──────────────────────────────────────────
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1'
+
+const DOC_TYPE_LABELS: Record<string, string> = {
+  estimate: 'Estimate / Proposal',
+  inspection: 'Inspection Report',
+  sow: 'Statement of Work',
+  invoice: 'Invoice',
+}
+
+function DocumentCard({ card }: { card: ActionCard }) {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null
+  const downloadUrl = `${API_BASE}/documents/download/${card.id}`
+
+  const handleDownload = () => {
+    fetch(downloadUrl, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then(r => {
+        if (!r.ok) throw new Error('Download failed')
+        return r.blob()
+      })
+      .then(blob => {
+        const ext = card.format === 'PDF' ? 'pdf' : 'html'
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = `${(card.title ?? 'document').replace(/[^a-z0-9]/gi, '_')}.${ext}`
+        link.click()
+        URL.revokeObjectURL(url)
+      })
+      .catch(() => alert('Download failed. Please try from the Documents page.'))
+  }
+
+  return (
+    <div className="my-2 rounded-xl border border-border bg-card overflow-hidden shadow-sm max-w-sm">
+      <div className="flex items-center gap-2 px-3 py-2.5 bg-emerald-500/5 border-b border-border">
+        <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center shrink-0">
+          <FileText className="w-3.5 h-3.5 text-emerald-600" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-foreground truncate">{card.title}</p>
+          <p className="text-[10px] text-muted-foreground">
+            {DOC_TYPE_LABELS[card.docType ?? ''] ?? card.docType ?? 'Document'} · {card.format ?? 'PDF'}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1.5 px-3 py-2">
+        <button
+          onClick={handleDownload}
+          className="flex items-center gap-1 text-xs text-emerald-600 hover:bg-emerald-500/10 px-2 py-1 rounded-md transition-colors font-medium"
+        >
+          <Download className="w-3.5 h-3.5" />
+          Download {card.format ?? 'PDF'}
+        </button>
+        <a
+          href="/documents"
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded-md transition-colors ml-auto"
+        >
+          <ExternalLink className="w-3 h-3" />
+          View All
+        </a>
+      </div>
+    </div>
+  )
+}
+
 // ── Main export ───────────────────────────────────────────────────
 
 export function ChatActionCard({ card }: { card: ActionCard }) {
   if (card.type === 'task') return <TaskCard card={card} />
   if (card.type === 'approval') return <ApprovalCard card={card} />
+  if (card.type === 'document') return <DocumentCard card={card} />
   return null
 }

@@ -28,7 +28,8 @@ model Tenant {
   tasks         Task[]
   approvals     Approval[]
   knowledgeDocs KnowledgeDocument[]
-  documents     GeneratedDocument[]
+  documents         GeneratedDocument[]
+  documentTemplates DocumentTemplate[]
   crmConnections    CRMConnection[]
   webhooks          Webhook[]
   auditLogs         AuditLog[]
@@ -257,6 +258,20 @@ model GeneratedDocument {
   content    Json?
   status     String   @default("generating")
   createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model DocumentTemplate {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  type        String
+  description String?
+  htmlBody    String
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }

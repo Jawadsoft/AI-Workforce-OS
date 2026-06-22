@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
+import { DocumentTemplatesService } from '../document-templates/document-templates.service'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
@@ -138,6 +139,7 @@ export class DocumentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly ai: AIService,
+    private readonly docTemplates: DocumentTemplatesService,
   ) {
     if (!fs.existsSync(this.outputDir)) fs.mkdirSync(this.outputDir, { recursive: true })
   }
@@ -164,23 +166,82 @@ export class DocumentsService {
 
     // If a freeform prompt is provided, use AI to generate the document data
     if (input.prompt && (!input.data || Object.keys(input.data).length === 0)) {
-      const systemPrompt = `You are a document generation assistant for ${company}. 
-Generate structured JSON data for a ${input.type} document based on the user's request.
-Respond ONLY with valid JSON matching the template fields for a ${input.type}.`
+      const SCHEMA_HINTS: Record<string, string> = {
+        estimate: `{
+  "customerName": "string",
+  "address": "string",
+  "phone": "string (optional)",
+  "email": "string (optional)",
+  "scopeOfWork": "string describing the work",
+  "lineItems": [{ "description": "string", "qty": number, "unitPrice": number }],
+  "notes": "string (optional, e.g. validity period)",
+  "total": number (sum of all line items)
+}`,
+        inspection: `{
+  "customerName": "string",
+  "address": "string",
+  "inspector": "string",
+  "inspectionDate": "string (date)",
+  "overallCondition": "string e.g. Good / Fair / Poor",
+  "summary": "string",
+  "findings": [{ "area": "string", "condition": "string", "severity": "High|Low", "notes": "string" }],
+  "recommendations": "string",
+  "photos": "string (optional)"
+}`,
+        sow: `{
+  "projectTitle": "string",
+  "customerName": "string",
+  "startDate": "string",
+  "endDate": "string",
+  "overview": "string",
+  "deliverables": ["string", "string"],
+  "materials": [{ "name": "string", "quantity": number, "unit": "string", "supplier": "string (optional)" }],
+  "terms": "string (optional)"
+}`,
+        invoice: `{
+  "customerName": "string",
+  "address": "string",
+  "dueDate": "string e.g. 30 days",
+  "status": "Unpaid|Paid",
+  "lineItems": [{ "description": "string", "qty": number, "rate": number }],
+  "total": number,
+  "paymentInstructions": "string (optional)"
+}`,
+      }
+
+      const schemaHint = SCHEMA_HINTS[input.type] ?? '{}'
+      const systemPrompt = `You are a document data extraction assistant for ${company}.
+Extract structured data from the user's request and return ONLY valid JSON matching this exact schema:
+${schemaHint}
+
+Rules:
+- Use ONLY the field names shown above — do not add or rename fields
+- Calculate "total" as the sum of all line items (qty * unitPrice or qty * rate)
+- If a value is not mentioned, use a sensible default or empty string
+- Respond with ONLY the JSON object, no explanation, no markdown`
+
       try {
         const raw = await this.ai.chat(systemPrompt, [{ role: 'user', content: input.prompt }])
         const jsonMatch = raw.match(/\{[\s\S]*\}/)
         if (jsonMatch) docData = JSON.parse(jsonMatch[0])
+        this.logger.log(`AI doc data generated for type=${input.type}: ${JSON.stringify(docData).slice(0, 200)}`)
       } catch (err: any) {
         this.logger.warn(`AI doc generation failed: ${err.message}`)
       }
     }
 
-    // Render HTML
-    const templateFn = TEMPLATES[input.type]
-    const html = templateFn
-      ? templateFn(docData, company)
-      : wrapHTML(input.title, `<p>${JSON.stringify(docData, null, 2)}</p>`, company)
+    // Check for tenant's custom template first, fall back to built-in
+    let html: string
+    const customTemplate = await this.docTemplates.findDefault(tenantId, input.type)
+    if (customTemplate) {
+      this.logger.log(`Using custom template "${customTemplate.name}" for type=${input.type}`)
+      html = this.docTemplates.renderTemplate(customTemplate.htmlBody, { ...docData, companyName: company })
+    } else {
+      const templateFn = TEMPLATES[input.type]
+      html = templateFn
+        ? templateFn(docData, company)
+        : wrapHTML(input.title, `<p>${JSON.stringify(docData, null, 2)}</p>`, company)
+    }
 
     // Convert HTML to PDF using puppeteer (if available), else save HTML
     let fileUrl: string

@@ -7,6 +7,7 @@ import { BrainService } from '../brain/brain.service'
 import { KnowledgeService } from '../knowledge/knowledge.service'
 import { TasksService } from '../tasks/tasks.service'
 import { EmailService } from '../email/email.service'
+import { DocumentsService } from '../documents/documents.service'
 
 // Regex patterns to extract caller identity from first message
 const PHONE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/
@@ -104,6 +105,19 @@ const CRM_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'generate_document',
+    description: 'Generate a professional PDF document (estimate, inspection report, invoice, or statement of work) for a customer using AI. Use when a customer needs a quote, report, or document generated.',
+    parameters: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['estimate', 'inspection', 'sow', 'invoice'], description: 'Document type: estimate=quote/proposal, inspection=inspection report, sow=statement of work, invoice=payment invoice' },
+        title: { type: 'string', description: 'Document title e.g. "Roof Estimate - John Smith"' },
+        prompt: { type: 'string', description: 'Describe what to include: customer name, address, items, scope of work, amounts, etc.' },
+      },
+      required: ['type', 'title', 'prompt'],
+    },
+  },
+  {
     name: 'contact_customer',
     description: 'Smart contact tool: automatically sends via website chat if the customer sent a message within the last 10 minutes, or falls back to email if they have left and an email was collected. Use this as the DEFAULT way to reply to any widget customer. Always prefer this over email when the customer is likely still in the chat.',
     parameters: {
@@ -131,6 +145,7 @@ export class ChatService {
     private readonly knowledge: KnowledgeService,
     private readonly tasks: TasksService,
     private readonly email: EmailService,
+    private readonly documents: DocumentsService,
   ) {}
 
   async findAll(tenantId: string, agentId?: string) {
@@ -352,8 +367,8 @@ export class ChatService {
     defaultCustomerId?: string,
     emit?: (data: object) => void,
   ): Promise<string> {
-    // Always include internal tools so agent can create tasks/approvals/widget replies/emails
-    const internalToolNames = ['create_internal_task', 'request_approval', 'reply_to_widget_session', 'contact_customer']
+    // Always include internal tools so agent can create tasks/approvals/widget replies/emails/documents
+    const internalToolNames = ['create_internal_task', 'request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document']
     const allowedTools = CRM_TOOL_DEFINITIONS.filter(t =>
       agent.tools?.includes(t.name) || agent.tools?.includes('crm_all') || internalToolNames.includes(t.name)
     )
@@ -367,6 +382,21 @@ export class ChatService {
       messages,
       allowedTools,
       async (toolName, params) => {
+        // ── Document / PDF generation ──────────────────────
+        if (toolName === 'generate_document') {
+          try {
+            const doc = await this.documents.generate(tenantId, agent.id, {
+              type: params.type,
+              title: params.title,
+              prompt: params.prompt,
+            })
+            emit?.({ action_card: { type: 'document', id: doc.id, title: doc.title, docType: doc.type, format: doc.format } })
+            return `Document generated successfully: "${doc.title}" (${doc.format}). The download button has appeared in the chat.`
+          } catch (err: any) {
+            return `Failed to generate document: ${err.message}`
+          }
+        }
+
         // ── Internal task creation ─────────────────────────
         if (toolName === 'create_internal_task') {
           try {

@@ -7,9 +7,10 @@ import { BrainModule } from '../brain/brain.module'
 import { KnowledgeModule } from '../knowledge/knowledge.module'
 import { TasksModule } from '../tasks/tasks.module'
 import { PublicChatModule } from '../public-chat/public-chat.module'
+import { DocumentsModule } from '../documents/documents.module'
 
 @Module({
-  imports: [AIModule, CrmModule, BrainModule, KnowledgeModule, TasksModule, forwardRef(() => PublicChatModule)],
+  imports: [AIModule, CrmModule, BrainModule, KnowledgeModule, TasksModule, DocumentsModule, forwardRef(() => PublicChatModule)],
   providers: [ChatService],
   controllers: [ChatController],
   exports: [ChatService],

@@ -4,23 +4,23 @@ const prisma = new PrismaClient()
 
 // Named persona avatars served from /public/agents/
 const AVATARS: Record<string, string> = {
-  'sales-assistant':      '/agents/stan.jpeg',
-  'receptionist':         '/agents/rachel.jpeg',
+  'sales-assistant':      '/agents/will.jpeg',
+  'receptionist':         '/agents/nora.jpeg',
   'marketing-assistant':  '/agents/sonny.jpeg',
-  'executive-assistant':  '/agents/ava.jpeg',
-  'insurance-assistant':  '/agents/linda.jpeg',
+  'executive-assistant':  '/agents/hanna.jpeg',
+  'insurance-assistant':  '/agents/kevin.jpeg',
 }
 
 const agentTemplates = [
   // ─── ALL INDUSTRIES ───────────────────────────────
   {
     id: 'sales-assistant',
-    name: 'Stan — Sales Assistant',
+    name: 'Will — Sales Assistant',
     role: 'Sales Assistant',
     industries: ['ROOFING', 'CAR_DEALERSHIP', 'CLEANING', 'SECURITY', 'CONSTRUCTION', 'REAL_ESTATE', 'PROPERTY_MANAGEMENT', 'HEALTHCARE', 'OTHER'],
     description: 'Qualifies leads, follows up with prospects, and drives conversions across all channels.',
     tools: ['crm_update', 'send_email', 'schedule_appointment', 'create_task'],
-    defaultPrompt: `You are Stan, a professional Sales Assistant AI employee. Your job is to qualify leads, follow up with prospects, and help convert inquiries into customers.
+    defaultPrompt: `You are Will, a professional Sales Assistant AI employee. Your job is to qualify leads, follow up with prospects, and help convert inquiries into customers.
 
 RESPONSIBILITIES:
 - Greet and qualify inbound leads with empathy and professionalism
@@ -40,12 +40,12 @@ RULES:
   },
   {
     id: 'receptionist',
-    name: 'Rachel — AI Receptionist',
-    role: 'Receptionist',
+    name: 'Nora — Customer Intake Specialist',
+    role: 'Customer Intake Specialist',
     industries: ['ROOFING', 'CAR_DEALERSHIP', 'CLEANING', 'SECURITY', 'PROPERTY_MANAGEMENT', 'HEALTHCARE', 'CONSTRUCTION', 'REAL_ESTATE', 'OTHER'],
     description: 'Handles inbound communications, routes inquiries, and manages the front-desk experience.',
     tools: ['schedule_appointment', 'crm_update', 'send_email', 'create_task'],
-    defaultPrompt: `You are Rachel, a professional AI Receptionist. You are the first point of contact for the business.
+    defaultPrompt: `You are Nora, a professional Customer Intake Specialist. You are the first point of contact for the business.
 
 RESPONSIBILITIES:
 - Greet customers warmly and make them feel welcome
@@ -91,12 +91,12 @@ RULES:
 
   {
     id: 'executive-assistant',
-    name: 'Ava — Executive Assistant',
+    name: 'Hanna — Executive Assistant',
     role: 'Executive Assistant',
     industries: ['ROOFING', 'CAR_DEALERSHIP', 'CLEANING', 'SECURITY', 'CONSTRUCTION', 'REAL_ESTATE', 'PROPERTY_MANAGEMENT', 'HEALTHCARE', 'OTHER'],
     description: 'Supports leadership with scheduling, research, reporting, and internal coordination.',
     tools: ['schedule_appointment', 'send_email', 'generate_document', 'create_task', 'crm_update'],
-    defaultPrompt: `You are Ava, an Executive Assistant AI employee. You support business leadership with high-level coordination, research, and administrative tasks.
+    defaultPrompt: `You are Hanna, an Executive Assistant AI employee. You support business leadership with high-level coordination, research, and administrative tasks.
 
 RESPONSIBILITIES:
 - Manage the executive team's calendar and scheduling
@@ -120,12 +120,12 @@ RULES:
   // ─── ROOFING ──────────────────────────────────────
   {
     id: 'estimator',
-    name: 'Estimator',
+    name: 'Cris — Estimator',
     role: 'Estimator',
     industries: ['ROOFING', 'CONSTRUCTION'],
     description: 'Generates detailed cost estimates, material lists, and project proposals.',
     tools: ['generate_document', 'crm_update', 'create_task', 'send_email'],
-    defaultPrompt: `You are an Estimator AI employee specializing in generating accurate project cost estimates.
+    defaultPrompt: `You are Cris, an Estimator AI employee specializing in generating accurate project cost estimates.
 
 RESPONSIBILITIES:
 - Gather project details (size, materials, labor, location)
@@ -145,12 +145,12 @@ RULES:
   },
   {
     id: 'inspector',
-    name: 'Inspector',
-    role: 'Inspector',
+    name: 'Jared — Field Inspector',
+    role: 'Field Inspector',
     industries: ['ROOFING', 'PROPERTY_MANAGEMENT'],
     description: 'Coordinates property inspections and generates detailed inspection reports.',
     tools: ['generate_document', 'upload_document', 'crm_update', 'schedule_appointment'],
-    defaultPrompt: `You are an Inspector AI employee. You coordinate property inspections and document findings professionally.
+    defaultPrompt: `You are Jared, a Field Inspector AI employee. You coordinate property inspections and document findings professionally.
 
 RESPONSIBILITIES:
 - Schedule inspection appointments with property owners
@@ -170,12 +170,12 @@ RULES:
   },
   {
     id: 'storm-analyst',
-    name: 'Storm Analyst',
+    name: 'Arturo — Storm Analyst',
     role: 'Storm Analyst',
     industries: ['ROOFING'],
     description: 'Analyzes storm damage data, identifies affected areas, and assists with insurance claims.',
     tools: ['storm_lookup', 'generate_document', 'crm_update', 'send_email'],
-    defaultPrompt: `You are a Storm Analyst AI employee. You specialize in identifying storm-affected areas and helping customers with damage claims.
+    defaultPrompt: `You are Arturo, a Storm Analyst AI employee. You specialize in identifying storm-affected areas and helping customers with damage claims.
 
 RESPONSIBILITIES:
 - Look up storm event data (date, location, severity, hail size)
@@ -195,12 +195,12 @@ RULES:
   },
   {
     id: 'insurance-assistant',
-    name: 'Linda — Insurance Assistant',
-    role: 'Insurance Claims Assistant',
+    name: 'Kevin — Insurance Specialist',
+    role: 'Insurance Specialist',
     industries: ['ROOFING'],
     description: 'Guides customers through the insurance claim process and manages documentation.',
     tools: ['generate_document', 'upload_document', 'send_email', 'crm_update', 'create_task'],
-    defaultPrompt: `You are Linda, an Insurance Claims Assistant AI employee. You guide homeowners through the roofing insurance claim process.
+    defaultPrompt: `You are Kevin, an Insurance Specialist AI employee. You guide homeowners through the roofing insurance claim process.
 
 RESPONSIBILITIES:
 - Explain the insurance claim process step by step
@@ -609,12 +609,12 @@ RULES:
   // ─── REAL ESTATE ──────────────────────────────────
   {
     id: 'lead-qualification-assistant',
-    name: 'Lead Qualification Assistant',
+    name: 'Charlie — Lead Qualification Specialist',
     role: 'Lead Qualification Specialist',
     industries: ['REAL_ESTATE', 'CAR_DEALERSHIP', 'ROOFING'],
     description: 'Qualifies inbound leads, scores them by intent and readiness, and routes to the right agent.',
     tools: ['crm_update', 'send_email', 'schedule_appointment', 'create_task'],
-    defaultPrompt: `You are a Lead Qualification Specialist AI employee. You identify and nurture the most promising leads for the sales team.
+    defaultPrompt: `You are Charlie, a Lead Qualification Specialist AI employee. You identify and nurture the most promising leads for the sales team.
 
 RESPONSIBILITIES:
 - Respond to all inbound leads within 5 minutes

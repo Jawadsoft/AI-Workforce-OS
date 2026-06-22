@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -24,22 +24,23 @@ const INDUSTRY_LABELS: Record<string, string> = {
 }
 
 const ROLE_ICONS: Record<string, string> = {
-  'Receptionist': '📞',
+  'Customer Intake Specialist': '📞',
   'Sales Assistant': '🎯',
   'Estimator': '📋',
-  'Inspector': '🔍',
-  'Insurance Assistant': '🛡️',
+  'Field Inspector': '🔍',
+  'Insurance Specialist': '🛡️',
   'Executive Assistant': '💼',
-  'Lead Qualification Assistant': '⚡',
-  'Project Coordinator': '📊',
+  'Lead Qualification Specialist': '⚡',
+  'Operations Coordinator': '📊',
   'HR Coordinator': '👥',
-  'Property Manager Assistant': '🏢',
+  'Property Care Specialist': '🏢',
+  'Storm Analyst': '🌩️',
+  'Marketing Assistant': '📣',
 }
 
 export function AgentMarketplace() {
   const qc = useQueryClient()
   const [installing, setInstalling] = useState<string | null>(null)
-  const [installed, setInstalled] = useState<string[]>([])
   const [search, setSearch] = useState('')
   const [industryFilter, setIndustryFilter] = useState('')
 
@@ -48,11 +49,19 @@ export function AgentMarketplace() {
     queryFn: () => api.get('/agents/templates').then((r) => r.data),
   })
 
+  const { data: existingAgents = [] } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => api.get('/agents').then((r) => r.data),
+  })
+
+  const installedTemplateIds = new Set(
+    (existingAgents as any[]).map((a: any) => a.templateId).filter(Boolean)
+  )
+
   const installMutation = useMutation({
     mutationFn: (templateId: string) => api.post(`/agents/install-template/${templateId}`),
-    onSuccess: (_, templateId) => {
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agents'] })
-      setInstalled(prev => [...prev, templateId])
       setInstalling(null)
     },
     onError: () => setInstalling(null),
@@ -142,7 +151,7 @@ export function AgentMarketplace() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map((tmpl: any) => {
             const isInstalling = installMutation.isPending && installing === tmpl.id
-            const isInstalled = installed.includes(tmpl.id)
+            const isInstalled = installedTemplateIds.has(tmpl.id)
             const icon = ROLE_ICONS[tmpl.role] ?? '🤖'
 
             return (
@@ -182,7 +191,7 @@ export function AgentMarketplace() {
                 {/* Install button */}
                 <button
                   onClick={() => {
-                    if (isInstalled) return
+                    if (isInstalled || isInstalling) return
                     setInstalling(tmpl.id)
                     installMutation.mutate(tmpl.id)
                   }}

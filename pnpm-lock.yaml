@@ -111,6 +111,9 @@ importers:
       class-validator:
         specifier: ^0.14.1
         version: 0.14.4
+      date-fns:
+        specifier: ^3.6.0
+        version: 3.6.0
       express:
         specifier: ^4.21.0
         version: 4.22.1

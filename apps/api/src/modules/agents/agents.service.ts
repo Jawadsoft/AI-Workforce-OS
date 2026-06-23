@@ -35,7 +35,7 @@ export class AgentsService {
         role: data.role,
         industry: data.industry as any,
         prompt: data.prompt,
-        tools: data.tools ?? [],
+        tools: [...new Set([...(data.tools ?? []), 'create_ticket', 'update_ticket', 'get_my_tickets'])],
         permissions: data.permissions ?? [],
         avatar: data.avatar,
         approvalRules: data.approvalRules ?? {},

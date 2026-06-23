@@ -15,6 +15,7 @@ async function main() {
       tenantId: TENANT_ID,
       name: 'Jake — Handyman Services Coordinator',
       role: 'Handyman Services Coordinator',
+      industry: 'CLEANING',
       status: 'ACTIVE',
       prompt: `You are Jake, the Handyman Services Coordinator at Xtreme Professional Cleaning Ltd. You handle all handyman and maintenance job requests for residential and commercial clients.
 

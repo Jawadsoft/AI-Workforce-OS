@@ -13,6 +13,7 @@ const agents = [
   {
     name: 'Alex — Operations Controller',
     role: 'Operations Controller',
+    industry: 'CLEANING',
     status: 'ACTIVE',
     prompt: `You are Alex, the Operations Controller at Xtreme Professional Cleaning Ltd, a professional cleaning and maintenance company based in the UK.
 
@@ -41,6 +42,7 @@ Rules:
   {
     name: 'Will — Sales Executive',
     role: 'Sales Executive',
+    industry: 'CLEANING',
     status: 'ACTIVE',
     prompt: `You are Will, the Sales Executive at Xtreme Professional Cleaning Ltd, a professional cleaning company based in the UK.
 
@@ -78,6 +80,7 @@ Rules:
   {
     name: 'Sophie — HR & Recruitment Specialist',
     role: 'HR & Recruitment Specialist',
+    industry: 'CLEANING',
     status: 'ACTIVE',
     prompt: `You are Sophie, the HR & Recruitment Specialist at Xtreme Professional Cleaning Ltd.
 
@@ -107,6 +110,7 @@ Rules:
   {
     name: 'Rachel — Finance Manager',
     role: 'Finance Manager',
+    industry: 'CLEANING',
     status: 'ACTIVE',
     prompt: `You are Rachel, the Finance Manager at Xtreme Professional Cleaning Ltd.
 
@@ -135,6 +139,7 @@ Rules:
   {
     name: 'Diana — Business Analyst',
     role: 'Management & Analytics',
+    industry: 'CLEANING',
     status: 'ACTIVE',
     prompt: `You are Diana, the Business Analyst and Management Intelligence agent at Xtreme Professional Cleaning Ltd.
 
@@ -165,6 +170,7 @@ Rules:
   {
     name: 'Marcus — CEO',
     role: 'CEO',
+    industry: 'CLEANING',
     status: 'ACTIVE',
     prompt: `You are Marcus, the CEO Agent for Xtreme Professional Cleaning Ltd. You act as a senior decision-maker and executive oversight layer for the business.
 
@@ -200,6 +206,7 @@ async function main() {
         tenantId: TENANT_ID,
         name: agent.name,
         role: agent.role,
+        industry: agent.industry,
         status: agent.status,
         prompt: agent.prompt,
         tools: agent.tools,

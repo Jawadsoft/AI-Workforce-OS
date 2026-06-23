@@ -7,7 +7,7 @@
 const { PrismaClient } = require('@prisma/client')
 const prisma = new PrismaClient()
 
-const TENANT_ID = 'cmqp023tf0000gqfmolqztufz'
+const TENANT_ID = 'cmqpd0mcf00089dpxozlld1rg'
 
 const agents = [
   {

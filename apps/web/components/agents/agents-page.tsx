@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
-import { Plus, Search, Power, Zap, RefreshCw, Loader2, Pencil, X, Check } from 'lucide-react'
+import { Plus, Search, EyeOff, Eye, Zap, RefreshCw, Loader2, Pencil, X, Check } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth.store'
 
 const CAN_EDIT_ROLES = ['SUPER_ADMIN', 'TENANT_OWNER', 'TENANT_ADMIN']
@@ -17,7 +17,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 export function AgentsPage() {
   const [search, setSearch] = useState('')
-  const [filter, setFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL')
+  const [filter, setFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ACTIVE')
   const qc = useQueryClient()
   const [resetting, setResetting] = useState(false)
   const { user, fetchMe, isAuthenticated } = useAuthStore()
@@ -62,7 +62,10 @@ export function AgentsPage() {
   const toggleMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) =>
       api.post(`/agents/${id}/${status === 'ACTIVE' ? 'deactivate' : 'activate'}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['agents'] }),
+    onSuccess: (_data, { status }) => {
+      qc.invalidateQueries({ queryKey: ['agents'] })
+      // toast import not available in this file; rely on detail page for toasts
+    },
   })
 
   const filtered = agents.filter((a: any) => {
@@ -78,7 +81,12 @@ export function AgentsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">AI Workforce</h1>
-          <p className="text-sm text-muted-foreground">{agents.length} agents total</p>
+          <p className="text-sm text-muted-foreground">
+            {agents.filter((a: any) => a.status === 'ACTIVE').length} active
+            {agents.filter((a: any) => a.status === 'INACTIVE').length > 0 && (
+              <span className="ml-1 text-muted-foreground/60">· {agents.filter((a: any) => a.status === 'INACTIVE').length} inactive</span>
+            )}
+          </p>
         </div>
         <div className="flex gap-2">
           <button
@@ -113,7 +121,7 @@ export function AgentsPage() {
           />
         </div>
         <div className="flex rounded-md border border-border overflow-hidden">
-          {(['ALL', 'ACTIVE', 'INACTIVE'] as const).map((s) => (
+          {(['ACTIVE', 'ALL', 'INACTIVE'] as const).map((s) => (
             <button
               key={s}
               onClick={() => setFilter(s)}
@@ -208,13 +216,15 @@ export function AgentsPage() {
                     <Pencil className="w-4 h-4" />
                   </button>
                 )}
-                <button
-                  onClick={() => toggleMutation.mutate({ id: agent.id, status: agent.status })}
-                  title={agent.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
-                  className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
-                >
-                  <Power className="w-4 h-4" />
-                </button>
+                {canEdit && (
+                  <button
+                    onClick={() => toggleMutation.mutate({ id: agent.id, status: agent.status })}
+                    title={agent.status === 'ACTIVE' ? 'Set Inactive — hides from dashboard' : 'Reactivate'}
+                    className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+                  >
+                    {agent.status === 'ACTIVE' ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                )}
                 <Link href={`/agents/${agent.id}`} className="text-xs text-muted-foreground hover:text-foreground transition-colors px-1">
                   Configure
                 </Link>

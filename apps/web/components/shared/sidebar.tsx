@@ -8,13 +8,14 @@ import {
   LayoutDashboard, Users, MessageSquare, CheckSquare,
   Clock, BookOpen, FileText, Plug, UserCog,
   BarChart3, Settings, Zap, PanelLeftClose, PanelLeftOpen, Phone,
-  CloudLightning, Wrench, ChevronDown,
+  CloudLightning, Wrench, ChevronDown, Ticket,
 } from 'lucide-react'
 
 const navItems = [
   { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { label: 'AI Workforce', href: '/agents', icon: Users },
   { label: 'Chat', href: '/chat', icon: MessageSquare },
+  { label: 'Tickets', href: '/tickets', icon: Ticket },
   { label: 'Tasks', href: '/tasks', icon: CheckSquare },
   { label: 'Approvals', href: '/approvals', icon: Clock },
   { label: 'Knowledge Base', href: '/knowledge', icon: BookOpen },

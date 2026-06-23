@@ -27,6 +27,7 @@ model Tenant {
   agents        Agent[]
   conversations Conversation[]
   tasks         Task[]
+  tickets       ActivityTicket[]
   approvals     Approval[]
   knowledgeDocs KnowledgeDocument[]
   documents         GeneratedDocument[]
@@ -92,6 +93,8 @@ model Agent {
   knowledgeDocs AgentKnowledge[]
   crmAccess     AgentCRMAccess[]
   emailRules    EmailAgentRule[]
+  createdTickets  ActivityTicket[] @relation("TicketCreator")
+  assignedTickets ActivityTicket[] @relation("TicketAssignee")
 }
 
 model AgentTemplate {
@@ -126,9 +129,10 @@ model Conversation {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent    Agent     @relation(fields: [agentId], references: [id])
+  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent    Agent           @relation(fields: [agentId], references: [id])
   messages Message[]
+  tickets  ActivityTicket[]
 }
 
 model Message {
@@ -476,6 +480,46 @@ model ProcessedEmail {
 }
 
 // ─────────────────────────────────────────────
+// ACTIVITY TICKETS
+// ─────────────────────────────────────────────
+
+model ActivityTicket {
+  id               String       @id @default(cuid())
+  ticketNumber     Int          @default(autoincrement())
+  tenantId         String
+  source           String       @default("INTERNAL") // "INTERNAL" | "WIDGET"
+  conversationId   String?
+  title            String
+  subject          String?
+  description      String?      @db.Text
+  type             String       @default("GENERAL")
+  status           TicketStatus @default(OPEN)
+  priority         TaskPriority @default(MEDIUM)
+  contactRef       String?
+  contactPhone     String?
+  contactEmail     String?
+  createdByAgentId String?
+  assignedAgentId  String?
+  nextAction       String?      @db.Text
+  followUpAt       DateTime?
+  resolvedAt       DateTime?
+  activityLog      Json         @default("[]")
+  metadata         Json         @default("{}")
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy     Agent?        @relation("TicketCreator", fields: [createdByAgentId], references: [id], onDelete: SetNull)
+  assignedAgent Agent?        @relation("TicketAssignee", fields: [assignedAgentId], references: [id], onDelete: SetNull)
+  conversation  Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, status])
+  @@index([tenantId, source])
+  @@index([tenantId, assignedAgentId])
+  @@index([tenantId, followUpAt])
+}
+
+// ─────────────────────────────────────────────
 // ENUMS
 // ─────────────────────────────────────────────
 
@@ -534,6 +578,17 @@ enum ApprovalStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  AWAITING_CUSTOMER
+  AWAITING_AGENT
+  SCHEDULED
+  COMPLETED
+  ESCALATED
+  CANCELLED
 }
 
 enum MessageRole {

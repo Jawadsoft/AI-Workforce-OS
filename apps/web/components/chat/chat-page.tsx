@@ -232,6 +232,11 @@ export function ChatPage() {
     }
   }, [conversationId, sending, refetchMessages, qc])
 
+  // When the user declines a transfer, nudge the agent to continue helping directly
+  const handleDeclineTransfer = useCallback(() => {
+    handleChoiceSelected('Please continue helping me directly here — I prefer not to switch agents.')
+  }, [handleChoiceSelected])
+
   const clearMutation = useMutation({
     mutationFn: () => api.delete(`/chat/${conversationId}/messages`),
     onSuccess: () => {
@@ -511,6 +516,7 @@ export function ChatPage() {
                     card={card}
                     onChoiceSelected={handleChoiceSelected}
                     onTransfer={(agentId) => setSelectedAgentId(agentId)}
+                    onDeclineTransfer={handleDeclineTransfer}
                   />
                 </div>
               ))}

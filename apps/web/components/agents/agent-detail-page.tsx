@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck, CheckSquare, FileText } from 'lucide-react'
+import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck, CheckSquare, FileText, Camera, EyeOff, Eye } from 'lucide-react'
 import { AgentCRMPermissions } from './agent-crm-permissions'
 import { useAuthStore } from '@/stores/auth.store'
 import { toast } from 'sonner'
@@ -21,6 +21,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   const [tab, setTab] = useState('Overview')
   const [edited, setEdited] = useState<any>(null)
   const [saved, setSaved] = useState(false)
+  const [confirmDeactivate, setConfirmDeactivate] = useState(false)
 
   const { data: agent, isLoading } = useQuery({
     queryKey: ['agent', agentId],
@@ -42,7 +43,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   const updateMutation = useMutation({
     mutationFn: () => {
       // Only send fields accepted by UpdateAgentDto
-      const { name, role, prompt, tools, permissions, status, approvalRules } = edited ?? {}
+      const { name, role, prompt, tools, permissions, status, approvalRules, avatar } = edited ?? {}
       const payload: any = {}
       if (name !== undefined) payload.name = name
       if (role !== undefined) payload.role = role
@@ -51,6 +52,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
       if (permissions !== undefined) payload.permissions = permissions
       if (status !== undefined) payload.status = status
       if (approvalRules !== undefined) payload.approvalRules = approvalRules
+      if (avatar !== undefined) payload.avatar = avatar
       return api.patch(`/agents/${agentId}`, payload)
     },
     onSuccess: () => {
@@ -70,7 +72,13 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   const toggleMutation = useMutation({
     mutationFn: (status: string) =>
       api.post(`/agents/${agentId}/${status === 'ACTIVE' ? 'deactivate' : 'activate'}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['agent', agentId] }),
+    onSuccess: (_data, status) => {
+      qc.invalidateQueries({ queryKey: ['agent', agentId] })
+      qc.invalidateQueries({ queryKey: ['agents'] })
+      setConfirmDeactivate(false)
+      toast.success(status === 'ACTIVE' ? 'Agent set to inactive — hidden from dashboard & workforce' : 'Agent reactivated')
+    },
+    onError: () => toast.error('Failed to update agent status'),
   })
 
   const { user, fetchMe, isAuthenticated } = useAuthStore()
@@ -102,29 +110,75 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
           <Link href="/agents" className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground">
             <ChevronLeft className="w-5 h-5" />
           </Link>
-          {agent.avatar ? (
-            <img src={agent.avatar} alt={agent.name} className="w-10 h-10 rounded-full object-cover" />
-          ) : (
-            <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary">
-              {agent.name[0]}
-            </div>
-          )}
+          {/* Avatar with optional edit */}
+          <div className="relative group">
+            {(edited?.avatar ?? agent.avatar) ? (
+              <img src={edited?.avatar ?? agent.avatar} alt={agent.name} className="w-10 h-10 rounded-full object-cover" />
+            ) : (
+              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary">
+                {agent.name[0]}
+              </div>
+            )}
+            {canEdit && (
+              <label className="absolute inset-0 rounded-full flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
+                <Camera className="w-4 h-4 text-white" />
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (!file) return
+                    const reader = new FileReader()
+                    reader.onloadend = () => setEdited({ ...(edited ?? agent), avatar: reader.result as string })
+                    reader.readAsDataURL(file)
+                  }}
+                />
+              </label>
+            )}
+          </div>
           <div>
-            <h1 className="text-xl font-semibold">{data.name}</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-semibold">{data.name}</h1>
+              {agent.status === 'INACTIVE' && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 font-medium">Inactive</span>
+              )}
+            </div>
             <p className="text-sm text-muted-foreground">{data.role}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${agent.status === 'ACTIVE' ? 'bg-green-500/10 text-green-500' : 'bg-muted text-muted-foreground'}`}>
-            {agent.status}
-          </span>
-          <button
-            onClick={() => toggleMutation.mutate(agent.status)}
-            className="flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md text-sm hover:bg-accent transition-colors"
-          >
-            <Power className="w-4 h-4" />
-            {agent.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
-          </button>
+          {/* Deactivate / Activate — tenant admin only */}
+          {canEdit && (
+            <>
+              {confirmDeactivate && agent.status === 'ACTIVE' ? (
+                <div className="flex items-center gap-1.5 border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 rounded-md text-sm">
+                  <span className="text-amber-600 text-xs">Hide from dashboard?</span>
+                  <button
+                    onClick={() => toggleMutation.mutate(agent.status)}
+                    disabled={toggleMutation.isPending}
+                    className="text-xs font-medium text-amber-600 hover:text-amber-700 transition-colors"
+                  >
+                    {toggleMutation.isPending ? 'Saving…' : 'Confirm'}
+                  </button>
+                  <button onClick={() => setConfirmDeactivate(false)} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => agent.status === 'ACTIVE' ? setConfirmDeactivate(true) : toggleMutation.mutate(agent.status)}
+                  disabled={toggleMutation.isPending}
+                  className={`flex items-center gap-1.5 border px-3 py-1.5 rounded-md text-sm transition-colors ${
+                    agent.status === 'ACTIVE'
+                      ? 'border-border hover:bg-accent text-muted-foreground hover:text-foreground'
+                      : 'border-green-500/50 bg-green-500/10 text-green-600 hover:bg-green-500/20'
+                  }`}
+                >
+                  {agent.status === 'ACTIVE' ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  {agent.status === 'ACTIVE' ? 'Set Inactive' : 'Reactivate'}
+                </button>
+              )}
+            </>
+          )}
           <Link
             href={`/chat?agentId=${agent.id}`}
             className="flex items-center gap-1.5 bg-primary text-primary-foreground px-3 py-1.5 rounded-md text-sm hover:bg-primary/90 transition-colors"

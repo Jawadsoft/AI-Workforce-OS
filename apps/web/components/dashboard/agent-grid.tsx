@@ -28,7 +28,9 @@ export function AgentGrid() {
     )
   }
 
-  if (!agents?.length) {
+  const activeAgents = agents?.filter((a: any) => a.status !== 'INACTIVE') ?? []
+
+  if (!activeAgents.length) {
     return (
       <div>
         <h2 className="text-lg font-semibold mb-4">Your AI Team</h2>
@@ -51,7 +53,7 @@ export function AgentGrid() {
         </Link>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {agents.slice(0, 8).map((agent: any) => (
+        {activeAgents.slice(0, 8).map((agent: any) => (
           <Link key={agent.id} href={`/agents/${agent.id}`}>
             <div className="rounded-lg border border-border bg-card p-4 space-y-2 hover:border-muted-foreground transition-colors cursor-pointer">
               {agent.avatar ? (

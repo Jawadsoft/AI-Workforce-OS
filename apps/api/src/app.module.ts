@@ -25,6 +25,7 @@ import { RealtimeModule } from './realtime/realtime.module'
 import { IntegrationsModule } from './modules/integrations/integrations.module'
 import { DocumentTemplatesModule } from './modules/document-templates/document-templates.module'
 import { StormModule } from './modules/storm/storm.module'
+import { TicketsModule } from './modules/tickets/tickets.module'
 import { ScheduleModule } from '@nestjs/schedule'
 
 @Module({
@@ -39,6 +40,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     AuthModule,
     TenantsModule,
     AgentsModule,
+    PublicChatModule,
     ChatModule,
     TasksModule,
     ApprovalsModule,
@@ -52,10 +54,10 @@ import { ScheduleModule } from '@nestjs/schedule'
     CommunicationsModule,
     EmailModule,
     SuperAdminModule,
-    PublicChatModule,
     IntegrationsModule,
     DocumentTemplatesModule,
     StormModule,
+    TicketsModule,
   ],
 })
 export class AppModule {}

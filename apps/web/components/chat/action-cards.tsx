@@ -365,8 +365,8 @@ function AskUserCard({ card, onChoiceSelected }: { card: ActionCard; onChoiceSel
 
 // ── Transfer to Specialist Card ───────────────────────────────────
 
-function TransferCard({ card, onTransfer }: { card: ActionCard; onTransfer?: (agentId: string) => void }) {
-  const [transferred, setTransferred] = useState(false)
+function TransferCard({ card, onTransfer, onDeclineTransfer }: { card: ActionCard; onTransfer?: (agentId: string) => void; onDeclineTransfer?: () => void }) {
+  const [decision, setDecision] = useState<'none' | 'accepted' | 'declined'>('none')
   return (
     <div className="my-2 rounded-xl border border-purple-200 bg-purple-50 dark:bg-purple-900/10 dark:border-purple-800 overflow-hidden shadow-sm max-w-sm">
       <div className="flex items-center gap-2 px-3 py-2.5 border-b border-purple-200 dark:border-purple-800">
@@ -379,24 +379,28 @@ function TransferCard({ card, onTransfer }: { card: ActionCard; onTransfer?: (ag
         </div>
       </div>
       <div className="px-3 py-3 flex items-center gap-2">
-        {!transferred ? (
+        {decision === 'none' ? (
           <>
             <button
-              onClick={() => { setTransferred(true); onTransfer?.(card.agentId!) }}
+              onClick={() => { setDecision('accepted'); onTransfer?.(card.agentId!) }}
               className="text-xs px-3 py-1.5 rounded-full bg-purple-600 text-white hover:bg-purple-700 transition-colors font-medium"
             >
               Yes, switch over
             </button>
             <button
-              onClick={() => setTransferred(true)}
+              onClick={() => { setDecision('declined'); onDeclineTransfer?.() }}
               className="text-xs px-3 py-1.5 rounded-full border border-border hover:bg-accent transition-colors"
             >
               No, keep chatting here
             </button>
           </>
-        ) : (
+        ) : decision === 'accepted' ? (
           <p className="text-[11px] text-green-600 flex items-center gap-1">
-            <CheckCircle className="w-3 h-3" /> Got it!
+            <CheckCircle className="w-3 h-3" /> Switched over!
+          </p>
+        ) : (
+          <p className="text-[11px] text-muted-foreground flex items-center gap-1">
+            <CheckCircle className="w-3 h-3" /> Continuing here...
           </p>
         )}
       </div>
@@ -410,16 +414,18 @@ export function ChatActionCard({
   card,
   onChoiceSelected,
   onTransfer,
+  onDeclineTransfer,
 }: {
   card: ActionCard
   onChoiceSelected?: (choice: string) => void
   onTransfer?: (agentId: string) => void
+  onDeclineTransfer?: () => void
 }) {
   if (card.type === 'task') return <TaskCard card={card} />
   if (card.type === 'approval') return <ApprovalCard card={card} />
   if (card.type === 'document') return <DocumentCard card={card} />
   if (card.type === 'handoff') return <HandoffCard card={card} />
   if (card.type === 'ask_user') return <AskUserCard card={card} onChoiceSelected={onChoiceSelected} />
-  if (card.type === 'transfer') return <TransferCard card={card} onTransfer={onTransfer} />
+  if (card.type === 'transfer') return <TransferCard card={card} onTransfer={onTransfer} onDeclineTransfer={onDeclineTransfer} />
   return null
 }

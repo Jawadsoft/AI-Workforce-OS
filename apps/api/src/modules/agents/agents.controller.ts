@@ -24,8 +24,8 @@ class UpdateAgentDto {
   @IsOptional() @IsArray() tools?: string[]
   @IsOptional() @IsArray() permissions?: string[]
   @IsOptional() @IsString() status?: string
+  @IsOptional() @IsString() avatar?: string
   @IsOptional() approvalRules?: any
-  @IsOptional() @IsArray() permissions?: string[]
 }
 
 class SpeakDto {

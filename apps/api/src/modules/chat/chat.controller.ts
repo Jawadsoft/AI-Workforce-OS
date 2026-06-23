@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, Res, Headers, Inject, forwardRef } from '@nestjs/common'
+import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, Res, Headers, Inject } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { IsString, IsOptional } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
@@ -26,7 +26,7 @@ class SendMessageDto {
 export class ChatController {
   constructor(
     private readonly service: ChatService,
-    @Inject(forwardRef(() => PublicChatService)) private readonly publicChat: PublicChatService,
+    @Inject(PublicChatService) private readonly publicChat: PublicChatService,
   ) {}
 
   @Get()

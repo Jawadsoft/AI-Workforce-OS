@@ -519,14 +519,22 @@ export class ChatService {
     }
   }
 
-  /** Post an email briefing to any active primary agent thread for the tenant */
+  /** Post an email briefing to the Tier 1 (intake/primary) agent for the tenant.
+   *  Tries Tier 1 role keywords first; falls back to the first active agent. */
   async postEmailBriefing(tenantId: string, content: string): Promise<void> {
-    const agent = await this.prisma.agent.findFirst({
+    const allActive = await this.prisma.agent.findMany({
       where: { tenantId, status: 'ACTIVE' },
       orderBy: { createdAt: 'asc' },
     })
-    if (!agent) return
-    await this.postBriefing(tenantId, agent.id, content, 'email_briefing')
+    if (!allActive.length) return
+
+    // Prefer Tier 1 agents (intake, receptionist, executive assistant, customer success, etc.)
+    const tier1Keywords = ['intake', 'receptionist', 'executive', 'assistant', 'customer success', 'front desk', 'client service']
+    const tier1Agent = allActive.find(a =>
+      tier1Keywords.some(k => a.role.toLowerCase().includes(k))
+    ) ?? allActive[0]  // fallback to first if no Tier 1 found
+
+    await this.postBriefing(tenantId, tier1Agent.id, content, 'email_briefing')
   }
 
   async sendMessage(tenantId: string, conversationId: string, content: string) {
@@ -692,12 +700,30 @@ export class ChatService {
     // Intake agents (Nora etc.) silently relay via handoff_to_agent.
     // All other specialists offer transfers via suggest_transfer — never silent relay.
     const roleLC = (agent.role ?? '').toLowerCase()
-    const isIntakeAgent = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer')
+
+    // ── Agent tier derived from role keywords (no DB field needed) ──────
+    // Tier 1 — primary contact / customer-facing (intake, receptionist, executive assistant, admin)
+    // Tier 2 — coordination / operations (ops coordinator, office manager, project coordinator)
+    // Tier 3 — domain specialists (estimator, insurance, sales, HR, finance)
+    // Tier 4 — field / execution (field inspector, technician, surveyor)
+    const isTier1 = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
+                    roleLC.includes('executive') || roleLC.includes('assistant') || roleLC.includes('front desk') ||
+                    roleLC.includes('success manager') || roleLC.includes('client service')
+    const isTier2 = roleLC.includes('operations') || roleLC.includes('coordinator') || roleLC.includes('office manager') ||
+                    roleLC.includes('admin manager') || roleLC.includes('project manager') || roleLC.includes('project coord') ||
+                    roleLC.includes('ops lead') || roleLC.includes('operations lead') || roleLC.includes('scheduling')
+    const isTier3 = roleLC.includes('estimat') || roleLC.includes('insurance') || roleLC.includes('sales') ||
+                    roleLC.includes('finance') || roleLC.includes('hr ') || roleLC.includes('human resource') ||
+                    roleLC.includes('account manager') || roleLC.includes('billing')
+    const isTier4 = roleLC.includes('field') || roleLC.includes('inspector') || roleLC.includes('technician') ||
+                    roleLC.includes('surveyor') || roleLC.includes('site manager') || roleLC.includes('crew')
+
+    const isIntakeAgent = isTier1  // Tier 1 = intake behaviour (silent relay, handoff_to_agent)
     const isStormAnalyst = roleLC.includes('storm') || roleLC.includes('analyst') || agent.name?.toLowerCase().includes('arturo')
 
     // Ticket tools — available to all agent types
     const ticketToolNames = ['create_ticket', 'update_ticket', 'get_my_tickets', 'get_team_activity']
-    // Scheduling tool — available to all non-intake agents
+    // Scheduling tool — available to all non-Tier1 agents (coordinators, specialists, field)
     const schedulingTools = !isIntakeAgent ? ['get_available_slots'] : []
 
     // create_internal_task only injected when staff explicitly requests a task/reminder
@@ -1698,6 +1724,8 @@ BACKGROUND TICKET LOGGING (keep this invisible — never mention it):
 • create_internal_task ONLY if the owner explicitly says "add a task" or "remind me to..."
 
 OTHER TOOLS (use when needed, not proactively):
+• get_team_activity — scan all recent team jobs. Use when owner asks "what jobs do we have?", "what's on this week?", or refers to a job without full details.
+• get_my_tickets — view tickets assigned specifically to you.
 • request_approval — when a decision needs sign-off (refund, discount, HR decision)
 • contact_customer — to send a message to a customer via chat or email
 • suggest_transfer — ONLY when the owner explicitly asks to be connected to a specific person
@@ -1724,11 +1752,12 @@ WHEN TO CREATE A TICKET:
 
 1. create_ticket — Background log only. Call ONCE per customer interaction. Does NOT message the user.
 2. update_ticket — Update status/notes/assignee as work progresses.
-3. get_my_tickets — View your queue when asked "what's pending".
-4. create_internal_task — ONLY when staff explicitly says "add a task" / "remind me to...".
-5. request_approval — when a decision needs manager sign-off.
-6. contact_customer — smart follow-up: uses chat if customer active, email otherwise.
-7. reply_to_widget_session — only when customer is confirmed live in chat.
+3. get_my_tickets — View tickets assigned to you when asked "what's pending" or "what do I have".
+4. get_team_activity — Scan ALL recent team tickets across all agents. Use when asked "what jobs do we have?", "what's on this week?", "recent activity", or when the owner refers to a job without full details.
+5. create_internal_task — ONLY when staff explicitly says "add a task" / "remind me to...".
+6. request_approval — when a decision needs manager sign-off.
+7. contact_customer — smart follow-up: uses chat if customer active, email otherwise.
+8. reply_to_widget_session — only when customer is confirmed live in chat.
 
 YOUR ROLE IN THE INTERNAL CHAT:
 The person messaging you is staff or the business owner — NOT a customer.
@@ -1803,7 +1832,7 @@ SPECIALIST MODE (when you receive [HANDOFF FROM ...]):
     // All colleague names, service terms, and pricing examples are derived
     // from the live team roster and tenant brain settings — never hardcoded.
     let roleHandoffSection = ''
-    if (roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer')) {
+    if (isTier1) {
       roleHandoffSection = `
 
 YOUR ROLE — CUSTOMER INTAKE:
@@ -1847,6 +1876,43 @@ If the owner explicitly says "connect me to ${estimatorName}", "transfer me to $
 → Say: "Of course! Connecting you with ${estimatorName} now — they'll take it from here."
 → This is the ONLY time you hand over the conversation`
 
+    } else if (isTier2) {
+      roleHandoffSection = `
+
+YOUR ROLE — OPERATIONS & COORDINATION (Tier 2):
+You are the operational backbone at ${company}. You coordinate scheduling, bookings, crew assignments, and keep jobs moving smoothly.
+You sit between the intake team and the field/specialist teams — you receive jobs from Tier 1 and dispatch to Tier 4.
+
+TEAM VISIBILITY — always check the team board first:
+Before answering any question about jobs, bookings, or clients → call get_team_activity to see what's in flight.
+Call get_my_tickets for your own assigned tasks.
+
+CORE RESPONSIBILITIES:
+1. Scheduling and booking — use get_available_slots then confirm with the client/team
+2. Crew assignment and dispatch — update tickets with crew details and dates
+3. Job coordination — keep tickets updated as work progresses
+4. Escalation management — if a job is stuck or overdue, reassign or escalate
+
+TICKET WORKFLOW:
+1. Pick up OPEN ticket → mark IN_PROGRESS → book the job
+2. Booking confirmed → update ticket notes with date/crew → keep as IN_PROGRESS until job is done
+3. Job completed → mark COMPLETED
+4. Job can't proceed → note the reason → escalate or reassign via update_ticket(assignedAgentRole)
+
+DOCUMENT GENERATION:
+When asked for a booking confirmation, schedule, or job sheet → call generate_document directly.
+No confirmation step needed if the owner has already given you the details.
+
+IN SCOPE (handle yourself):
+- Scheduling, booking, and availability checks
+- Crew assignment and job dispatch
+- Progress updates and status changes on existing jobs
+- Generating booking confirmations, job sheets, schedules
+
+OUT OF SCOPE (offer transfer via suggest_transfer):
+${estimatorAgent ? `- Pricing and estimates → suggest_transfer("${estimatorRole}")` : '- Pricing/estimates → suggest_transfer to the estimator'}
+${insuranceAgent ? `- Insurance claims → suggest_transfer("${insuranceRole}")` : '- Insurance → suggest_transfer to the relevant specialist'}`
+
     } else if (roleLC.includes('estimator') || roleLC.includes('estimate')) {
       roleHandoffSection = `
 
@@ -1861,12 +1927,9 @@ Example:
 ❌ "Could you give me more details before I can quote?"
 ✅ "For ${service1}, here's our typical range — [${pricingHint}]. Want me to dial that in with more specifics?"
 
-DOCUMENT GENERATION PROCESS (only when user asks for a formal estimate doc):
-1. Give the verbal range first (use knowledge base)
-2. Gather any missing details with ONE question max
-3. Confirm scope with ask_user before generating:
-   - Provide buttons: ["Generate it!"] ["Make changes"]
-4. Call generate_document only after confirmation
+DOCUMENT GENERATION:
+When asked for a formal estimate or proposal → call generate_document directly.
+Give the verbal range first, then generate immediately — no extra confirmation step needed unless the scope is genuinely unclear.
 
 NEVER skip giving a range upfront. Do not wait for all details before giving any number.
 
@@ -1900,7 +1963,7 @@ Example:
 IN SCOPE (handle yourself):
 - Explain coverage, deductibles, and claim processes — from your knowledge base
 - Guide through the full claim process step by step
-- Generate claim documentation → use generate_document (confirm with ask_user first)
+- Generate claim documentation → use generate_document directly when the owner asks for it
 
 OUT OF SCOPE (offer transfer using suggest_transfer):
 ${estimatorAgent ? `- Pricing or estimate questions → suggest_transfer("${estimatorRole}")` : '- Pricing or estimate questions → suggest_transfer to the relevant specialist'}
@@ -1924,16 +1987,9 @@ Example:
 ❌ "Can you give me the address and details first?"
 ✅ "For ${service1}, here's what I typically assess — [use knowledge base for ${industry} inspection checklist]. What's the address so I can check availability?"
 
-DOCUMENT GENERATION PROCESS (when generating a formal report):
-1. Confirm address and job type (ONE question)
-2. Confirm report contents with ask_user before generating:
-   "Here's what I'll include:
-    • Address: [address]
-    • Job type: [type]
-    • Areas inspected: [areas]
-    Ready to generate, or any changes?"
-   Buttons: ["Generate report"] ["Make changes"]
-3. Call generate_document only after confirmation
+DOCUMENT GENERATION:
+When asked for an inspection report → call generate_document directly once you have the address and job type.
+If address is missing, ask once — then generate immediately without a second confirmation step.
 
 IN SCOPE (handle yourself):
 - Scheduling and conducting site visits/inspections

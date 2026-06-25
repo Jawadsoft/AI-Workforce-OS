@@ -1,21 +1,17 @@
 /**
  * Seeds industry knowledge packs for ROOFING and CLEANING.
- * Run AFTER the dev server is running (needs the embed API via OpenAI).
  *
  * Usage:  node scripts/seed-industry-knowledge.js
  *
  * This script:
  *  1. Creates IndustryKnowledgePack records for ROOFING + CLEANING
  *  2. Creates IndustryKnowledgeDoc records with real industry content
- *  3. Calls the API to embed each document (runs through KnowledgeService chunker)
  */
 
 require('./load-env')
-const http = require('http')
 const { PrismaClient } = require('../apps/api/node_modules/@prisma/client')
 
 const prisma = new PrismaClient()
-const API = 'http://localhost:3001/api/v1'
 
 // ── Industry knowledge content ────────────────────────────────────────────────
 

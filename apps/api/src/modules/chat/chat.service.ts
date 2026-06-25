@@ -697,34 +697,25 @@ export class ChatService {
     const hcRef = handoffCountRef ?? { count: 0 }
     // Guard against duplicate ticket creation within a single conversation turn
     let ticketCreatedThisTurn = false
-    // Intake agents (Nora etc.) silently relay via handoff_to_agent.
-    // All other specialists offer transfers via suggest_transfer — never silent relay.
+    // Intake agents silently relay via handoff_to_agent.
+    // All other agents offer transfers via suggest_transfer — never silent relay.
     const roleLC = (agent.role ?? '').toLowerCase()
 
-    // ── Agent tier derived from role keywords (no DB field needed) ──────
-    // Tier 1 — primary contact / customer-facing (intake, receptionist, executive assistant, admin)
-    // Tier 2 — coordination / operations (ops coordinator, office manager, project coordinator)
-    // Tier 3 — domain specialists (estimator, insurance, sales, HR, finance)
-    // Tier 4 — field / execution (field inspector, technician, surveyor)
-    const isTier1 = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
-                    roleLC.includes('executive') || roleLC.includes('assistant') || roleLC.includes('front desk') ||
-                    roleLC.includes('success manager') || roleLC.includes('client service')
-    const isTier2 = roleLC.includes('operations') || roleLC.includes('coordinator') || roleLC.includes('office manager') ||
-                    roleLC.includes('admin manager') || roleLC.includes('project manager') || roleLC.includes('project coord') ||
-                    roleLC.includes('ops lead') || roleLC.includes('operations lead') || roleLC.includes('scheduling')
-    const isTier3 = roleLC.includes('estimat') || roleLC.includes('insurance') || roleLC.includes('sales') ||
-                    roleLC.includes('finance') || roleLC.includes('hr ') || roleLC.includes('human resource') ||
-                    roleLC.includes('account manager') || roleLC.includes('billing')
-    const isTier4 = roleLC.includes('field') || roleLC.includes('inspector') || roleLC.includes('technician') ||
-                    roleLC.includes('surveyor') || roleLC.includes('site manager') || roleLC.includes('crew')
-
-    const isIntakeAgent = isTier1  // Tier 1 = intake behaviour (silent relay, handoff_to_agent)
+    // ── Role classification — purely keyword-based, no hierarchy ────────
+    // Intake: customer-facing primary contact agents
+    const isIntakeAgent = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
+                          roleLC.includes('executive') || roleLC.includes('assistant') || roleLC.includes('front desk') ||
+                          roleLC.includes('success manager') || roleLC.includes('client service')
+    // Ops: internal coordination / scheduling agents
+    const isOpsAgent    = roleLC.includes('operations') || roleLC.includes('coordinator') || roleLC.includes('office manager') ||
+                          roleLC.includes('admin manager') || roleLC.includes('project manager') || roleLC.includes('ops lead') ||
+                          roleLC.includes('scheduling')
     const isStormAnalyst = roleLC.includes('storm') || roleLC.includes('analyst') || agent.name?.toLowerCase().includes('arturo')
 
     // Ticket tools — available to all agent types
     const ticketToolNames = ['create_ticket', 'update_ticket', 'get_my_tickets', 'get_team_activity']
-    // Scheduling tool — available to all non-Tier1 agents (coordinators, specialists, field)
-    const schedulingTools = !isIntakeAgent ? ['get_available_slots'] : []
+    // Scheduling tool — available to ops and non-intake agents (everyone except pure intake)
+    const schedulingTools = (!isIntakeAgent || isOpsAgent) ? ['get_available_slots'] : []
 
     // create_internal_task only injected when staff explicitly requests a task/reminder
     const userWantsTask = messages.length > 0 &&
@@ -1243,14 +1234,39 @@ export class ChatService {
         if (toolName === 'handoff_to_agent') {
           try {
             const roleKeyword = (params.agentRole as string).toLowerCase()
-            // Find a matching active agent in the same tenant
+            const contextWords = (params.contextSummary ?? params.reason ?? '')
+              .toLowerCase().split(/\W+/).filter(w => w.length > 3)
+
+            // Fetch all active agents ordered by seniority (oldest first = tiebreaker)
             const allAgents = await this.prisma.agent.findMany({
               where: { tenantId, status: 'ACTIVE' },
+              orderBy: { createdAt: 'asc' },
             })
-            const target = allAgents.find(a =>
-              a.role.toLowerCase().includes(roleKeyword) ||
-              a.name.toLowerCase().includes(roleKeyword)
-            )
+
+            // Score every agent by capability match — purely role/scope based, no hierarchy
+            const scored = allAgents
+              .filter(a => a.id !== agent.id)  // exclude self
+              .map(a => {
+                const aRoleLC  = a.role.toLowerCase()
+                const aNameLC  = a.name.toLowerCase()
+                const aPromptLC = (a.prompt ?? '').toLowerCase()
+                let score = 0
+
+                // Role keyword match (most important)
+                if (aRoleLC === roleKeyword)              score += 4  // exact match
+                else if (aRoleLC.includes(roleKeyword))  score += 3  // role contains keyword
+                else if (aNameLC.includes(roleKeyword))  score += 1  // name contains keyword
+
+                // Context/scope match — does their prompt mention the topic words?
+                const promptMatches = contextWords.filter(w => aPromptLC.includes(w)).length
+                score += Math.min(promptMatches, 3)  // up to +3 for topic overlap
+
+                return { agent: a, score }
+              })
+              .filter(s => s.score > 0)
+              .sort((a, b) => b.score - a.score)
+
+            const target = scored[0]?.agent ?? null
             if (!target) {
               return `No active agent found with role matching "${params.agentRole}". I'll handle this myself.`
             }
@@ -1630,14 +1646,13 @@ Respond in the brand voice described below. Be helpful, concise, and professiona
 
     const roleLC = (agent.role ?? '').toLowerCase()
 
-    // Tier classification mirrors the same logic in runWithToolDispatch
-    const isTier1 = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
-                    roleLC.includes('executive') || roleLC.includes('assistant') || roleLC.includes('front desk') ||
-                    roleLC.includes('success manager') || roleLC.includes('client service')
-    const isTier2 = roleLC.includes('operations') || roleLC.includes('coordinator') || roleLC.includes('office manager') ||
-                    roleLC.includes('admin manager') || roleLC.includes('project manager') || roleLC.includes('project coord') ||
-                    roleLC.includes('ops lead') || roleLC.includes('scheduling')
-    const isIntakeAgentRole = isTier1  // alias used in internalToolsSection below
+    // ── Role classification — purely keyword-based, no hierarchy ────────
+    const isIntakeAgentRole = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
+                              roleLC.includes('executive') || roleLC.includes('assistant') || roleLC.includes('front desk') ||
+                              roleLC.includes('success manager') || roleLC.includes('client service')
+    const isOpsAgentRole    = roleLC.includes('operations') || roleLC.includes('coordinator') || roleLC.includes('office manager') ||
+                              roleLC.includes('admin manager') || roleLC.includes('project manager') || roleLC.includes('ops lead') ||
+                              roleLC.includes('scheduling')
 
     // ── Dynamic team lookups (from live DB roster) ────────────────────
     // These replace all hardcoded colleague names so every tenant sees
@@ -1840,7 +1855,7 @@ SPECIALIST MODE (when you receive [HANDOFF FROM ...]):
     // All colleague names, service terms, and pricing examples are derived
     // from the live team roster and tenant brain settings — never hardcoded.
     let roleHandoffSection = ''
-    if (isTier1) {
+    if (isIntakeAgentRole) {
       roleHandoffSection = `
 
 YOUR ROLE — CUSTOMER INTAKE:
@@ -1884,7 +1899,7 @@ If the owner explicitly says "connect me to ${estimatorName}", "transfer me to $
 → Say: "Of course! Connecting you with ${estimatorName} now — they'll take it from here."
 → This is the ONLY time you hand over the conversation`
 
-    } else if (isTier2) {
+    } else if (isOpsAgentRole) {
       roleHandoffSection = `
 
 YOUR ROLE — OPERATIONS & COORDINATION (Tier 2):

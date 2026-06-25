@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, Res } from '@nestjs/common'
-import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
+import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, Res, UploadedFile, UseInterceptors } from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes } from '@nestjs/swagger'
 import { IsString, IsOptional, IsArray } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { TenantAdminGuard } from '../../common/guards/tenant-admin.guard'
@@ -95,6 +96,25 @@ export class AgentsController {
   @ApiOperation({ summary: 'Remove agent' })
   remove(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.remove(tenantId, id)
+  }
+
+  @Post(':id/avatar')
+  @UseGuards(TenantAdminGuard)
+  @ApiOperation({ summary: 'Upload agent avatar image' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('file', {
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      if (!file.mimetype.startsWith('image/')) cb(new Error('Only image files are allowed') as any, false)
+      else cb(null, true)
+    },
+  }))
+  uploadAvatar(
+    @CurrentTenant() tenantId: string,
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.service.uploadAvatar(tenantId, id, file)
   }
 
   @Get(':id/crm-access')

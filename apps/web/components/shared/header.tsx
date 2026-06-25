@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { api } from '@/lib/api'
+import { resolveAvatarUrl } from '@/lib/utils'
 
 type HeaderAgent = {
   id: string
@@ -46,9 +47,9 @@ export function Header() {
         <div className="flex items-center gap-2 rounded-[2rem] border border-white/70 bg-white/55 px-4 py-2 shadow-sm backdrop-blur-xl">
           {agents.slice(0, 8).map((agent, index) => (
             <div key={agent.id} className="relative flex flex-col items-center gap-1" title={`${agent.name}${agent.role ? ` - ${agent.role}` : ''}`}>
-              {agent.avatar ? (
+              {resolveAvatarUrl(agent.avatar) ? (
                 <img
-                  src={agent.avatar}
+                  src={resolveAvatarUrl(agent.avatar)!}
                   alt={agent.name}
                   className="h-9 w-9 rounded-full border-2 border-white object-cover shadow-sm"
                 />

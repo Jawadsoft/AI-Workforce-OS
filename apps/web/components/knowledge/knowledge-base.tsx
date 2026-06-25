@@ -6,7 +6,7 @@ import { api } from '@/lib/api'
 import { FileText, Trash2, Link2, CheckCircle2, Clock, AlertCircle, ChevronDown, ChevronUp, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
+import { cn, resolveAvatarUrl } from '@/lib/utils'
 
 const STATUS_MAP = {
   processing: { label: 'Processing', color: 'bg-yellow-100 text-yellow-700', icon: Clock },
@@ -144,8 +144,8 @@ export function KnowledgeBase() {
                             : 'border-border hover:bg-accent text-muted-foreground'
                         )}
                       >
-                        {agent.avatar
-                          ? <img src={agent.avatar} alt={agent.name} className="w-5 h-5 rounded-full object-cover flex-shrink-0" />
+                        {resolveAvatarUrl(agent.avatar)
+                          ? <img src={resolveAvatarUrl(agent.avatar)!} alt={agent.name} className="w-5 h-5 rounded-full object-cover flex-shrink-0" />
                           : <div className="w-5 h-5 rounded-full bg-primary/10 text-primary text-xs flex items-center justify-center font-bold flex-shrink-0">{agent.name[0]}</div>
                         }
                         <span className="truncate text-xs">{agent.name}</span>

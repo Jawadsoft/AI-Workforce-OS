@@ -1,0 +1,6 @@
+require('./load-env')
+const { PrismaClient } = require('@prisma/client')
+const db = new PrismaClient()
+db.agent.findMany({ where: { status: 'ACTIVE' }, select: { name: true, role: true }, orderBy: { createdAt: 'asc' } })
+  .then(agents => { agents.forEach(a => console.log(`"${a.name}" | role: "${a.role}"`)); db.$disconnect() })
+  .catch(e => { console.error(e); process.exit(1) })

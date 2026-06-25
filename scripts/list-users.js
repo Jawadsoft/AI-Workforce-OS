@@ -1,0 +1,6 @@
+require('./load-env')
+const { PrismaClient } = require('../apps/api/node_modules/@prisma/client')
+const p = new PrismaClient()
+p.user.findMany({ take: 10, select: { email: true, isActive: true, tenantId: true } })
+  .then(r => { console.log(JSON.stringify(r, null, 2)); p.$disconnect() })
+  .catch(e => { console.error(e.message); p.$disconnect() })

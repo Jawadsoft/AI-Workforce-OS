@@ -1,9 +1,11 @@
 import {
   Controller, Get, Post, Body, Param, Query,
-  Res, Req, HttpCode,
+  Res, Req, HttpCode, UseGuards,
 } from '@nestjs/common'
-import { ApiTags, ApiOperation } from '@nestjs/swagger'
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
 import { IsOptional, IsString } from 'class-validator'
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
+import { CurrentTenant } from '../../common/decorators/tenant.decorator'
 import { PublicChatService } from './public-chat.service'
 import type { Request, Response } from 'express'
 
@@ -96,6 +98,16 @@ export class PublicChatController {
     }
   }
 
+  // ── Active sessions (staff-only, requires JWT) ────────────────────
+
+  @Get('widget-sessions/active')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List currently active widget chat sessions with customer names' })
+  getActiveSessions(@CurrentTenant() tenantId: string) {
+    return this.service.getActiveSessions(tenantId)
+  }
+
   // ── Serve widget.js embed script ──────────────────────────────────
 
   @Get('widget.js')
@@ -144,17 +156,31 @@ function buildWidgetScript(frontendUrl: string): string {
   frame.allow = 'microphone';
   document.body.appendChild(frame);
 
+  var chatIcon = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-3 3-3-3z"/></svg>';
+  var closeIcon = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>';
+
   var open = false;
+
+  function openWidget() {
+    open = true;
+    frame.src = '${frontendUrl}/widget/' + tid + '/' + aid;
+    frame.style.display = 'block';
+    btn.innerHTML = closeIcon;
+  }
+
+  function closeWidget() {
+    open = false;
+    frame.style.display = 'none';
+    btn.innerHTML = chatIcon;
+  }
+
   btn.addEventListener('click', function() {
-    open = !open;
-    if (open) {
-      frame.src = '${frontendUrl}/widget/' + tid + '/' + aid;
-      frame.style.display = 'block';
-      btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>';
-    } else {
-      frame.style.display = 'none';
-      btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-3 3-3-3z"/></svg>';
-    }
+    open ? closeWidget() : openWidget();
+  });
+
+  // Listen for close message posted by the X button inside the iframe
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'aiw:close') closeWidget();
   });
 })();
 `.trim()

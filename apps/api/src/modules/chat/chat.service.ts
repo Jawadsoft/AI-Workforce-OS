@@ -10,6 +10,7 @@ import { TicketsService } from '../tickets/tickets.service'
 import { EmailService } from '../email/email.service'
 import { DocumentsService } from '../documents/documents.service'
 import { StormService } from '../storm/storm.service'
+import { MemoryService } from '../memory/memory.service'
 
 // Regex patterns to extract caller identity from first message
 const PHONE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/
@@ -109,7 +110,7 @@ const CRM_TOOL_DEFINITIONS = [
   },
   {
     name: 'generate_document',
-    description: 'Generate a professional PDF document. IMPORTANT: Before calling this tool, you MUST first use ask_user to show the customer a summary of what will be included and get their approval. Only call generate_document after the customer confirms they are happy with the details.',
+    description: 'Generate a professional PDF document (estimate, proposal, report, invoice, etc.). Call this directly when the user asks for a document or proposal. Optionally use ask_user first to confirm details if the scope is unclear — but if the user has explicitly asked for a document, generate it immediately.',
     parameters: {
       type: 'object',
       properties: {
@@ -181,8 +182,8 @@ const CRM_TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         agentRole: { type: 'string', description: 'Role keyword of the colleague e.g. "estimator", "insurance specialist", "sales assistant", "field inspector"' },
-        reason: { type: 'string', description: 'Brief natural-language reason why this colleague is better suited, e.g. "Cris handles all estimates and pricing"' },
-        message: { type: 'string', description: 'Natural message to say to the customer before showing the transfer button, e.g. "That\'s actually my colleague Cris\'s area — want me to connect you with him?"' },
+        reason: { type: 'string', description: 'Brief natural-language reason why this colleague is better suited, e.g. "Our estimator handles all quotes and pricing"' },
+        message: { type: 'string', description: 'Natural message to say to the customer before showing the transfer button, e.g. "That\'s actually my colleague\'s area — want me to connect you with them?"' },
       },
       required: ['agentRole', 'reason', 'message'],
     },
@@ -209,12 +210,12 @@ const CRM_TOOL_DEFINITIONS = [
   },
   {
     name: 'update_ticket',
-    description: 'Update a ticket status, next action, or add a progress note. Use whenever you take action on a ticket — mark it IN_PROGRESS when you start, COMPLETED when done, AWAITING_CUSTOMER when waiting for a response.',
+    description: 'Update a ticket status, next action, or add a progress note. Use whenever you take action on a ticket.',
     parameters: {
       type: 'object',
       properties: {
         ticketId: { type: 'string', description: 'The ticket ID (last 6 chars shown in your pending tickets list)' },
-        status: { type: 'string', enum: ['OPEN', 'IN_PROGRESS', 'AWAITING_CUSTOMER', 'AWAITING_AGENT', 'SCHEDULED', 'COMPLETED', 'ESCALATED', 'CANCELLED'], description: 'New status' },
+        status: { type: 'string', enum: ['OPEN', 'IN_PROGRESS', 'COMPLETED'], description: 'OPEN=not yet started, IN_PROGRESS=being worked on, COMPLETED=fully resolved (booking confirmed, estimate sent, job done — any final outcome)' },
         nextAction: { type: 'string', description: 'Updated next action description' },
         note: { type: 'string', description: 'Progress note to add to the ticket timeline' },
         assignedAgentRole: { type: 'string', description: 'Reassign to a team member by role keyword e.g. "operations", "hr", "finance", "sales"' },
@@ -229,6 +230,19 @@ const CRM_TOOL_DEFINITIONS = [
     parameters: {
       type: 'object',
       properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'get_team_activity',
+    description: 'Scan recent ticket activity across the whole team. Use this when the owner refers to a job, client, or request without giving full details — e.g. "the gutter replacement", "my client from yesterday", "the job you were assigned". Returns recent tickets for the entire team regardless of who they are assigned to, across all statuses.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query:  { type: 'string',  description: 'Optional keyword to filter by — client name, job type, or description fragment e.g. "Morgan", "gutter replacement", "Seattle"' },
+        status: { type: 'string',  enum: ['OPEN', 'IN_PROGRESS', 'COMPLETED', 'ALL'], description: 'Filter by status. Omit or use ALL to see everything recent.' },
+        days:   { type: 'number',  description: 'How many days back to look (default: 7, max: 30)' },
+      },
       required: [],
     },
   },
@@ -262,6 +276,7 @@ export class ChatService {
     private readonly email: EmailService,
     private readonly documents: DocumentsService,
     private readonly storm: StormService,
+    private readonly memory: MemoryService,
   ) {}
 
   async findAll(tenantId: string, agentId?: string) {
@@ -375,7 +390,7 @@ export class ChatService {
   /**
    * Auto-wake an assigned agent: post briefing to their primary thread, trigger
    * autonomous reasoning, then post their response back into the originating
-   * conversation so it appears in the ticket thread view.
+   * conversation so it appears in the active window of the agent who raised the ticket.
    * Runs in the background — fire and forget.
    */
   async autoWakeAgent(
@@ -384,12 +399,24 @@ export class ChatService {
     ticketId: string,
     briefing: string,
     creatorAgentId: string,
-    originatingConvId?: string,   // Will's conversation — where to post Alex's response back
-    creatorAgentName?: string,
+    originatingConvId?: string,   // conversation where the ticket was created (e.g. Nora's window)
+    _creatorAgentName?: string,
   ): Promise<void> {
     this.logger.log(`[autoWake] Starting for agent ${agentId}, ticket ${ticketId.slice(-6)}`)
 
-    // Step 1 — post briefing into agent's own primary thread
+    // Load ticket metadata upfront for context framing in the callback to Nora
+    const ticketMeta = await this.prisma.activityTicket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, ticketNumber: true, title: true, description: true, conversationId: true },
+    }).catch(() => null)
+
+    // Stamp ticket as IN_PROGRESS and touch updatedAt — resets the cron cooldown
+    await this.prisma.activityTicket.update({
+      where: { id: ticketId },
+      data: { status: 'IN_PROGRESS', updatedAt: new Date() },
+    }).catch(() => {/* silently ignore for approval IDs */})
+
+    // Step 1 — post briefing into specialist's own thread (backend only, never user-visible)
     const convId = await this.postBriefing(tenantId, agentId, briefing, 'TICKET_ASSIGNED')
 
     const agentRecord = await this.prisma.agent.findUnique({ where: { id: agentId } })
@@ -422,18 +449,28 @@ export class ChatService {
       orderBy: { createdAt: 'asc' },
     })
 
-    const systemPrompt = this.buildFullSystemPrompt(agentRecord, mergedSettings, brainContext, '', '', false, ticketsBlock, wakeTeamRoster)
+    // Fetch specialist's industry + tenant knowledge for the briefing topic
+    const wakeRagContext = await this.knowledge.retrieveContext(
+      agentId,
+      briefing.slice(0, 400),  // use first 400 chars of briefing as the query
+      mergedSettings.industry,
+      agentRecord.role,
+      3,
+    )
+
+    // isSpecialist=true → strips create_ticket — prevents duplicate ticket creation during auto-wake
+    const systemPrompt = this.buildFullSystemPrompt(agentRecord, mergedSettings, brainContext, '', wakeRagContext, true, ticketsBlock, wakeTeamRoster)
 
     try {
-      // Step 2 — agent reasons and acts (depth = 1 → specialist, no further handoffs or ticket creation)
+      // Step 2 — specialist reasons and acts (depth=1, no create_ticket, no further handoffs)
       const response = await this.runWithToolDispatch(
         tenantId, agentRecord, systemPrompt,
         [{ role: 'user' as const, content: briefing }],
         undefined,   // defaultCustomerId
-        undefined,   // emit
+        undefined,   // emit — pure backend work, no streaming
         1,           // handoffDepth = 1 — prevent further routing
         undefined,   // handoffCountRef
-        convId,      // conversationId (agent's own thread)
+        convId,      // specialist's own thread
         'INTERNAL',
       )
 
@@ -442,29 +479,41 @@ export class ChatService {
         return
       }
 
-      // Step 3 — save response to agent's own thread
+      // Step 3 — save specialist's work to their OWN thread
       await this.prisma.message.create({
         data: { conversationId: convId, role: 'ASSISTANT', content: response },
       })
       await this.prisma.conversation.update({ where: { id: convId }, data: { updatedAt: new Date() } })
 
-      this.logger.log(`[autoWake] ${agentRecord.name} responded (${response.length} chars)`)
+      // Step 4 — surface the response in the originating conversation (Nora's active window).
+      // The ticket stays IN_PROGRESS — it is the assigned agent's responsibility to call
+      // update_ticket(COMPLETED) once they are satisfied the work is fully done.
+      if (originatingConvId && originatingConvId !== convId) {
+        const ticketRef   = ticketMeta ? `Ticket #${String(ticketMeta.ticketNumber ?? '').padStart(4, '0')} (${ticketMeta.id.slice(-6)})` : `Ticket ${ticketId.slice(-6)}`
+        const ticketTitle = ticketMeta?.title ? ` — "${ticketMeta.title}"` : ''
+        const contextFrame = [
+          `📬 **[${agentRecord.name}]** responded to ${ticketRef}${ticketTitle}`,
+          `↳ Ticket is still IN_PROGRESS. ${agentRecord.name} will mark it COMPLETED when the work is fully done.`,
+          ``,
+        ].join('\n')
 
-      // Step 4 — post Alex's response back into the originating conversation (Will's thread)
-      // so it appears in the ticket thread view without Will having to check Alex's chat
-      if (originatingConvId) {
-        const summary = `🤖 **${agentRecord.name} has actioned this ticket:**\n\n${response}`
         await this.prisma.message.create({
           data: {
             conversationId: originatingConvId,
             role: 'ASSISTANT',
-            content: summary,
-            metadata: { autoWake: true, fromAgentId: agentId, fromAgentName: agentRecord.name },
+            content: `${contextFrame}${response}`,
+            briefingType: 'SPECIALIST_UPDATE',
           },
         })
-        await this.prisma.conversation.update({ where: { id: originatingConvId }, data: { updatedAt: new Date() } })
-        this.logger.log(`[autoWake] Response forwarded to originating conv ${originatingConvId.slice(-6)}`)
+        await this.prisma.conversation.update({
+          where: { id: originatingConvId },
+          data: { updatedAt: new Date() },
+        })
+        this.logger.log(`[autoWake] ${agentRecord.name}'s response surfaced in originating conv ${originatingConvId.slice(-6)} — ticket ${ticketId.slice(-6)} remains IN_PROGRESS`)
       }
+
+      this.logger.log(`[autoWake] ${agentRecord.name} completed work (${response.length} chars)`)
+
     } catch (e: any) {
       this.logger.warn(`[autoWake] Reasoning failed for ${agentRecord.name}: ${e.message}`)
     }
@@ -492,12 +541,16 @@ export class ChatService {
       data: { conversationId, role: 'USER', content },
     })
 
-    // Get conversation history (last 20 messages)
-    const history = await this.prisma.message.findMany({
+    // Fetch the most recent 14 messages in reverse order, then re-sort ascending
+    // so the LLM sees them oldest-first.  Using desc+take ensures we always get
+    // the LATEST messages (not the oldest) when conversations exceed the window.
+    // 14 keeps multi-customer context tight — each customer typically needs 4-6 turns.
+    const historyRaw = await this.prisma.message.findMany({
       where: { conversationId },
-      orderBy: { createdAt: 'asc' },
-      take: 20,
+      orderBy: { createdAt: 'desc' },
+      take: 14,
     })
+    const history = historyRaw.reverse()
 
     // Fetch tenant with industry + settings for brain context
     const tenant = await this.prisma.tenant.findUnique({
@@ -534,30 +587,54 @@ export class ChatService {
       }
     }
 
-    // ── RAG: retrieve relevant knowledge chunks ───────────────────
-    const ragContext = await this.knowledge.retrieveContext(conv.agent.id, content)
-
-    // ── Pending tickets for this agent ────────────────────────────
-    const ticketsBlock = await this.tickets.buildPromptBlock(tenantId, conv.agent.id)
-
-    // ── Dynamic team roster (all active agents for this tenant) ───
-    const teamRoster = await this.prisma.agent.findMany({
-      where: { tenantId, status: 'ACTIVE' },
-      select: { name: true, role: true, prompt: true },
-      orderBy: { createdAt: 'asc' },
-    })
+    // ── RAG + Memory + ticket fetch (all in parallel) ──────────────
+    const [ragContext, memoryContext, ticketsBlock, teamRoster] = await Promise.all([
+      this.knowledge.retrieveContext(conv.agent.id, content, mergedSettings.industry, conv.agent.role),
+      this.memory.searchMemory(conv.agent.id, tenantId, content),
+      this.tickets.buildPromptBlock(tenantId, conv.agent.id, conversationId),
+      this.prisma.agent.findMany({
+        where: { tenantId, status: 'ACTIVE' },
+        select: { name: true, role: true, prompt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ])
 
     // ── Build enriched system prompt ──────────────────────────────
-    const enrichedSystemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext, false, ticketsBlock, teamRoster)
+    const enrichedSystemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext + memoryContext, false, ticketsBlock, teamRoster)
 
     // ── Tool dispatch loop ────────────────────────────────────────
     // Always route through runWithToolDispatch — it falls back to plain chat
     // if no tools are available, and ensures ticket + internal tools work for ALL agents.
-    const messages = history
+    const rawMessages = history
       .filter((m) => m.role === 'USER' || m.role === 'ASSISTANT')
-      // Strip any raw tool-call JSON that leaked into history so AI doesn't repeat the pattern
       .filter((m) => !(m.role === 'ASSISTANT' && m.content.trim().includes('__tool__')))
       .map((m) => ({ role: m.role === 'USER' ? 'user' : 'assistant' as 'user' | 'assistant', content: m.content }))
+
+    // ── History loop-breaker ───────────────────────────────────────────
+    // When the LLM repeats the same response to different user messages (stuck loop),
+    // replace stale duplicate assistant messages so the LLM cannot follow that wrong pattern.
+    //
+    // Uses word-overlap similarity (not exact match) so it catches responses that say
+    // the same thing in different words (e.g. same price range, same booking details).
+    const similarityRatio = (a: string, b: string): number => {
+      const words = (s: string) => new Set(s.toLowerCase().split(/\s+/).filter(w => w.length > 3))
+      const wa = words(a.slice(0, 400))
+      const wb = words(b.slice(0, 400))
+      if (!wa.size || !wb.size) return 0
+      const overlap = [...wa].filter(w => wb.has(w)).length
+      return overlap / Math.min(wa.size, wb.size)
+    }
+
+    const messages = rawMessages.map((m, i) => {
+      if (m.role !== 'assistant' || i < 2) return m
+      // Check against ALL prior assistant messages in a 6-message window
+      const prior = rawMessages.slice(Math.max(0, i - 6), i).filter(p => p.role === 'assistant')
+      const isStuckLoop = prior.some(p => similarityRatio(m.content, p.content) > 0.65)
+      if (isStuckLoop) {
+        return { role: 'assistant' as const, content: '[Previous response was incorrect or stale — new information has been provided. Respond fresh to the current message with updated details.]' }
+      }
+      return m
+    })
 
     let aiReply = ''
     try {
@@ -610,32 +687,34 @@ export class ChatService {
     const isSpecialist = handoffDepth > 0
     // Track handoffs across multiple tool rounds in this conversation turn
     const hcRef = handoffCountRef ?? { count: 0 }
+    // Guard against duplicate ticket creation within a single conversation turn
+    let ticketCreatedThisTurn = false
     // Intake agents (Nora etc.) silently relay via handoff_to_agent.
     // All other specialists offer transfers via suggest_transfer — never silent relay.
     const roleLC = (agent.role ?? '').toLowerCase()
     const isIntakeAgent = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer')
     const isStormAnalyst = roleLC.includes('storm') || roleLC.includes('analyst') || agent.name?.toLowerCase().includes('arturo')
 
-    // Ticket tools are available to all agent types
-    const ticketToolNames = ['create_ticket', 'update_ticket', 'get_my_tickets']
-    // Scheduling tool — available to operations/controller agents and all non-intake agents
-    const isOperationsAgent = roleLC.includes('operations') || roleLC.includes('controller') || roleLC.includes('scheduler')
-    const schedulingTools = isOperationsAgent ? ['get_available_slots'] : []
+    // Ticket tools — available to all agent types
+    const ticketToolNames = ['create_ticket', 'update_ticket', 'get_my_tickets', 'get_team_activity']
+    // Scheduling tool — available to all non-intake agents
+    const schedulingTools = !isIntakeAgent ? ['get_available_slots'] : []
 
-    // create_internal_task is intentionally excluded from automatic tool lists.
-    // Agents must not call it autonomously — tickets are the universal unit of work.
-    // It is only injected when the staff member's message explicitly requests a task/reminder.
+    // create_internal_task only injected when staff explicitly requests a task/reminder
     const userWantsTask = messages.length > 0 &&
       /\b(create\s+a?\s*task|add\s+a?\s*task|schedule\s+a?\s*reminder|remind\s+me|add\s+a?\s*reminder|set\s+a?\s*reminder)\b/i
         .test(messages[messages.length - 1]?.content ?? '')
     const taskTools = userWantsTask ? ['create_internal_task'] : []
 
+    // Specialists can update/view tickets but NEVER create new ones (prevents duplicates during auto-wake/handoff)
+    const specialistTicketTools = ['update_ticket', 'get_my_tickets', 'get_team_activity']
+
     const internalToolNames = isSpecialist
-      // Called via handoff: just answer, no routing tools
-      ? ['reply_to_widget_session', 'contact_customer', 'generate_document', 'ask_user', ...ticketToolNames, ...schedulingTools]
+      // Called via handoff or auto-wake: update existing tickets only, no create_ticket
+      ? ['reply_to_widget_session', 'contact_customer', 'generate_document', 'ask_user', ...specialistTicketTools, ...schedulingTools]
       : isIntakeAgent
-        // Intake agent: silent relay to specialists
-        ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'ask_user', ...ticketToolNames, ...taskTools]
+        // Intake agent: silent relay + explicit transfer when user requests it
+        ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...taskTools]
         : isStormAnalyst
           // Storm analyst: gets storm data tool + standard specialist tools
           ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', 'fetch_storm_data', ...ticketToolNames, ...taskTools]
@@ -765,6 +844,14 @@ export class ChatService {
 
         // ── Create activity ticket ─────────────────────────
         if (toolName === 'create_ticket') {
+          // Block duplicate ticket creation within the same conversation turn only.
+          // We intentionally do NOT block across turns — the owner-manages-multiple-customers
+          // scenario means multiple tickets can legitimately exist for the same conversation
+          // (e.g. Rio's inspection ticket + Jack's gutter ticket in the same Nora thread).
+          // Per-conversation duplicate prevention is handled by LLM guidance in buildPromptBlock.
+          if (ticketCreatedThisTurn) {
+            return `A ticket was already created in this response. Use update_ticket to modify the existing one instead of creating a duplicate.`
+          }
           try {
             // Resolve assignedAgentRole → actual agent ID
             let resolvedAssignedAgentId: string | undefined
@@ -803,7 +890,10 @@ export class ChatService {
               followUpAt: params.followUpAt,
             })
             const assignedTo = ticket.assignedAgent?.name ?? 'you'
+            ticketCreatedThisTurn = true  // prevent duplicate ticket creation in subsequent tool rounds
             emit?.({ action_card: { type: 'ticket', id: ticket.id, title: ticket.title, status: ticket.status, priority: ticket.priority, contactRef: ticket.contactRef } })
+            // Embed ticket for intent search (async, non-blocking)
+            this.memory.embedTicket(ticket.id).catch(() => {})
 
             // Auto-briefing + auto-wake for assigned agent (fire and forget)
             if (ticket.assignedAgent && ticket.assignedAgent.id !== agent.id) {
@@ -821,9 +911,11 @@ export class ChatService {
                 ``,
                 `INSTRUCTIONS:`,
                 `1. Action this task using your available tools (e.g. get_available_slots to find dates).`,
-                `2. Call update_ticket with ticketId "${ticketShortId}" to record your findings as a note and update the status.`,
+                `2. Call update_ticket with ticketId "${ticketShortId}" to record your findings and set the correct status:`,
+                `   • Started working on it → IN_PROGRESS`,
+                `   • Fully resolved (booking confirmed, estimate sent, done) → COMPLETED`,
                 `3. DO NOT create a new ticket — update the existing one (${ticketShortId}).`,
-                `4. DO NOT try to contact the customer directly — ${agent.name} will handle customer communication.`,
+                `4. DO NOT contact the customer directly — ${agent.name} will handle that.`,
                 `5. Your response here will be automatically forwarded to ${agent.name}.`,
               ].filter(Boolean).join('\n')
 
@@ -886,6 +978,8 @@ export class ChatService {
             })
             const assignedTo = ticket.assignedAgent?.name
             const result = `Ticket "${ticket.title}" updated — Status: ${ticket.status}${assignedTo ? `, Assigned to: ${assignedTo}` : ''}${params.note ? `, Note: "${params.note}"` : ''}`
+            // Re-embed ticket so intent search reflects latest state (async, non-blocking)
+            this.memory.embedTicket(ticket.id).catch(() => {})
 
             // Auto-notify creator when a different agent updates/completes the ticket
             const creatorId = (ticket as any).createdBy?.id ?? (ticket as any).createdByAgentId
@@ -929,6 +1023,55 @@ export class ChatService {
           }
         }
 
+        // ── Scan team activity across all agents ───────────────
+        if (toolName === 'get_team_activity') {
+          try {
+            const days    = Math.min(Number(params.days ?? 7), 30)
+            const since   = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+            const statusFilter = (params.status as string | undefined)
+            const query   = (params.query as string | undefined)?.trim().toLowerCase()
+
+            const teamTickets = await this.prisma.activityTicket.findMany({
+              where: {
+                tenantId,
+                createdAt: { gte: since },
+                ...(statusFilter && statusFilter !== 'ALL' ? { status: statusFilter as any } : {}),
+                ...(query ? {
+                  OR: [
+                    { title:       { contains: query, mode: 'insensitive' } },
+                    { description: { contains: query, mode: 'insensitive' } },
+                    { contactRef:  { contains: query, mode: 'insensitive' } },
+                    { notes:       { contains: query, mode: 'insensitive' } },
+                  ],
+                } : {}),
+              },
+              include: {
+                assignedAgent: { select: { name: true, role: true } },
+                createdBy:     { select: { name: true } },
+              },
+              orderBy: { updatedAt: 'desc' },
+              take: 20,
+            })
+
+            if (!teamTickets.length) {
+              return `No team activity found${query ? ` matching "${query}"` : ''} in the last ${days} day${days !== 1 ? 's' : ''}.`
+            }
+
+            const lines = (teamTickets as any[]).map(t => {
+              const assigned = t.assignedAgent ? `${(t.assignedAgent.name as string).split('—')[0].trim()} (${t.assignedAgent.role})` : 'Unassigned'
+              const contact  = t.contactRef ? ` | Client: ${t.contactRef}` : ''
+              const next     = t.nextAction  ? `\n    Next: ${t.nextAction}` : ''
+              const age      = Math.round((Date.now() - new Date(t.updatedAt).getTime()) / 60000)
+              const ageLabel = age < 60 ? `${age}m ago` : age < 1440 ? `${Math.round(age / 60)}h ago` : `${Math.round(age / 1440)}d ago`
+              return `• #${t.id.slice(-6)} [${t.status}] "${t.title}"${contact} | Assigned: ${assigned} | Updated: ${ageLabel}${next}`
+            })
+
+            return `Team activity — last ${days} day${days !== 1 ? 's' : ''} (${teamTickets.length} ticket${teamTickets.length !== 1 ? 's' : ''}):\n${lines.join('\n')}`
+          } catch (err: any) {
+            return `Failed to fetch team activity: ${err.message}`
+          }
+        }
+
         // ── Get available slots (mock — replace with calendar API later) ──
         if (toolName === 'get_available_slots') {
           const jobType = (params.jobType as string ?? '').toLowerCase()
@@ -947,17 +1090,21 @@ export class ChatService {
             const dateStr = date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
             const dayStr = dayNames[dow]
 
-            // Morning slot (Team A — standard + light deep)
-            slots.push({ date: dateStr, day: dayStr, time: '09:00–11:00', crew: 'Team A (2 cleaners)', suitable: ['standard clean', 'light clean', 'inspection', 'handyman'] })
-            // Afternoon slot — Team B only on weekdays
+            // Morning slot — suitable for inspections, assessments, shorter jobs
+            slots.push({ date: dateStr, day: dayStr, time: '09:00–11:00', crew: 'Team A', suitable: ['inspection', 'site visit', 'assessment', 'consultation', 'repair', 'replacement', 'installation', 'gutter', 'roof', 'window', 'door'] })
+            // Afternoon slot — weekdays only, suitable for larger jobs
             if (dow >= 1 && dow <= 5) {
-              slots.push({ date: dateStr, day: dayStr, time: '13:00–16:00', crew: 'Team B (3 cleaners)', suitable: ['deep clean', 'end of tenancy', 'large property', 'standard clean'] })
+              slots.push({ date: dateStr, day: dayStr, time: '13:00–16:00', crew: 'Team B', suitable: ['replacement', 'installation', 'large job', 'full replacement', 'gutter', 'roof', 'siding', 'deck', 'repair'] })
             }
           }
 
-          // Filter by job type suitability if provided
+          // Filter by job type suitability — only exclude if there is a clear mismatch
+          // If jobType is empty or no suitable tag overlaps at all, return all slots anyway
           const filtered = jobType
-            ? slots.filter(s => s.suitable.some(t => jobType.includes(t) || t.includes(jobType)))
+            ? (() => {
+                const matched = slots.filter(s => s.suitable.some(t => jobType.includes(t) || t.includes(jobType)))
+                return matched.length > 0 ? matched : slots  // fall back to all slots if no match
+              })()
             : slots
 
           // Prefer slots matching requested day
@@ -1107,13 +1254,61 @@ export class ChatService {
               tenantName: tenant?.name ?? '',
             }
             const brainContext = this.brain.buildAgentContext(mergedSettings)
-            const handoffContext = `\n\n[HANDOFF FROM ${agent.name.toUpperCase()}]: ${params.contextSummary}\nReason for handoff: ${params.reason}`
-            const specialistPrompt = this.buildFullSystemPrompt(target, mergedSettings, brainContext, handoffContext, '', true)
+            const handoffContext = `\n\n[HANDOFF FROM ${agent.name.toUpperCase()}]: ${params.contextSummary}\nReason for handoff: ${params.reason}\n\nIMPORTANT: You are responding internally to a colleague, NOT to the customer. Do NOT call ask_user — work with the information you have RIGHT NOW and give a specific, useful answer immediately. If you don't have all the details, give a realistic range or ballpark based on your expertise and the knowledge base. Your response will be rewritten by ${agent.name} before the customer sees it. Be concrete — numbers, steps, timelines — not "I'll need more info first".`
 
-            // Run the specialist agent — depth+1 prevents further handoffs and loops
-            const specialistReply = await this.runWithToolDispatch(
-              tenantId, target, specialistPrompt, messages, defaultCustomerId, emit, handoffDepth + 1, hcRef, conversationId, conversationSource,
+            // Fetch specialist's RAG context (tenant docs + industry knowledge for their role)
+            const specialistRag = await this.knowledge.retrieveContext(
+              target.id,
+              params.contextSummary ?? params.reason ?? '',
+              mergedSettings.industry,
+              target.role,
+              3,
             )
+            const specialistPrompt = this.buildFullSystemPrompt(target, mergedSettings, brainContext, handoffContext, specialistRag, true)
+
+            // Run the specialist agent — depth+1 prevents further handoffs and loops.
+            // Pass undefined as emit so the specialist's tool events (ask_user, action_cards)
+            // never reach the user's chat stream. Only Nora's final rewrite is user-visible.
+            const specialistReply = await this.runWithToolDispatch(
+              tenantId, target, specialistPrompt, messages, defaultCustomerId, undefined, handoffDepth + 1, hcRef, conversationId, conversationSource,
+            )
+
+            // Create a consultation ticket (OPEN → immediately COMPLETED inline).
+            // This gives Nora a trackable record of every consultation, ties it to the
+            // conversationId so she can reference it, and keeps the ticket lifecycle clean:
+            // one question = one ticket = one response = COMPLETED.
+            if (conversationId) {
+              const shortName = (n: string) => n.split('—')[0].split('(')[0].trim()
+              const consultTitle = `Consulted ${shortName(target.name)}: ${(params.contextSummary ?? params.reason ?? '').slice(0, 80)}`
+              const consultTicket = await this.tickets.create(tenantId, agent.id, agent.name, {
+                title: consultTitle,
+                description: params.contextSummary ?? params.reason,
+                type: 'FOLLOW_UP',
+                priority: 'NORMAL',
+                source: conversationSource ?? 'INTERNAL',
+                conversationId,
+                assignedAgentId: target.id,
+                nextAction: `Reply from ${shortName(target.name)}: ${specialistReply.slice(0, 300)}`,
+              }).catch(() => null)
+
+              if (consultTicket) {
+                // Log the Q&A in the ticket notes and leave it IN_PROGRESS.
+                // The specialist must call update_ticket(COMPLETED) when fully done.
+                await this.prisma.activityTicket.update({
+                  where: { id: consultTicket.id },
+                  data: {
+                    notes: `Q: ${params.contextSummary ?? params.reason}\n\nA (${shortName(target.name)}): ${specialistReply.slice(0, 600)}`,
+                  },
+                }).catch(() => {})
+                this.memory.embedTicket(consultTicket.id).catch(() => {})
+              }
+
+              // Store episodic memory for the SPECIALIST so they remember this consultation
+              const specialistSummaryText = `I was consulted by ${shortName(agent.name)} about: ${params.contextSummary}. My response: ${specialistReply.slice(0, 400)}`
+              this.memory.storeHandoffMemory(
+                tenantId, target.id, conversationId, specialistSummaryText,
+              ).catch(() => {})
+            }
 
             // Track this handoff
             hcRef.count += 1
@@ -1128,8 +1323,8 @@ export class ChatService {
               : ''
 
             // Return specialist answer back to Nora so she can rewrite it naturally.
-            // Nora will deliver it in her own voice — she can mention the specialist by first name.
-            return `[TEAM INPUT — rewrite this answer in your own natural voice. You CAN mention the specialist's first name (e.g., "Cris just got back to me!"). Sound warm and human, not like you are relaying a message.${transferHint}]\n\n${specialistReply}`
+            // Include context so Nora knows which conversation/topic this answer belongs to.
+            return `[TEAM INPUT from ${target.name.split('—')[0].trim()} | Regarding: "${(params.contextSummary ?? params.reason ?? '').slice(0, 80)}" | Conversation: ${conversationId?.slice(-6) ?? 'current'}]\nRewrite this answer in your own natural voice. Mention the specialist's first name naturally (e.g. "[Name] just got back to me!"). If further work is needed for this customer, create a new ticket.${transferHint}\n\n${specialistReply}`
           } catch (err: any) {
             return `Handoff failed: ${err.message}. I'll handle this directly.`
           }
@@ -1172,6 +1367,27 @@ export class ChatService {
                 reason: params.reason,
               },
             })
+
+            // Reassign the conversation ticket to the target agent so they see it immediately
+            if (target && conversationId) {
+              const convTicket = await this.prisma.activityTicket.findFirst({
+                where: { conversationId, tenantId, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+                orderBy: { createdAt: 'desc' },
+              })
+              if (convTicket) {
+                const transferNote = `[Transfer from ${agent.name.split('—')[0].trim()} to ${targetFirstName}] Reason: ${params.reason}`
+                const existingNotes = convTicket.notes ?? ''
+                await this.prisma.activityTicket.update({
+                  where: { id: convTicket.id },
+                  data: {
+                    assignedAgentId: target.id,
+                    notes: existingNotes ? `${existingNotes}\n\n${transferNote}` : transferNote,
+                    status: 'IN_PROGRESS',
+                  },
+                })
+                this.memory.embedTicket(convTicket.id).catch(() => {})
+              }
+            }
 
             this.logger.log(`[SuggestTransfer] ${agent.name} → ${target?.name ?? params.agentRole}`)
             return `[Transfer card shown to customer for ${targetFirstName}. Your message "${params.message}" was shown.]`
@@ -1254,12 +1470,13 @@ export class ChatService {
     // Save user message
     await this.prisma.message.create({ data: { conversationId, role: 'USER', content } })
 
-    // Get history
-    const history = await this.prisma.message.findMany({
+    // Get most recent 14 messages (desc + reverse = latest messages in chronological order)
+    const historyRaw2 = await this.prisma.message.findMany({
       where: { conversationId },
-      orderBy: { createdAt: 'asc' },
-      take: 20,
+      orderBy: { createdAt: 'desc' },
+      take: 14,
     })
+    const history = historyRaw2.reverse()
 
     // Build prompt (same as sendMessage)
     const tenant = await this.prisma.tenant.findUnique({
@@ -1286,18 +1503,33 @@ export class ChatService {
       }
     }
 
-    const ragContext = await this.knowledge.retrieveContext(conv.agent.id, content)
-    const streamTeamRoster = await this.prisma.agent.findMany({
-      where: { tenantId, status: 'ACTIVE' },
-      select: { name: true, role: true, prompt: true },
-      orderBy: { createdAt: 'asc' },
-    })
-    const systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext, false, '', streamTeamRoster)
+    const [ragContext, memoryContext, streamTicketsBlock, streamTeamRoster] = await Promise.all([
+      this.knowledge.retrieveContext(conv.agent.id, content, mergedSettings.industry, conv.agent.role),
+      this.memory.searchMemory(conv.agent.id, tenantId, content),
+      this.tickets.buildPromptBlock(tenantId, conv.agent.id, conversationId),
+      this.prisma.agent.findMany({
+        where: { tenantId, status: 'ACTIVE' },
+        select: { name: true, role: true, prompt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ])
+    const combinedRag = ragContext + memoryContext
+    const systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag, false, streamTicketsBlock, streamTeamRoster)
     const messages = history
       .filter(m => m.role === 'USER' || m.role === 'ASSISTANT')
       // Strip any raw tool-call JSON that leaked into history
       .filter(m => !(m.role === 'ASSISTANT' && m.content.trim().includes('__tool__')))
       .map(m => ({ role: m.role === 'USER' ? 'user' : 'assistant' as 'user' | 'assistant', content: m.content }))
+
+    // Natural thinking delay — makes the agent feel human, not instant-bot.
+    // Scales with message complexity (longer questions = slightly longer pause).
+    const wordCount = content.trim().split(/\s+/).length
+    const baseDelay = 1200
+    const complexityDelay = Math.min(wordCount * 55, 2800)  // ~55ms/word, cap at 2.8s
+    const jitter = Math.random() * 700                       // ±700ms randomness
+    const agentFirstName = conv.agent.name.split('—')[0].split('(')[0].trim().split(' ')[0]
+    emit({ typing: true, agentName: agentFirstName })
+    await new Promise(r => setTimeout(r, baseDelay + complexityDelay + jitter))
 
     // Always route through tool dispatch — it ensures ticket + internal tools work for ALL agents.
     // runWithToolDispatch falls back to plain ai.chat if no tools are configured.
@@ -1327,6 +1559,13 @@ export class ChatService {
     // Auto-log CRM note
     if (conv.agent.tools?.includes('crm_update') && fullReply) {
       this.crm.createNote(tenantId, { content: `[AI] ${conv.agent.name}: ${fullReply.slice(0, 400)}` }).catch(() => {})
+    }
+
+    // Trigger conversation summary after every 4th agent reply (async, non-blocking)
+    // This keeps the agent's episodic memory up-to-date without blocking the response
+    const msgCount = await this.prisma.message.count({ where: { conversationId, role: 'ASSISTANT' } })
+    if (msgCount % 4 === 0 || msgCount === 2) {
+      this.memory.summariseConversation(conversationId).catch(() => {})
     }
 
     emit({ done: true, messageId: aiMessage.id })
@@ -1363,82 +1602,159 @@ Today is ${today}.
 You ALWAYS act as a real employee of this business — never break character, never say you're an AI unless directly asked.
 Respond in the brand voice described below. Be helpful, concise, and professional.`
 
+    const roleLC = (agent.role ?? '').toLowerCase()
+    const isIntakeAgentRole = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer')
+
+    // ── Dynamic team lookups (from live DB roster) ────────────────────
+    // These replace all hardcoded colleague names so every tenant sees
+    // their actual team members, not roofing-specific placeholder names.
+    const findColleague = (keywords: string[]) =>
+      teamRoster.find(m => m.name !== agent.name && keywords.some(k => m.role.toLowerCase().includes(k)))
+    const estimatorAgent   = findColleague(['estimat', 'sales', 'quote', 'pricing'])
+    const opsAgent         = findColleague(['operations', 'coordinator', 'scheduling', 'ops', 'booking'])
+    const insuranceAgent   = findColleague(['insurance', 'claims', 'adjuster'])
+    const inspectorAgent   = findColleague(['field', 'inspector', 'inspection', 'site'])
+    const estimatorName    = estimatorAgent?.name   ?? 'our estimator'
+    const opsName          = opsAgent?.name         ?? 'our operations team'
+    const insuranceName    = insuranceAgent?.name   ?? 'our insurance specialist'
+    const estimatorRole    = estimatorAgent?.role   ?? 'estimator'
+    const insuranceRole    = insuranceAgent?.role   ?? 'insurance specialist'
+    const inspectorRole    = inspectorAgent?.role   ?? 'field inspector'
+
+    // ── Dynamic industry/service lookups (from tenant brain settings) ─
+    const industry = (brain.industry || settings.industry || 'general').toLowerCase().replace(/_/g, ' ')
+    const isRoofing = industry.includes('roof')
+    const serviceDetails: any[] = brain.serviceDetails ?? []
+    const serviceNames: string[] = serviceDetails.map((s: any) => s.name).filter(Boolean)
+    const allServices = serviceNames.length ? serviceNames : (brain.services ?? [])
+    const service1 = allServices[0] ?? 'our primary service'
+    const pricingHint = brain.pricingTable?.length
+      ? `refer to the PRICING section in the knowledge base below for exact figures`
+      : brain.pricingSignals
+        ? `typical range: ${brain.pricingSignals}`
+        : `use pricing from the knowledge base below`
+
     // Specialists do NOT get proactive task creation — they just handle the handed-off request
     const internalToolsSection = isSpecialist
       ? `
 
-SPECIALIST MODE — You have been handed off this conversation. Focus solely on answering the customer's need.
-Available tools: contact_customer (to message the customer), generate_document (to create proposals/reports), ask_user (to ask a clarifying question).
-Do NOT create tasks or approvals unprompted. Just handle the request and give a clear response.`
+SPECIALIST MODE — You are actioning an assigned ticket or handling a handed-off request.
+Available tools: update_ticket (update status/notes on existing tickets), get_my_tickets (view your queue), get_team_activity (scan all recent team jobs), get_available_slots (check availability), contact_customer, generate_document, ask_user.
+
+USE get_team_activity FIRST when the owner refers to a job, client, or request without giving you full details — e.g. "the gutter replacement", "my client from yesterday". Scan to identify the right ticket before asking the owner to repeat themselves.
+
+CRITICAL RULES:
+- DO NOT call create_ticket — you can only UPDATE existing tickets, never create new ones.
+- DO NOT create tasks or approvals.
+- Action the request, update the ticket, and give a clear response.
+- SELF-TRIAGE: Before doing any work, check whether the ticket is actually relevant to your role (${agent.role}). If not → immediately reassign via update_ticket (set assignedAgentRole to the correct role).
+
+TICKET STATUS — three options only:
+- OPEN        → Not yet actioned (default when created).
+- IN_PROGRESS → You are working on it (includes checking availability, waiting for replies, getting quotes).
+- COMPLETED   → Fully resolved — booking confirmed, estimate sent, inspection done, any final outcome.
+
+✅ Started looking into it → IN_PROGRESS
+✅ Booking confirmed with customer → COMPLETED
+✅ Estimate delivered → COMPLETED`
+      : isIntakeAgentRole
+      ? `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR PRIMARY JOB — HAVE A GREAT CONVERSATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You are a sharp, confident receptionist. Your ONLY job is to give the owner useful, accurate answers immediately.
+Tickets happen silently in the background — they never change or slow down your response.
+
+🚫 ANTI-LOOP: If your past responses repeated the same content while the owner asked something different → those responses were WRONG. Respond only to what the owner is saying RIGHT NOW.
+
+MULTI-CUSTOMER RULE (read every message through this lens):
+The owner manages multiple customers in this chat. Always figure out WHICH customer the current message is about.
+• If a new customer name or new request appears → that is a fresh topic. Forget the previous one and focus here.
+• NEVER carry details from customer A into a response about customer B.
+• If unclear which customer → ask: "Just to confirm — is this about [previous name] or a new customer?"
+
+HOW TO RESPOND:
+1. Identify: what does the owner need right now? (answer, booking, quote, info?)
+2. Consult: call handoff_to_agent to get specialist input before answering if needed
+3. Answer: reply naturally in your own voice — warm, specific, confident. Give REAL specifics — actual numbers, dates, steps — not generic ranges.
+4. Log silently: after answering, call create_ticket once for any NEW customer request (invisible to the conversation)
+
+RE-CONSULT RULE — call handoff_to_agent AGAIN when the owner gives new details:
+• New scope or service type: e.g. "he wants full replacement not just a repair" → re-consult ${estimatorName} with full context
+• New size or quantity: e.g. "it's 4000 sqft" or "he needs 20 units" → re-consult with the new details included
+• New related service: e.g. "he also wants insurance help" → consult ${insuranceName}
+• New urgency or timeline: e.g. "needs it urgent this week" → re-consult ${opsName} for availability
+NEVER reuse a previous specialist answer when the customer's requirements have changed. Always pass ALL known details in the handoff.
+
+BACKGROUND TICKET LOGGING (keep this invisible — never mention it):
+• New customer request → call create_ticket ONCE, assign to the right specialist role
+• Booking/scheduling → assign to operations role
+• Quote/estimate → assign to estimator or sales role
+• Insurance/claims → assign to insurance specialist role
+• Inspection → assign to operations role
+• Complaint → type COMPLAINT, priority HIGH
+• create_ticket does NOT send any message. It is purely a background log.
+• create_internal_task ONLY if the owner explicitly says "add a task" or "remind me to..."
+
+OTHER TOOLS (use when needed, not proactively):
+• request_approval — when a decision needs sign-off (refund, discount, HR decision)
+• contact_customer — to send a message to a customer via chat or email
+• suggest_transfer — ONLY when the owner explicitly asks to be connected to a specific person
+
+YOUR ROLE IN THIS CHAT:
+The person messaging you is the business owner or staff — NOT a customer.
+Answer them directly. Only use contact_customer if they say "tell [customer]" or "message [customer]".`
       : `
 
 INTERNAL ACTION TOOLS (always available):
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚡ TICKET FIRST — THIS IS YOUR PRIMARY ACTION TOOL:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. create_ticket — ALWAYS use this for ANY customer request. This is your default logging tool.
-   Call it in your FIRST response the moment you understand what the customer wants.
-   DO NOT use create_internal_task for customer requests — tickets are visible to the whole team.
+WHEN THE OWNER REFERS TO A JOB WITHOUT FULL DETAILS:
+Before asking the owner to repeat information → call get_team_activity to scan recent tickets.
+Examples: "the gutter replacement", "my client from yesterday", "that job you were assigned" → get_team_activity first, then answer.
 
 WHEN TO CREATE A TICKET:
-• Customer asks for a quote, price, or estimate → type: ESTIMATE_SENT
-• Customer asks to book, schedule, or check dates → type: JOB_BOOKED
-• Customer asks about availability or slot → type: JOB_BOOKED, assign to "operations"
-• Customer reports a complaint or issue → type: COMPLAINT, priority: HIGH
-• You promised to follow up or check anything → type: FOLLOW_UP
-• Any HR-related conversation → type: HR
-• Any invoice or payment discussion → type: INVOICE
+• Quote/estimate request → type: ESTIMATE_SENT, assign to estimator/sales role
+• Booking/scheduling → type: JOB_BOOKED, assign to operations role
+• Insurance/claims → type: FOLLOW_UP, assign to insurance specialist role
+• Inspection or site visit → type: JOB_BOOKED, assign to operations role
+• Complaint → type: COMPLAINT, priority: HIGH
+• HR conversation → type: HR
+• Invoice/payment → type: INVOICE
 
-DO NOT WAIT — create the ticket in the same response as your first reply. Do not say "I'll check" and use create_internal_task — use create_ticket instead.
-
-TICKET ASSIGNMENT — always set assignedAgentRole:
-- "operations" → scheduling, availability, site visits, crew deployment, date confirmation
-- "sales" → quotes, estimates, lead follow-ups, pricing
-- "hr" → recruitment, staff contracts, HR queries
-- "finance" → invoices, payments, billing
-- Leave empty ONLY if you are personally completing the action yourself right now.
-
-THINK: "Who on my team should action this next?" then assign to their role.
-Example: Customer asks for available dates → create_ticket, assign to "operations" (Alex confirms slots).
-Example: Customer asks for a quote → create_ticket, assign to "sales" or handle yourself if you are sales.
-
-2. update_ticket — Update status and assignedAgentRole when ownership or status changes.
+1. create_ticket — Background log only. Call ONCE per customer interaction. Does NOT message the user.
+2. update_ticket — Update status/notes/assignee as work progresses.
 3. get_my_tickets — View your queue when asked "what's pending".
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-OTHER TOOLS:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-4. create_internal_task — ONLY when a staff member explicitly says "add a task", "create a reminder", "schedule a reminder", or "remind me to...".
-   This tool is NOT for your own initiative. NEVER call it automatically. Use create_ticket for everything else.
-
-5. request_approval — Use when a decision needs sign-off from a colleague or manager.
-   Always set assignedToRole to the relevant colleague's role keyword (e.g. "finance" for Racheal, "manager" for the owner).
-   The assigned colleague will be automatically notified and will action it.
-   Examples: refund, discount, invoice raise, large purchase, HR decision.
-
-6. contact_customer (USE THIS BY DEFAULT for customer follow-ups) — Smart tool that automatically:
-   - Sends via website CHAT if the customer's last message was within 10 minutes (they are likely still on the page)
-   - Falls back to EMAIL only if the customer's last message was more than 10 minutes ago AND an email was collected
-   ALWAYS call contact_customer. Do not just say you did it — actually invoke the tool.
-
-7. reply_to_widget_session — Only use when you are certain the customer is still active in chat. Otherwise prefer contact_customer.
+4. create_internal_task — ONLY when staff explicitly says "add a task" / "remind me to...".
+5. request_approval — when a decision needs manager sign-off.
+6. contact_customer — smart follow-up: uses chat if customer active, email otherwise.
+7. reply_to_widget_session — only when customer is confirmed live in chat.
 
 YOUR ROLE IN THE INTERNAL CHAT:
-The person messaging you is a member of staff or the business owner — NOT a customer.
-- They may be asking you a direct question → just answer it directly.
-- They may be asking you to prepare something (quote, report, schedule) → do it directly.
-- They may be asking you to relay a message to a customer → ONLY then use contact_customer or reply_to_widget_session.
-NEVER look for a widget session ID unless the staff member explicitly says "tell [customer name]" or "message [customer name]".`
+The person messaging you is staff or the business owner — NOT a customer.
+- Direct question → answer it directly.
+- Prepare something → do it directly.
+- Relay message to customer → use contact_customer or reply_to_widget_session.`
 
-    // Build dynamic team roster — excludes self, lists colleagues by name + role + scope
+    // Build dynamic team roster — excludes self, lists colleagues by name + role + what they handle
     const colleagues = teamRoster.filter(m => m.name !== agent.name)
     const rosterLines = colleagues.map(m => {
-      // Extract a short scope hint from the first sentence of their prompt if available
-      const scopeHint = m.prompt
-        ? m.prompt.replace(/\n/g, ' ').split(/[.!?]/)[0]?.trim().slice(0, 120)
-        : m.role
-      return `  • ${m.name} (${m.role}) — ${scopeHint}`
+      // Extract capability hints from their prompt:
+      // Look for IN SCOPE / handles / responsible for sections, fallback to first 2 sentences
+      let capability = m.role
+      if (m.prompt) {
+        const cleaned = m.prompt.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim()
+        // Try to extract "IN SCOPE" content
+        const inScopeMatch = cleaned.match(/IN SCOPE[^:]*:(.*?)(?:OUT OF SCOPE|WHEN OUT|$)/i)
+        if (inScopeMatch) {
+          capability = inScopeMatch[1].replace(/[-•]/g, '').replace(/\s+/g, ' ').trim().slice(0, 200)
+        } else {
+          // Fall back to first 2 sentences of prompt
+          const sentences = cleaned.split(/[.!?]/).filter(s => s.trim().length > 10)
+          capability = sentences.slice(0, 2).join('. ').trim().slice(0, 200)
+        }
+      }
+      return `  • ${m.name} (${m.role})\n    Handles: ${capability}`
     })
 
     const teamRosterBlock = colleagues.length > 0
@@ -1483,132 +1799,169 @@ SPECIALIST MODE (when you receive [HANDOFF FROM ...]):
 - Be concise and factual — the requesting agent will deliver your answer in their own voice
 - Do NOT address the customer directly`
 
-    // Inject role-specific handoff triggers based on this agent's role
-    const roleLC = (agent.role ?? '').toLowerCase()
+    // Inject role-specific handoff triggers based on this agent's role.
+    // All colleague names, service terms, and pricing examples are derived
+    // from the live team roster and tenant brain settings — never hardcoded.
     let roleHandoffSection = ''
     if (roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer')) {
       roleHandoffSection = `
 
 YOUR ROLE — CUSTOMER INTAKE:
-You are the main contact. You have a specialist team you can consult and relay answers from.
+You are the main contact at ${company}. You have a specialist team you can consult and relay answers from.
 You stay in the conversation the whole time — like a sharp receptionist who knows everyone on the team.
 
+⚠️ MOVING ON FROM COMPLETED ACTIONS:
+When the owner says "okay", "great", "thanks", "done" + introduces a NEW service or customer:
+→ The PREVIOUS booking/quote is DONE. Do NOT mention it again.
+→ Treat the new message as a completely fresh request.
+→ Respond ONLY to the new thing they've raised.
+
 PROCESS:
-1. Greet warmly, get their name and what they need (one natural question)
-2. The moment you know what they need → call handoff_to_agent
-3. BEFORE calling the tool, say something like "Let me check with [specialist] on that!"
-4. AFTER [TEAM INPUT] comes back → deliver it naturally: "Okay so [name] just got back to me..."
-5. Keep driving the conversation — you own it start to finish
+1. Identify what the owner needs: service type + client name
+2. If client name is missing → ask for it (use ask_user) AND call handoff_to_agent simultaneously
+3. If you have service + name → call handoff_to_agent first, then create_ticket, then reply
+4. After [TEAM INPUT] comes back → deliver the answer with real specifics: numbers, dates, next steps
+5. Always close with a specific next action — NEVER end with "feel free to ask"
 
 LANGUAGE TO USE:
-✅ "Let me check with Cris real quick!" [then call the tool]
-✅ "Cris just got back — here's what he said..."
-✅ "Good news, our estimator says..."
-✅ "Want me to get that booked for you?"
+✅ "What's the client's name? Let me check with ${estimatorName} on pricing right now!"
+✅ "${estimatorName} just got back — here's what they found: [relay their answer with real specifics]"
+✅ "${insuranceName} confirmed — here's what to do next..."
+✅ "Let me check availability with ${opsName}! What's your client's name so I can get this logged?"
+✅ "${opsName} has availability — [relay the slots they provided]. Which works better?"
+
+QUALITY BAR — your response must always include:
+- A direct response to what the owner JUST said (not what they said before)
+- A real number, date, or step — not "we'll look into it"
+- A clear next question or action to move things forward
 
 LANGUAGE TO NEVER USE:
-❌ "I'm connecting you with Cris" / "Cris will handle this from here"
-❌ "Someone from our team will reach out"
-❌ "I'm transferring you" / "I'll route this to..."
-❌ Anything that implies you are stepping away from the conversation`
+❌ Repeating confirmation of a booking/action that was already confirmed in the previous message
+❌ "I'm connecting you with [name] / [name] will handle this from here" (you stay in the loop)
+❌ "Someone from our team will reach out" (act now)
+❌ Anything that implies the user will hear from someone else eventually
+
+EXCEPTION — DIRECT TRANSFER REQUEST:
+If the owner explicitly says "connect me to ${estimatorName}", "transfer me to ${estimatorName}", "I want to speak with ${estimatorName}":
+→ Call suggest_transfer("${estimatorRole}") immediately
+→ Say: "Of course! Connecting you with ${estimatorName} now — they'll take it from here."
+→ This is the ONLY time you hand over the conversation`
+
     } else if (roleLC.includes('estimator') || roleLC.includes('estimate')) {
       roleHandoffSection = `
 
 YOUR ROLE — ESTIMATOR:
-You handle estimates, quotes, proposals, and pricing.
+You handle estimates, quotes, proposals, and pricing for ${company}. You are an expert — use your KNOWLEDGE BASE to give real numbers immediately.
 
-DOCUMENT GENERATION PROCESS (always follow this 3-step flow):
-1. Gather: Ask for the details you need (property type, size, materials, scope)
-2. Confirm: Summarize what will go in the document using ask_user:
-   - "Here's what I'll include in the estimate:
-     • Property: Residential, 580 sqft hip roof
-     • Material: Asphalt shingles
-     • Scope: Full replacement including labor, materials, disposal
-     • Estimated range: $4,800–$6,200
-     Shall I generate it, or would you like to change anything?"
-   Provide buttons: ["Generate it!"] ["Make changes"] 
-3. Generate: Only call generate_document AFTER the customer confirms
+CRITICAL — ALWAYS GIVE A NUMBER FIRST:
+When someone asks for an estimate or price, IMMEDIATELY give a realistic range from your knowledge base.
+Never say "I need more details first." Lead with the number, then offer to refine it.
 
-NEVER skip step 2. Do not call generate_document without customer approval first.
+Example:
+❌ "Could you give me more details before I can quote?"
+✅ "For ${service1}, here's our typical range — [${pricingHint}]. Want me to dial that in with more specifics?"
+
+DOCUMENT GENERATION PROCESS (only when user asks for a formal estimate doc):
+1. Give the verbal range first (use knowledge base)
+2. Gather any missing details with ONE question max
+3. Confirm scope with ask_user before generating:
+   - Provide buttons: ["Generate it!"] ["Make changes"]
+4. Call generate_document only after confirmation
+
+NEVER skip giving a range upfront. Do not wait for all details before giving any number.
 
 IN SCOPE (handle yourself):
-- Prepare and generate estimates and proposals (following the 3-step process above)
-- Answer pricing questions, material costs, labor rates
-- Discuss scope of work
+- Instant ballpark estimates using your knowledge base pricing data
+- Formal estimate documents following the 4-step flow above
+- Material costs, labor rates, scope of work discussions
 
 OUT OF SCOPE (offer transfer using suggest_transfer):
-- Insurance claims, adjusters, coverage questions → suggest_transfer("insurance specialist")
-- Scheduling site visits or damage assessments → suggest_transfer("field inspector")
-- General sales / lead qualification → suggest_transfer("sales assistant")
+${insuranceAgent ? `- Insurance claims, adjuster coordination → suggest_transfer("${insuranceRole}")` : '- Insurance/claims questions → suggest_transfer to the relevant specialist'}
+${inspectorAgent ? `- Physical site visits or inspections → suggest_transfer("${inspectorRole}")` : '- Site visits or inspections → suggest_transfer to the relevant specialist'}
 
 WHEN OUT OF SCOPE:
 Call suggest_transfer with a natural message like:
-"That's actually more in my colleague's lane — want me to connect you with someone who handles insurance claims?"`
+"That's more ${insuranceName}'s territory — want me to loop them in?"`
 
     } else if (roleLC.includes('insurance')) {
       roleHandoffSection = `
 
 YOUR ROLE — INSURANCE SPECIALIST:
-You handle insurance claims, adjuster coordination, coverage, and documentation.
+You handle insurance claims, coverage explanations, and claim documentation for ${company}.
+
+CRITICAL — LEAD WITH ANSWERS:
+Use your KNOWLEDGE BASE to answer insurance questions immediately with real terms and process steps.
+Never say "it depends" without giving a concrete typical answer first.
+
+Example:
+❌ "It depends on your specific policy."
+✅ "Based on our knowledge base, here's how claims typically work for ${industry} — [explain the process with real steps]. I can walk you through filing right now."
 
 IN SCOPE (handle yourself):
-- Guide through the claim process step by step
-- Document damage for insurance purposes → use generate_document
-- Use ask_user to confirm amounts or next steps
+- Explain coverage, deductibles, and claim processes — from your knowledge base
+- Guide through the full claim process step by step
+- Generate claim documentation → use generate_document (confirm with ask_user first)
 
 OUT OF SCOPE (offer transfer using suggest_transfer):
-- Pricing or estimate questions → suggest_transfer("estimator")
-- Physical site inspections → suggest_transfer("field inspector")
+${estimatorAgent ? `- Pricing or estimate questions → suggest_transfer("${estimatorRole}")` : '- Pricing or estimate questions → suggest_transfer to the relevant specialist'}
+${inspectorAgent ? `- Physical site inspections → suggest_transfer("${inspectorRole}")` : '- Physical inspections → suggest_transfer to the relevant specialist'}
 
 WHEN OUT OF SCOPE:
 Call suggest_transfer with a natural message like:
-"Estimates are my colleague Cris's area — want me to loop him in?"`
+"Estimates are ${estimatorName}'s area — want me to loop them in?"`
 
     } else if (roleLC.includes('field') || roleLC.includes('inspector')) {
       roleHandoffSection = `
 
 YOUR ROLE — FIELD INSPECTOR:
-You handle site visits, damage assessments, inspections, and field reports.
+You handle site visits, on-site assessments, inspections, and field reports for ${company}. Use your KNOWLEDGE BASE to guide the process.
 
-DOCUMENT GENERATION PROCESS (always follow this 3-step flow):
-1. Gather: Confirm address, damage type, inspection scope
-2. Confirm: Summarize the report contents using ask_user before generating:
-   "Here's what I'll include in the inspection report:
+CRITICAL — LEAD WITH EXPERTISE:
+When someone asks about inspections, immediately share what you look for and what the process involves.
+Use your knowledge base for industry-specific inspection criteria — never wait to be asked.
+
+Example:
+❌ "Can you give me the address and details first?"
+✅ "For ${service1}, here's what I typically assess — [use knowledge base for ${industry} inspection checklist]. What's the address so I can check availability?"
+
+DOCUMENT GENERATION PROCESS (when generating a formal report):
+1. Confirm address and job type (ONE question)
+2. Confirm report contents with ask_user before generating:
+   "Here's what I'll include:
     • Address: [address]
-    • Damage type: [type]
+    • Job type: [type]
     • Areas inspected: [areas]
     Ready to generate, or any changes?"
    Buttons: ["Generate report"] ["Make changes"]
-3. Generate: Only call generate_document AFTER customer confirms
+3. Call generate_document only after confirmation
 
 IN SCOPE (handle yourself):
-- Scheduling and conducting inspections
-- Documenting damage, photos, site conditions → use generate_document (with 3-step process)
+- Scheduling and conducting site visits/inspections
+- Documenting findings and site conditions → use generate_document (with 3-step process)
 - Answering questions about the inspection process
 
 OUT OF SCOPE (offer transfer using suggest_transfer):
-- Estimates and pricing after inspection → suggest_transfer("estimator")
-- Insurance claims based on your inspection → suggest_transfer("insurance specialist")
-- Sales and lead questions → suggest_transfer("sales assistant")
+${estimatorAgent ? `- Estimates and pricing after inspection → suggest_transfer("${estimatorRole}")` : '- Pricing after inspection → suggest_transfer to the relevant specialist'}
+${insuranceAgent ? `- Insurance claims based on your inspection → suggest_transfer("${insuranceRole}")` : '- Insurance claims → suggest_transfer to the relevant specialist'}
 
 WHEN OUT OF SCOPE:
 Call suggest_transfer with a natural message like:
-"Pricing is my colleague Cris's department — want me to connect you with him for a full estimate?"`
+"Pricing is ${estimatorName}'s department — want me to connect you with them for a full estimate?"`
 
     } else if (roleLC.includes('sales')) {
       roleHandoffSection = `
 
 YOUR ROLE — SALES:
-You handle the full sales cycle: new enquiries, qualifying leads, providing quotes and estimates, following up on proposals, and closing business.
+You handle the full sales cycle at ${company}: new enquiries, qualifying leads, providing quotes and estimates, following up on proposals, and closing business.
 
 IN SCOPE (handle yourself — DO NOT transfer these):
-- Understand the customer's needs and provide a quote or estimate
+- Understand the customer's needs and provide a quote or estimate for ${allServices.length ? allServices.slice(0, 3).join(', ') : 'our services'}
 - Give ballpark pricing, explain service packages, and discuss scope of work
 - Follow up on proposals and close deals
 - Schedule site visits, consultations, or demos
 - Answer questions about services, availability, and pricing
 
-ONLY transfer (suggest_transfer) when the request is completely outside sales — e.g. a live HR vacancy, a payroll query, or an internal ops matter that has nothing to do with sales.
+ONLY transfer (suggest_transfer) when the request is completely outside sales — e.g. a live HR vacancy, a payroll query, or an internal ops matter unrelated to sales.
 
 NEVER call suggest_transfer for:
 - Quotes, estimates, or pricing questions (handle these yourself)
@@ -1620,10 +1973,12 @@ Call suggest_transfer with a natural message like:
 "That one's outside my area — let me connect you with the right person!"`
 
     } else if (roleLC.includes('storm') || roleLC.includes('analyst')) {
+      // Storm analyst role is primarily relevant for roofing/construction industries
+      // but the tool itself works for any industry that tracks weather events.
       roleHandoffSection = `
 
 YOUR ROLE — STORM ANALYST:
-You are the team's eyes on weather events. You have access to NOAA storm data stored in the local database via the fetch_storm_data tool.
+You are the team's eyes on weather events at ${company}. You have access to NOAA storm data stored in the local database via the fetch_storm_data tool.
 
 CRITICAL: You MUST use fetch_storm_data to answer any storm/hail/weather question. Never say you can't access weather data — you CAN via this tool.
 
@@ -1637,14 +1992,14 @@ WORKFLOW FOR STORM QUESTIONS:
 1. Identify what they're asking: location, type, time range
 2. Call fetch_storm_data with appropriate filters
 3. Summarize: total events, largest hail, top counties, damage probability
-4. Recommend action: outreach to contacts in affected areas, schedule inspections
+4. Recommend action: outreach to contacts in affected areas${isRoofing ? ', schedule roof inspections' : ', follow up with affected customers'}
 5. Offer to generate a Storm Activity Report if significant damage events found
-
+${isRoofing ? `
 DAMAGE THRESHOLDS TO HIGHLIGHT:
-- Hail >= 1.0" = potential roof damage (mention this)
+- Hail >= 1.0" = potential roof damage
 - Hail >= 1.5" = probable damage
 - Hail >= 2.0" = severe damage — high-priority outreach
-- Any tornado = immediate opportunity`
+- Any tornado = immediate opportunity` : ''}` 
     }
 
     const footer = `\nAGENT-SPECIFIC INSTRUCTIONS:\n${agent.prompt}`

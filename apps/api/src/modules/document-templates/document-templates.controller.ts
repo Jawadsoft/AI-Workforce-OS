@@ -4,7 +4,7 @@ import {
 } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes } from '@nestjs/swagger'
 import { FileInterceptor } from '@nestjs/platform-express'
-import { IsString, IsOptional, IsBoolean, IsIn } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsIn, Matches } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { CurrentTenant } from '../../common/decorators/tenant.decorator'
 import { DocumentTemplatesService } from './document-templates.service'
@@ -28,6 +28,10 @@ class GenerateAITemplateDto {
   @IsString() type: string
   @IsString() industry: string
   @IsOptional() @IsIn(['modern', 'classic', 'minimal']) style?: 'modern' | 'classic' | 'minimal'
+  @IsOptional() @Matches(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/) accentColor?: string
+  @IsOptional() @IsIn(['formal', 'friendly', 'urgent']) tone?: 'formal' | 'friendly' | 'urgent'
+  @IsOptional() @IsIn(['print', 'email', 'web']) outputFormat?: 'print' | 'email' | 'web'
+  @IsOptional() @IsString() customInstructions?: string
 }
 
 @ApiTags('Document Templates')
@@ -64,7 +68,15 @@ export class DocumentTemplatesController {
   @Post('generate-ai')
   @ApiOperation({ summary: 'Generate a professional template using AI for a given type + industry' })
   generateAI(@Body() dto: GenerateAITemplateDto) {
-    return this.service.generateProfessionalTemplate(dto.type, dto.industry, dto.style ?? 'modern')
+    return this.service.generateProfessionalTemplate(
+      dto.type,
+      dto.industry,
+      dto.style ?? 'modern',
+      dto.accentColor ?? '#4f46e5',
+      dto.tone ?? 'formal',
+      dto.outputFormat ?? 'print',
+      dto.customInstructions ?? '',
+    )
   }
 
   @Post('upload')

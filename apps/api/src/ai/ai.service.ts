@@ -28,7 +28,7 @@ export class AIService {
     private readonly gemini: GeminiProvider,
   ) {}
 
-  async complete(messages: ChatMessage[], provider?: AIProvider): Promise<AIResponse> {
+  async complete(messages: ChatMessage[], provider?: AIProvider, options?: { temperature?: number; maxTokens?: number }): Promise<AIResponse> {
     const activeProvider = provider ?? (this.config.get<AIProvider>('DEFAULT_AI_PROVIDER') ?? 'openai')
 
     switch (activeProvider) {
@@ -37,7 +37,7 @@ export class AIService {
       case 'gemini':
         return this.gemini.chat(messages)
       default:
-        return this.openai.chat(messages)
+        return this.openai.chat(messages, options)
     }
   }
 
@@ -65,12 +65,13 @@ export class AIService {
     systemPrompt: string,
     history: { role: 'user' | 'assistant'; content: string }[],
     provider?: AIProvider,
+    options?: { temperature?: number; maxTokens?: number },
   ): Promise<string> {
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
       ...history,
     ]
-    const result = await this.complete(messages, provider)
+    const result = await this.complete(messages, provider, options)
     return result.content
   }
 

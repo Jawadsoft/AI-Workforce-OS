@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core'
+import { NestExpressApplication } from '@nestjs/platform-express'
 import { ValidationPipe } from '@nestjs/common'
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger'
 import { AppModule } from './app.module'
@@ -21,7 +22,12 @@ async function bootstrap() {
     }
   }
 
-  const app = await NestFactory.create(AppModule, httpsOptions ? { httpsOptions } : {})
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, httpsOptions ? { httpsOptions } : {})
+
+  // Serve uploaded files (avatars, etc.) as static assets
+  const uploadsDir = path.join(process.cwd(), 'uploads')
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true })
+  app.useStaticAssets(uploadsDir, { prefix: '/uploads' })
 
   app.setGlobalPrefix('api/v1')
 

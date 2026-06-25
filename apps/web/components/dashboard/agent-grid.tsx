@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
 import { Plus } from 'lucide-react'
+import { resolveAvatarUrl } from '@/lib/utils'
 
 export function AgentGrid() {
   const { data: agents, isLoading } = useQuery({
@@ -56,8 +57,8 @@ export function AgentGrid() {
         {activeAgents.slice(0, 8).map((agent: any) => (
           <Link key={agent.id} href={`/agents/${agent.id}`}>
             <div className="rounded-lg border border-border bg-card p-4 space-y-2 hover:border-muted-foreground transition-colors cursor-pointer">
-              {agent.avatar ? (
-                <img src={agent.avatar} alt={agent.name} className="w-12 h-12 rounded-full object-cover" />
+              {resolveAvatarUrl(agent.avatar) ? (
+                <img src={resolveAvatarUrl(agent.avatar)!} alt={agent.name} className="w-12 h-12 rounded-full object-cover" />
               ) : (
                 <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center text-lg font-bold text-primary">
                   {agent.name[0]}

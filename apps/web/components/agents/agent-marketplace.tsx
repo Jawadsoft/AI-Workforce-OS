@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
 import { ChevronLeft, Zap, Download, Loader2, CheckCircle2 } from 'lucide-react'
+import { resolveAvatarUrl } from '@/lib/utils'
 
 const INDUSTRY_LABELS: Record<string, string> = {
   ROOFING: 'Roofing',
@@ -159,8 +160,8 @@ export function AgentMarketplace() {
                 {/* Agent header */}
                 <div className="flex items-start gap-3">
                   <div className="w-11 h-11 rounded-xl bg-primary/10 flex items-center justify-center text-xl flex-shrink-0">
-                    {tmpl.avatar
-                      ? <img src={tmpl.avatar} alt="" className="w-11 h-11 rounded-xl object-cover" />
+                    {resolveAvatarUrl(tmpl.avatar)
+                      ? <img src={resolveAvatarUrl(tmpl.avatar)!} alt="" className="w-11 h-11 rounded-xl object-cover" />
                       : icon}
                   </div>
                   <div className="min-w-0">

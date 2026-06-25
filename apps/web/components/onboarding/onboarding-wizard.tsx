@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import { Zap, CheckCircle, Loader2, ChevronRight, ChevronLeft, Globe, Sparkles, AlertCircle } from 'lucide-react'
+import { resolveAvatarUrl } from '@/lib/utils'
 
 const INDUSTRIES = [
   { id: 'ROOFING', label: 'Roofing', emoji: '🏠', agents: 8 },
@@ -391,8 +392,8 @@ export function OnboardingWizard() {
                   <div className="grid grid-cols-2 gap-2 text-left">
                     {generatedAgents.map((agent: any) => (
                       <div key={agent.id} className="rounded-lg border border-border p-3 flex items-center gap-2">
-                        {agent.avatar ? (
-                          <img src={agent.avatar} alt={agent.name} className="w-7 h-7 rounded-full object-cover" />
+                        {resolveAvatarUrl(agent.avatar) ? (
+                          <img src={resolveAvatarUrl(agent.avatar)!} alt={agent.name} className="w-7 h-7 rounded-full object-cover" />
                         ) : (
                           <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
                             {agent.name[0]}

@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, Logger, BadRequestException } from '@nestjs/common'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
+import { IndustryKnowledgeService } from './industry-knowledge.service'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
@@ -44,6 +45,7 @@ export class KnowledgeService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly ai: AIService,
+    private readonly industryKnowledge: IndustryKnowledgeService,
   ) {
     if (!fs.existsSync(this.uploadDir)) fs.mkdirSync(this.uploadDir, { recursive: true })
   }
@@ -211,39 +213,52 @@ export class KnowledgeService {
   // ── RAG retrieval ─────────────────────────────────────────────────
   // Called by chat.service to inject relevant context into the prompt
 
-  async retrieveContext(agentId: string, query: string, topK = 4): Promise<string> {
+  async retrieveContext(agentId: string, query: string, industry?: string, agentRole?: string, topK = 4): Promise<string> {
     try {
-      // Get all chunks for documents assigned to this agent
-      const chunks = await this.prisma.knowledgeChunk.findMany({
-        where: {
-          document: {
-            status: 'ready',
-            agents: { some: { agentId } },
+      // Run tenant docs + industry pack search in parallel for minimum latency
+      const [tenantChunks, industryContext] = await Promise.all([
+        // Layer 1 — Tenant-specific docs assigned to this agent
+        this.prisma.knowledgeChunk.findMany({
+          where: {
+            document: {
+              status: 'ready',
+              agents: { some: { agentId } },
+            },
           },
-        },
-        select: { content: true, embedding: true, document: { select: { name: true } } },
-      })
+          select: { content: true, embedding: true, document: { select: { name: true } } },
+        }),
+        // Layer 2 — Industry pack for this tenant's industry + agent role
+        industry && agentRole
+          ? this.industryKnowledge.retrieveForRole(industry, agentRole, query, 3)
+          : Promise.resolve(''),
+      ])
 
-      if (!chunks.length) return ''
+      const lines: string[] = []
 
-      // Embed the query
-      const queryEmbedding = await this.ai.embed(query)
+      // Score and add tenant docs (highest priority — most specific)
+      if (tenantChunks.length) {
+        const queryEmbedding = await this.ai.embed(query)
+        const scored = tenantChunks
+          .filter(c => Array.isArray(c.embedding) && (c.embedding as number[]).length > 0)
+          .map(c => ({
+            content: c.content,
+            docName: (c.document as any)?.name ?? '',
+            score: cosineSimilarity(queryEmbedding, c.embedding as number[]),
+          }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, topK)
+          .filter(c => c.score > 0.28)
 
-      // Score and sort
-      const scored = chunks
-        .filter(c => Array.isArray(c.embedding) && (c.embedding as number[]).length > 0)
-        .map(c => ({
-          content: c.content,
-          docName: (c.document as any)?.name ?? '',
-          score: cosineSimilarity(queryEmbedding, c.embedding as number[]),
-        }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, topK)
-        .filter(c => c.score > 0.3)
+        scored.forEach(c => lines.push(`[${c.docName}]\n${c.content}`))
+      }
 
-      if (!scored.length) return ''
+      // Add industry pack context (general industry knowledge)
+      if (industryContext) {
+        lines.push(industryContext)
+      }
 
-      const lines = scored.map(c => `[${c.docName}]\n${c.content}`)
+      if (!lines.length) return ''
+
       return `\n\nKNOWLEDGE BASE (use this to answer accurately):\n${lines.join('\n\n---\n')}`
     } catch (err: any) {
       this.logger.warn(`RAG retrieval failed: ${err.message}`)

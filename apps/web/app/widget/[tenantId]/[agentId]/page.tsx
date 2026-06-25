@@ -196,9 +196,19 @@ export default function WidgetPage() {
           <p className="font-semibold text-white leading-tight truncate">{config.agentName}</p>
           <p className="text-white/70 text-xs truncate">{config.companyName}</p>
         </div>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
           <span className="text-white/70 text-xs">Online</span>
+          <button
+            onClick={() => window.parent?.postMessage({ type: 'aiw:close' }, '*')}
+            className="ml-1 w-7 h-7 rounded-full flex items-center justify-center bg-white/20 hover:bg-white/30 transition-colors"
+            title="Close chat"
+            aria-label="Close chat"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
       </div>
 

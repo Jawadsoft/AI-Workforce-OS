@@ -9,6 +9,7 @@ import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckChe
 import { AgentCRMPermissions } from './agent-crm-permissions'
 import { useAuthStore } from '@/stores/auth.store'
 import { toast } from 'sonner'
+import { resolveAvatarUrl } from '@/lib/utils'
 
 const CAN_EDIT_ROLES = ['SUPER_ADMIN', 'TENANT_OWNER', 'TENANT_ADMIN']
 
@@ -42,8 +43,8 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
 
   const updateMutation = useMutation({
     mutationFn: () => {
-      // Only send fields accepted by UpdateAgentDto
-      const { name, role, prompt, tools, permissions, status, approvalRules, avatar } = edited ?? {}
+      // Only send fields accepted by UpdateAgentDto (avatar is handled by its own upload endpoint)
+      const { name, role, prompt, tools, permissions, status, approvalRules } = edited ?? {}
       const payload: any = {}
       if (name !== undefined) payload.name = name
       if (role !== undefined) payload.role = role
@@ -52,7 +53,6 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
       if (permissions !== undefined) payload.permissions = permissions
       if (status !== undefined) payload.status = status
       if (approvalRules !== undefined) payload.approvalRules = approvalRules
-      if (avatar !== undefined) payload.avatar = avatar
       return api.patch(`/agents/${agentId}`, payload)
     },
     onSuccess: () => {
@@ -112,8 +112,8 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
           </Link>
           {/* Avatar with optional edit */}
           <div className="relative group">
-            {(edited?.avatar ?? agent.avatar) ? (
-              <img src={edited?.avatar ?? agent.avatar} alt={agent.name} className="w-10 h-10 rounded-full object-cover" />
+            {resolveAvatarUrl(edited?.avatar ?? agent.avatar) ? (
+              <img src={resolveAvatarUrl(edited?.avatar ?? agent.avatar)!} alt={agent.name} className="w-10 h-10 rounded-full object-cover" />
             ) : (
               <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary">
                 {agent.name[0]}
@@ -126,12 +126,22 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                   type="file"
                   accept="image/*"
                   className="sr-only"
-                  onChange={(e) => {
+                  onChange={async (e) => {
                     const file = e.target.files?.[0]
                     if (!file) return
-                    const reader = new FileReader()
-                    reader.onloadend = () => setEdited({ ...(edited ?? agent), avatar: reader.result as string })
-                    reader.readAsDataURL(file)
+                    const formData = new FormData()
+                    formData.append('file', file)
+                    try {
+                      // Do NOT set Content-Type manually — axios auto-sets multipart/form-data
+                      // with the correct boundary when passed a FormData object
+                      const res = await api.post(`/agents/${agentId}/avatar`, formData)
+                      qc.invalidateQueries({ queryKey: ['agent', agentId] })
+                      qc.invalidateQueries({ queryKey: ['agents'] })
+                      setEdited((prev: any) => ({ ...(prev ?? agent), avatar: res.data.avatar }))
+                      toast.success('Avatar updated')
+                    } catch {
+                      toast.error('Failed to upload avatar')
+                    }
                   }}
                 />
               </label>

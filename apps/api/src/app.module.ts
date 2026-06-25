@@ -26,6 +26,7 @@ import { IntegrationsModule } from './modules/integrations/integrations.module'
 import { DocumentTemplatesModule } from './modules/document-templates/document-templates.module'
 import { StormModule } from './modules/storm/storm.module'
 import { TicketsModule } from './modules/tickets/tickets.module'
+import { TicketProcessorModule } from './modules/tickets/ticket-processor.module'
 import { ScheduleModule } from '@nestjs/schedule'
 
 @Module({
@@ -58,6 +59,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     DocumentTemplatesModule,
     StormModule,
     TicketsModule,
+    TicketProcessorModule,
   ],
 })
 export class AppModule {}

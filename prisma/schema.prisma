@@ -40,6 +40,7 @@ model Tenant {
   emailAgentRules   EmailAgentRule[]
   processedEmails   ProcessedEmail[]
   stormReports      StormReport[]
+  conversationSummaries ConversationSummary[]
 }
 
 // ─────────────────────────────────────────────
@@ -93,8 +94,9 @@ model Agent {
   knowledgeDocs AgentKnowledge[]
   crmAccess     AgentCRMAccess[]
   emailRules    EmailAgentRule[]
-  createdTickets  ActivityTicket[] @relation("TicketCreator")
-  assignedTickets ActivityTicket[] @relation("TicketAssignee")
+  createdTickets       ActivityTicket[]       @relation("TicketCreator")
+  assignedTickets      ActivityTicket[]       @relation("TicketAssignee")
+  conversationSummaries ConversationSummary[]
 }
 
 model AgentTemplate {
@@ -133,6 +135,7 @@ model Conversation {
   agent    Agent           @relation(fields: [agentId], references: [id])
   messages Message[]
   tickets  ActivityTicket[]
+  summary  ConversationSummary?
 }
 
 model Message {
@@ -247,6 +250,49 @@ model AgentKnowledge {
   document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@id([agentId, documentId])
+}
+
+// ─────────────────────────────────────────────
+// INDUSTRY KNOWLEDGE PACKS (platform-level, no tenantId)
+// Pre-built knowledge shared across all tenants in the same industry.
+// Super admin populates once — every tenant benefits automatically.
+// ─────────────────────────────────────────────
+
+model IndustryKnowledgePack {
+  id          String   @id @default(cuid())
+  industry    String   @unique  // "ROOFING", "CLEANING", "HVAC", "PLUMBING"
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  documents IndustryKnowledgeDoc[]
+}
+
+model IndustryKnowledgeDoc {
+  id         String   @id @default(cuid())
+  packId     String
+  name       String
+  category   String   // "PRICING", "PRODUCTS", "INSURANCE", "PROCESS", "LEGAL", "TERMINOLOGY"
+  agentRoles String[] // ["estimator","sales","intake"] — which roles this doc is relevant for
+  content    String   @db.Text
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  pack   IndustryKnowledgePack    @relation(fields: [packId], references: [id], onDelete: Cascade)
+  chunks IndustryKnowledgeChunk[]
+}
+
+model IndustryKnowledgeChunk {
+  id         String   @id @default(cuid())
+  docId      String
+  content    String   @db.Text
+  embedding  Json?
+  chunkIndex Int
+  createdAt  DateTime @default(now())
+
+  doc IndustryKnowledgeDoc @relation(fields: [docId], references: [id], onDelete: Cascade)
 }
 
 // ─────────────────────────────────────────────
@@ -492,6 +538,7 @@ model ActivityTicket {
   title            String
   subject          String?
   description      String?      @db.Text
+  notes            String?      @db.Text  // handoff notes, agent-to-agent context
   type             String       @default("GENERAL")
   status           TicketStatus @default(OPEN)
   priority         TaskPriority @default(MEDIUM)
@@ -504,6 +551,7 @@ model ActivityTicket {
   followUpAt       DateTime?
   resolvedAt       DateTime?
   activityLog      Json         @default("[]")
+  searchEmbedding  Json?        // vector embedding of title+description+notes for intent search
   metadata         Json         @default("{}")
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
@@ -517,6 +565,30 @@ model ActivityTicket {
   @@index([tenantId, source])
   @@index([tenantId, assignedAgentId])
   @@index([tenantId, followUpAt])
+}
+
+// ─────────────────────────────────────────────
+// AGENT MEMORY
+// ─────────────────────────────────────────────
+
+model ConversationSummary {
+  id             String   @id @default(cuid())
+  tenantId       String
+  agentId        String
+  conversationId String?  @unique   // null for handoff memories (no direct conversation)
+  summaryType    String   @default("CONVERSATION")  // "CONVERSATION" | "HANDOFF"
+  summary        String   @db.Text
+  keyEntities    String[]
+  embedding      Json?
+  messageCount   Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, agentId, createdAt])
 }
 
 // ─────────────────────────────────────────────

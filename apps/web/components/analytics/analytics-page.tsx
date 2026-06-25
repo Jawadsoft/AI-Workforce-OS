@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { BarChart3, CheckSquare, MessageSquare, FileText, Users, ThumbsUp } from 'lucide-react'
+import { resolveAvatarUrl } from '@/lib/utils'
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend,
@@ -171,8 +172,8 @@ export function AnalyticsPage() {
             {(agentData as any[]).map((agent: any, idx: number) => (
               <div key={agent.id} className="flex items-center gap-4 px-4 py-3">
                 <span className="text-sm font-bold text-muted-foreground w-6">{idx + 1}</span>
-                {agent.avatar
-                  ? <img src={agent.avatar} alt={agent.name} className="w-8 h-8 rounded-full object-cover" />
+                {resolveAvatarUrl(agent.avatar)
+                  ? <img src={resolveAvatarUrl(agent.avatar)!} alt={agent.name} className="w-8 h-8 rounded-full object-cover" />
                   : <div className="w-8 h-8 rounded-full bg-primary/10 text-primary text-xs flex items-center justify-center font-bold">{agent.name[0]}</div>
                 }
                 <div className="flex-1 min-w-0">

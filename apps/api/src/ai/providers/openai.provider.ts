@@ -29,10 +29,14 @@ export class OpenAIProvider {
     return this.client
   }
 
-  async chat(messages: ChatMessage[]): Promise<AIResponse> {
+  async chat(messages: ChatMessage[]): Promise<AIResponse>
+  async chat(messages: ChatMessage[], options?: { temperature?: number; maxTokens?: number }): Promise<AIResponse>
+  async chat(messages: ChatMessage[], options?: { temperature?: number; maxTokens?: number }): Promise<AIResponse> {
     const response = await this.getClient().chat.completions.create({
       model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
       messages,
+      temperature: options?.temperature,
+      max_tokens: options?.maxTokens,
     })
     return {
       content: response.choices[0].message.content ?? '',

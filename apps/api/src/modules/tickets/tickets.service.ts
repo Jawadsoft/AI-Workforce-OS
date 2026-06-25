@@ -44,6 +44,24 @@ export class TicketsService {
     })
   }
 
+  // ── Find open ticket for a conversation (gives LLM context for its decision) ──
+
+  async findOpenForConversation(tenantId: string, conversationId: string) {
+    // Only surface tickets that still need action (OPEN or IN_PROGRESS).
+    // COMPLETED tickets are done — don't anchor the LLM to a resolved past request.
+    return this.prisma.activityTicket.findFirst({
+      where: {
+        tenantId,
+        conversationId,
+        status: { notIn: ['COMPLETED', 'CANCELLED', 'SCHEDULED'] },
+      },
+      include: {
+        assignedAgent: { select: { id: true, name: true, role: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+  }
+
   // ── Get tickets assigned to a specific agent ───────────────────────
 
   async getForAgent(tenantId: string, agentId: string) {
@@ -51,7 +69,15 @@ export class TicketsService {
       where: {
         tenantId,
         assignedAgentId: agentId,
-        status: { notIn: ['COMPLETED', 'CANCELLED'] },
+        // Only return OPEN and IN_PROGRESS tickets — COMPLETED ones are done.
+        status: { notIn: ['COMPLETED', 'CANCELLED', 'SCHEDULED'] },
+      },
+      select: {
+        id: true, ticketNumber: true, title: true, description: true,
+        notes: true, status: true, priority: true, contactRef: true,
+        contactPhone: true, contactEmail: true, nextAction: true,
+        followUpAt: true, createdAt: true, updatedAt: true,
+        assignedAgentId: true, createdByAgentId: true,
       },
       orderBy: [{ priority: 'desc' }, { followUpAt: 'asc' }, { createdAt: 'desc' }],
       take: 20,
@@ -61,19 +87,59 @@ export class TicketsService {
 
   // ── Format pending tickets for system prompt injection ─────────────
 
-  async buildPromptBlock(tenantId: string, agentId: string): Promise<string> {
-    const tickets = await this.getForAgent(tenantId, agentId)
-    if (!tickets.length) return ''
+  async buildPromptBlock(tenantId: string, agentId: string, conversationId?: string): Promise<string> {
+    const [tickets, convTicket] = await Promise.all([
+      this.getForAgent(tenantId, agentId),
+      conversationId ? this.findOpenForConversation(tenantId, conversationId) : Promise.resolve(null),
+    ])
 
-    const lines = tickets.map(t => {
-      const due = t.followUpAt
-        ? ` — follow up by ${new Date(t.followUpAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
-        : ''
-      const contact = t.contactRef ? ` | Contact: ${t.contactRef}` : ''
-      return `[${t.priority}] #${t.id.slice(-6)} — ${t.title} (${t.status})${contact}${due}${t.nextAction ? `\n  → Next action: ${t.nextAction}` : ''}`
-    })
+    // Only surface the conversation ticket if this agent still owns it.
+    // If it has been delegated to a specialist (assignedAgentId !== agentId),
+    // the intake agent must NOT see it — it would anchor them to a past customer
+    // instead of responding to the owner's current message.
+    const ownedConvTicket = convTicket?.assignedAgentId === agentId ? convTicket : null
 
-    return `\n\n=== YOUR PENDING TICKETS (${tickets.length}) ===\n${lines.join('\n')}\n=== END TICKETS ===\n\nYou MUST review these tickets and action any that are overdue or marked AWAITING_AGENT. Use update_ticket to update status and next actions as you work through them.`
+    // CONVERSATION TICKET — only shown when this agent owns the ticket for the active conversation.
+    // Kept minimal: just enough context so the agent knows the reference ID and can update it.
+    // No "must action" language — the agent should focus on the live conversation, not the ticket.
+    let convBlock = ''
+    if (ownedConvTicket) {
+      convBlock = [
+        `\n\n[BACKGROUND — current conversation ticket]`,
+        `#${ownedConvTicket.id.slice(-6)} "${ownedConvTicket.title}" (${ownedConvTicket.status})`,
+        ownedConvTicket.description ? `Context: ${ownedConvTicket.description}` : '',
+        (ownedConvTicket as any).notes ? `Notes: ${(ownedConvTicket as any).notes}` : '',
+        `If the owner's message is about the same customer/job → update_ticket "${ownedConvTicket.id.slice(-6)}"`,
+        `If it's a different customer or new job → create_ticket`,
+      ].filter(Boolean).join('\n')
+    }
+
+    if (!tickets.length) return convBlock
+
+    // PENDING QUEUE — background awareness only. Agents focus on the live conversation;
+    // the cron scheduler drives autonomous ticket processing separately.
+    // ESCALATED is system-set (no-response flag) and gets a nudge; everything else is silent.
+    const escalated = tickets.filter(t => t.status === 'ESCALATED')
+    const routine   = tickets.filter(t => t.status !== 'ESCALATED')
+
+    const formatLine = (t: any) => {
+      const contact = t.contactRef ? ` · ${t.contactRef}` : ''
+      const due = t.followUpAt ? ` · due ${new Date(t.followUpAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : ''
+      const status = t.status === 'OPEN' ? 'open' : t.status === 'IN_PROGRESS' ? 'in progress' : t.status.toLowerCase()
+      return `  #${t.id.slice(-6)} ${t.title} [${status}]${contact}${due}`
+    }
+
+    const sections: string[] = []
+    if (escalated.length) {
+      sections.push(`⚠️ Flagged by system (${escalated.length}) — action when you can:`)
+      sections.push(...escalated.map(formatLine))
+    }
+    if (routine.length) {
+      sections.push(`${routine.length} background ticket${routine.length > 1 ? 's' : ''} (cron is handling these):`)
+      sections.push(...routine.map(formatLine))
+    }
+
+    return `${convBlock}\n\n[TICKET AWARENESS]\n${sections.join('\n')}`
   }
 
   // ── Get single ticket ──────────────────────────────────────────────
@@ -207,7 +273,7 @@ export class TicketsService {
       timestamp: new Date().toISOString(),
     }
 
-    const existingLog = (ticket.activityLog as TicketActivityEntry[]) ?? []
+    const existingLog = (ticket.activityLog as unknown as TicketActivityEntry[]) ?? []
 
     return this.prisma.activityTicket.update({
       where: { id: ticketId },
@@ -253,7 +319,7 @@ export class TicketsService {
       this.logger.log(`[Tickets] Follow-up due: #${ticket.id.slice(-6)} — "${ticket.title}" assigned to ${ticket.assignedAgent?.name ?? 'unassigned'}`)
 
       // Log the overdue event in the ticket's activity log
-      const existingLog = (ticket.activityLog as TicketActivityEntry[]) ?? []
+      const existingLog = (ticket.activityLog as unknown as TicketActivityEntry[]) ?? []
       const alreadyFlagged = existingLog.some(e => e.action === 'FOLLOW_UP_OVERDUE')
 
       if (!alreadyFlagged) {

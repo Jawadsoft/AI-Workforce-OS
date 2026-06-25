@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle, Trash2 } from 'lucide-react'
 import { CRMRecordCard } from './crm-record-card'
 import { ChatActionCard, type ActionCard } from './action-cards'
+import { resolveAvatarUrl } from '@/lib/utils'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1'
 
@@ -74,6 +75,7 @@ export function ChatPage() {
   const [activeFilter, setActiveFilter] = useState<FilterTab>('chat')
   const [confirmClear, setConfirmClear] = useState(false)
   const [checkingWith, setCheckingWith] = useState<string | null>(null)
+  const [typingAgent, setTypingAgent] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   // ── Load active agents ─────────────────────────────────────────────
@@ -163,11 +165,12 @@ export function ChatPage() {
           if (!line.startsWith('data: ')) continue
           try {
             const payload = JSON.parse(line.slice(6))
-            if (payload.token) { accumulated += payload.token; setStreamingMsg(accumulated); setCheckingWith(null) }
-            if (payload.checking) setCheckingWith(payload.withName ?? 'team')
+            if (payload.typing) { setTypingAgent(payload.agentName ?? null) }
+            if (payload.token) { accumulated += payload.token; setStreamingMsg(accumulated); setCheckingWith(null); setTypingAgent(null) }
+            if (payload.checking) { setCheckingWith(payload.withName ?? 'team'); setTypingAgent(null) }
             if (payload.action_card) setPendingCards(prev => [...prev, payload.action_card as ActionCard])
-            if (payload.done) { setStreamingMsg(null); setCheckingWith(null); await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] }) }
-            if (payload.error) { setStreamingMsg(`Error: ${payload.error}`); setCheckingWith(null) }
+            if (payload.done) { setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null); await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] }) }
+            if (payload.error) { setStreamingMsg(`Error: ${payload.error}`); setCheckingWith(null); setTypingAgent(null) }
           } catch { /* partial */ }
         }
       }
@@ -175,6 +178,7 @@ export function ChatPage() {
       if (err.name !== 'AbortError') {
         setStreamingMsg(null)
         setCheckingWith(null)
+        setTypingAgent(null)
         try {
           await api.post(`/chat/${conversationId}/messages`, { content: text })
           await refetchMessages()
@@ -218,15 +222,16 @@ export function ChatPage() {
           if (!line.startsWith('data: ')) continue
           try {
             const payload = JSON.parse(line.slice(6))
-            if (payload.token) { accumulated += payload.token; setStreamingMsg(accumulated); setCheckingWith(null) }
-            if (payload.checking) setCheckingWith(payload.withName ?? 'team')
+            if (payload.typing) { setTypingAgent(payload.agentName ?? null) }
+            if (payload.token) { accumulated += payload.token; setStreamingMsg(accumulated); setCheckingWith(null); setTypingAgent(null) }
+            if (payload.checking) { setCheckingWith(payload.withName ?? 'team'); setTypingAgent(null) }
             if (payload.action_card) setPendingCards(prev => [...prev, payload.action_card as ActionCard])
-            if (payload.done) { setStreamingMsg(null); setCheckingWith(null); await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] }) }
+            if (payload.done) { setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null); await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] }) }
           } catch { /* partial */ }
         }
       }
     } catch (err: any) {
-      if (err.name !== 'AbortError') { setStreamingMsg(null); setCheckingWith(null) }
+      if (err.name !== 'AbortError') { setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null) }
     } finally {
       setSending(false)
     }
@@ -278,8 +283,8 @@ export function ChatPage() {
                     : 'hover:bg-accent/50'
                 }`}
               >
-                {agent.avatar ? (
-                  <img src={agent.avatar} alt={agent.name} className="w-9 h-9 rounded-full object-cover shrink-0" />
+                {resolveAvatarUrl(agent.avatar) ? (
+                  <img src={resolveAvatarUrl(agent.avatar)!} alt={agent.name} className="w-9 h-9 rounded-full object-cover shrink-0" />
                 ) : (
                   <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary shrink-0">
                     {agent.name?.[0] ?? 'A'}
@@ -310,8 +315,8 @@ export function ChatPage() {
             {/* Header */}
             <div className="border-b border-border">
               <div className="px-4 py-3 flex items-center gap-3">
-                {selectedAgent?.avatar ? (
-                  <img src={selectedAgent.avatar} alt={selectedAgent.name} className="w-8 h-8 rounded-full object-cover" />
+                {resolveAvatarUrl(selectedAgent?.avatar) ? (
+                  <img src={resolveAvatarUrl(selectedAgent?.avatar)!} alt={selectedAgent?.name} className="w-8 h-8 rounded-full object-cover" />
                 ) : (
                   <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary">
                     {selectedAgent?.name?.[0] ?? 'A'}
@@ -477,13 +482,18 @@ export function ChatPage() {
                 )
               })}
 
-              {/* Generic typing dots — shown while waiting for first token */}
+              {/* Typing indicator — shown during thinking delay and while waiting for first token */}
               {sending && streamingMsg === '' && !checkingWith && (
                 <div className="flex justify-start">
-                  <div className="bg-muted rounded-xl px-4 py-3 flex items-center gap-1.5 text-muted-foreground text-sm rounded-bl-none">
-                    <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '300ms' }} />
+                  <div className="bg-muted rounded-xl px-4 py-3 flex items-center gap-2 text-muted-foreground text-sm rounded-bl-none">
+                    <div className="flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                    {typingAgent && (
+                      <span className="text-xs opacity-70">{typingAgent} is typing...</span>
+                    )}
                   </div>
                 </div>
               )}

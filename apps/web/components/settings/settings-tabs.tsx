@@ -492,11 +492,9 @@ function WidgetSettings() {
     api.get('/auth/me').then(r => setTenantId(r.data?.tenantId ?? '')).catch(() => {})
   }, [])
 
-  const apiUrl = typeof window !== 'undefined'
-    ? `${window.location.protocol}//${window.location.hostname}:3001/api/v1`
-    : 'http://localhost:3001/api/v1'
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1'
   const frontendUrl = typeof window !== 'undefined'
-    ? `${window.location.protocol}//${window.location.hostname}:3000`
+    ? `${window.location.protocol}//${window.location.hostname}`
     : 'http://localhost:3000'
 
   const snippet = tenantId && selectedAgent

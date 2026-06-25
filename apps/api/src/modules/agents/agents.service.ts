@@ -1,5 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
 import { PrismaService } from '../../common/prisma/prisma.service'
+import * as fs from 'fs'
+import * as path from 'path'
 
 @Injectable()
 export class AgentsService {
@@ -89,7 +91,10 @@ export class AgentsService {
   }
 
   async installTemplate(tenantId: string, templateId: string) {
-    const template = await this.prisma.agentTemplate.findUnique({ where: { id: templateId } })
+    const [template, tenant] = await Promise.all([
+      this.prisma.agentTemplate.findUnique({ where: { id: templateId } }),
+      this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { industry: true } }),
+    ])
     if (!template) throw new NotFoundException('Template not found')
 
     // Return existing active agent if already installed — prevents duplicates
@@ -107,12 +112,16 @@ export class AgentsService {
       return existing
     }
 
+    // Use the tenant's own industry so RAG, CRM defaults, and brain context
+    // all align correctly — fall back to the template's first industry or OTHER
+    const industry = (tenant?.industry ?? template.industries[0] ?? 'OTHER') as any
+
     return this.prisma.agent.create({
       data: {
         tenantId,
         name: template.name,
         role: template.role,
-        industry: (template.industries[0] ?? 'OTHER') as any,
+        industry,
         prompt: template.defaultPrompt,
         tools: template.tools,
         status: 'ACTIVE',
@@ -120,6 +129,31 @@ export class AgentsService {
         approvalRules: { requireApprovalFor: ['crm_update', 'send_email'] },
         templateId: template.id,
       },
+    })
+  }
+
+  async uploadAvatar(tenantId: string, agentId: string, file: Express.Multer.File) {
+    const agent = await this.prisma.agent.findFirst({ where: { id: agentId, tenantId } })
+    if (!agent) throw new NotFoundException('Agent not found')
+    if (!file) throw new BadRequestException('No file provided')
+
+    const avatarDir = path.join(process.cwd(), 'uploads', 'avatars')
+    if (!fs.existsSync(avatarDir)) fs.mkdirSync(avatarDir, { recursive: true })
+
+    // Delete old avatar file from disk if it was a locally stored one
+    if (agent.avatar?.startsWith('/uploads/')) {
+      const oldPath = path.join(process.cwd(), agent.avatar)
+      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
+    }
+
+    const ext = path.extname(file.originalname).toLowerCase() || '.jpg'
+    const filename = `${agentId}-${Date.now()}${ext}`
+    fs.writeFileSync(path.join(avatarDir, filename), file.buffer)
+
+    const avatarUrl = `/uploads/avatars/${filename}`
+    return this.prisma.agent.update({
+      where: { id: agentId },
+      data: { avatar: avatarUrl },
     })
   }
 

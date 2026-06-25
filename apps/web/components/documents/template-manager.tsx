@@ -1,13 +1,14 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
 import {
   ChevronLeft, Plus, Upload, FileText, Star, StarOff,
   Trash2, Edit2, Eye, EyeOff, Loader2, CloudUpload, X, CheckCircle2,
-  Wand2, Sparkles, Globe,
+  Wand2, Sparkles, Globe, Mail, Printer, Monitor, RefreshCw,
+  ChevronDown, ChevronUp, Copy, Maximize2,
 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -16,6 +17,7 @@ const TYPE_LABELS: Record<string, string> = {
   inspection: 'Inspection Report',
   sow: 'Statement of Work',
   invoice: 'Invoice',
+  email: 'Email Template',
   custom: 'Custom',
 }
 
@@ -24,7 +26,12 @@ const TYPE_COLORS: Record<string, string> = {
   inspection: 'bg-purple-100 text-purple-700',
   sow: 'bg-orange-100 text-orange-700',
   invoice: 'bg-green-100 text-green-700',
+  email: 'bg-pink-100 text-pink-700',
   custom: 'bg-gray-100 text-gray-700',
+}
+
+const TYPE_ICONS: Record<string, React.ReactNode> = {
+  email: <Mail className="w-4 h-4" />,
 }
 
 const INDUSTRIES = [
@@ -50,7 +57,184 @@ const STYLES = [
   { value: 'minimal', label: 'Minimal', desc: 'Whitespace-driven, typography-focused' },
 ]
 
+const TONES = [
+  { value: 'formal', label: 'Formal', desc: 'Precise and authoritative' },
+  { value: 'friendly', label: 'Friendly', desc: 'Warm and approachable' },
+  { value: 'urgent', label: 'Urgent', desc: 'Direct and action-oriented' },
+]
+
+const OUTPUT_FORMATS = [
+  { value: 'print', label: 'Print / PDF', icon: <Printer className="w-3.5 h-3.5" /> },
+  { value: 'email', label: 'Email HTML', icon: <Mail className="w-3.5 h-3.5" /> },
+  { value: 'web', label: 'Web View', icon: <Monitor className="w-3.5 h-3.5" /> },
+]
+
+const ACCENT_PRESETS = [
+  { color: '#4f46e5', label: 'Indigo' },
+  { color: '#0ea5e9', label: 'Sky' },
+  { color: '#10b981', label: 'Emerald' },
+  { color: '#f59e0b', label: 'Amber' },
+  { color: '#ef4444', label: 'Red' },
+  { color: '#8b5cf6', label: 'Violet' },
+  { color: '#0f172a', label: 'Slate' },
+  { color: '#1e3a5f', label: 'Navy' },
+]
+
 type Tab = 'list' | 'upload' | 'paste' | 'ai'
+
+type AiConfig = {
+  type: string
+  industry: string
+  style: 'modern' | 'classic' | 'minimal'
+  accentColor: string
+  tone: 'formal' | 'friendly' | 'urgent'
+  outputFormat: 'print' | 'email' | 'web'
+  customInstructions: string
+}
+
+// ── Reusable split-pane HTML editor/preview ──────────────────────────────────
+function HtmlEditorPreview({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const [showPreview, setShowPreview] = useState(true)
+  const [fullscreen, setFullscreen] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(value)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  const editorPane = (
+    <textarea
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      spellCheck={false}
+      className="w-full h-full min-h-[360px] rounded-none border-0 bg-[#0d1117] text-[#e6edf3] px-4 py-3 text-xs font-mono leading-relaxed resize-none focus:outline-none"
+      style={{ tabSize: 2 }}
+    />
+  )
+
+  const previewPane = (
+    <iframe
+      srcDoc={value || '<html><body style="font-family:sans-serif;color:#94a3b8;padding:32px;text-align:center"><p>Preview will appear here</p></body></html>'}
+      className="w-full h-full border-0"
+      sandbox="allow-same-origin"
+      title="Template preview"
+    />
+  )
+
+  const inner = (
+    <div className={`flex flex-col rounded-xl border border-border overflow-hidden ${fullscreen ? 'fixed inset-4 z-50 shadow-2xl' : ''}`}>
+      {/* Toolbar */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#161b22] border-b border-[#30363d]">
+        <div className="flex items-center gap-1">
+          <div className="w-2.5 h-2.5 rounded-full bg-[#ff5f57]" />
+          <div className="w-2.5 h-2.5 rounded-full bg-[#febc2e]" />
+          <div className="w-2.5 h-2.5 rounded-full bg-[#28c840]" />
+          <span className="ml-2 text-[10px] text-[#8b949e] font-mono">template.html</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1 text-[10px] text-[#8b949e] hover:text-[#e6edf3] px-2 py-1 rounded transition-colors"
+          >
+            <Copy className="w-3 h-3" />
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+          <button
+            onClick={() => setShowPreview(p => !p)}
+            className="flex items-center gap-1 text-[10px] text-[#8b949e] hover:text-[#e6edf3] px-2 py-1 rounded transition-colors"
+          >
+            {showPreview ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+            {showPreview ? 'Hide preview' : 'Show preview'}
+          </button>
+          <button
+            onClick={() => setFullscreen(f => !f)}
+            className="flex items-center gap-1 text-[10px] text-[#8b949e] hover:text-[#e6edf3] px-2 py-1 rounded transition-colors"
+          >
+            <Maximize2 className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+      {/* Panes */}
+      <div className={`flex ${showPreview ? 'divide-x divide-[#30363d]' : ''}`} style={{ minHeight: 380 }}>
+        <div className={`flex flex-col ${showPreview ? 'w-1/2' : 'w-full'}`}>
+          {editorPane}
+        </div>
+        {showPreview && (
+          <div className="w-1/2 bg-white overflow-auto">
+            {previewPane}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+
+  return (
+    <>
+      {inner}
+      {fullscreen && <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={() => setFullscreen(false)} />}
+    </>
+  )
+}
+
+// ── Placeholder picker ────────────────────────────────────────────────────────
+function PlaceholderPicker({ type, onInsert }: { type: string; onInsert: (p: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const { data: placeholders } = useQuery({
+    queryKey: ['template-placeholders'],
+    queryFn: () => api.get('/document-templates/placeholders').then(r => r.data),
+    staleTime: Infinity,
+  })
+
+  if (!placeholders) return null
+  const groups: Record<string, string[]> = {
+    Common: placeholders.common ?? [],
+    [TYPE_LABELS[type] ?? 'Type-specific']: placeholders[type] ?? [],
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1 text-xs text-primary hover:underline"
+      >
+        <Sparkles className="w-3 h-3" />
+        Placeholders
+        {open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-6 z-20 w-72 rounded-xl border border-border bg-popover shadow-xl p-3 space-y-3">
+          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">Click to copy placeholder</p>
+          {Object.entries(groups).map(([group, vars]) =>
+            vars.length > 0 ? (
+              <div key={group}>
+                <p className="text-[10px] font-semibold text-muted-foreground mb-1.5">{group}</p>
+                <div className="flex flex-wrap gap-1">
+                  {vars.map(v => (
+                    <button
+                      key={v}
+                      onClick={() => { onInsert(`{{${v}}}`); setOpen(false) }}
+                      className="text-[10px] font-mono bg-muted hover:bg-primary/10 hover:text-primary border border-border px-1.5 py-0.5 rounded transition-colors"
+                    >
+                      {`{{${v}}}`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function TemplateManager() {
   const qc = useQueryClient()
@@ -65,13 +249,25 @@ export function TemplateManager() {
   const [converted, setConverted] = useState<{ htmlBody: string; suggestedName: string; suggestedType: string } | null>(null)
 
   // AI generate state
-  const [aiConfig, setAiConfig] = useState({ type: 'estimate', industry: 'ROOFING', style: 'modern' as 'modern' | 'classic' | 'minimal' })
+  const [aiConfig, setAiConfig] = useState<AiConfig>({
+    type: 'estimate',
+    industry: 'ROOFING',
+    style: 'modern',
+    accentColor: '#4f46e5',
+    tone: 'formal',
+    outputFormat: 'print',
+    customInstructions: '',
+  })
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [aiGenerating, setAiGenerating] = useState(false)
   const [aiGenerated, setAiGenerated] = useState<{ htmlBody: string; suggestedName: string } | null>(null)
-  const [aiPreview, setAiPreview] = useState(false)
 
   // Paste / Edit form state
   const [form, setForm] = useState({ name: '', type: 'estimate', description: '', htmlBody: '', isDefault: false })
+
+  const handleInsertPlaceholder = useCallback((placeholder: string) => {
+    setForm(f => ({ ...f, htmlBody: f.htmlBody + placeholder }))
+  }, [])
 
   const { data: templates = [], isLoading } = useQuery({
     queryKey: ['document-templates'],
@@ -121,7 +317,6 @@ export function TemplateManager() {
   const handleAiGenerate = async () => {
     setAiGenerating(true)
     setAiGenerated(null)
-    setAiPreview(false)
     try {
       const res = await api.post('/document-templates/generate-ai', aiConfig)
       setAiGenerated(res.data)
@@ -194,7 +389,7 @@ export function TemplateManager() {
         </div>
         {tab === 'list' && (
           <div className="flex gap-2">
-            <button onClick={() => { setTab('ai'); setEditingId(null); setAiGenerated(null); setAiPreview(false) }}
+            <button onClick={() => { setTab('ai'); setEditingId(null); setAiGenerated(null) }}
               className="flex items-center gap-1.5 text-sm border border-primary/40 text-primary bg-primary/5 px-3 py-1.5 rounded-lg hover:bg-primary/10 transition-colors">
               <Sparkles className="w-4 h-4" /> AI Generate
             </button>
@@ -357,12 +552,13 @@ export function TemplateManager() {
                 </div>
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">HTML Template (edit if needed)</label>
-                <textarea
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-medium text-muted-foreground">HTML Template</label>
+                  <PlaceholderPicker type={form.type} onInsert={handleInsertPlaceholder} />
+                </div>
+                <HtmlEditorPreview
                   value={form.htmlBody}
-                  onChange={e => setForm(f => ({ ...f, htmlBody: e.target.value }))}
-                  rows={12}
-                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+                  onChange={v => setForm(f => ({ ...f, htmlBody: v }))}
                 />
               </div>
               <label className="flex items-center gap-2 text-sm cursor-pointer">
@@ -394,7 +590,7 @@ export function TemplateManager() {
 
       {/* ── PASTE HTML TAB ───────────────────────────────────────── */}
       {tab === 'paste' && (
-        <div className="max-w-2xl space-y-4">
+        <div className="max-w-4xl space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs font-medium text-muted-foreground">Template Name *</label>
@@ -419,18 +615,13 @@ export function TemplateManager() {
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center justify-between mb-2">
               <label className="text-xs font-medium text-muted-foreground">HTML Template *</label>
-              <span className="text-[10px] text-muted-foreground">
-                Use <code className="bg-muted px-1 rounded">{'{{customerName}}'}</code> <code className="bg-muted px-1 rounded">{'{{address}}'}</code> <code className="bg-muted px-1 rounded">{'{{total}}'}</code> etc.
-              </span>
+              <PlaceholderPicker type={form.type} onInsert={handleInsertPlaceholder} />
             </div>
-            <textarea
+            <HtmlEditorPreview
               value={form.htmlBody}
-              onChange={e => setForm(f => ({ ...f, htmlBody: e.target.value }))}
-              rows={16}
-              placeholder={'<!DOCTYPE html>\n<html>\n<body>\n  <h1>Estimate for {{customerName}}</h1>\n  <p>Address: {{address}}</p>\n  ...\n</body>\n</html>'}
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+              onChange={v => setForm(f => ({ ...f, htmlBody: v }))}
             />
           </div>
 
@@ -456,7 +647,7 @@ export function TemplateManager() {
 
       {/* ── AI GENERATE TAB ──────────────────────────────────────── */}
       {tab === 'ai' && (
-        <div className="max-w-2xl space-y-6">
+        <div className="max-w-3xl space-y-6">
           {/* Intro banner */}
           <div className="rounded-xl bg-gradient-to-r from-primary/10 via-purple-500/10 to-pink-500/10 border border-primary/20 p-4 flex items-start gap-3">
             <div className="w-9 h-9 rounded-lg bg-primary/20 flex items-center justify-center shrink-0 mt-0.5">
@@ -465,18 +656,18 @@ export function TemplateManager() {
             <div>
               <p className="font-semibold text-sm">AI Professional Template Generator</p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Tell AI your industry and document type — it will generate a polished, industry-standard template
-                with all the right sections, styling, and <code className="bg-muted px-1 rounded">{'{{placeholder}}'}</code> variables pre-inserted.
+                Configure your template below — AI will generate a pixel-perfect, industry-standard document
+                with all sections, styling, and <code className="bg-muted px-1 rounded">{'{{placeholder}}'}</code> variables pre-inserted.
               </p>
             </div>
           </div>
 
           {!aiGenerated ? (
-            <div className="space-y-5">
-              {/* Document type */}
+            <div className="space-y-6">
+              {/* ── Row 1: Document Type ── */}
               <div>
                 <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Document Type</label>
-                <div className="mt-2 grid grid-cols-3 sm:grid-cols-5 gap-2">
+                <div className="mt-2 grid grid-cols-3 sm:grid-cols-6 gap-2">
                   {Object.entries(TYPE_LABELS).filter(([v]) => v !== 'custom').map(([value, label]) => (
                     <button key={value} onClick={() => setAiConfig(c => ({ ...c, type: value }))}
                       className={`py-2 px-2 rounded-lg border text-xs font-medium transition-colors text-center
@@ -487,10 +678,10 @@ export function TemplateManager() {
                 </div>
               </div>
 
-              {/* Industry */}
+              {/* ── Row 2: Industry ── */}
               <div>
-                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Your Industry</label>
-                <div className="mt-2 grid grid-cols-3 sm:grid-cols-4 gap-2">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Industry</label>
+                <div className="mt-2 grid grid-cols-3 sm:grid-cols-5 gap-2">
                   {INDUSTRIES.map(ind => (
                     <button key={ind.value} onClick={() => setAiConfig(c => ({ ...c, industry: ind.value }))}
                       className={`py-2 px-2 rounded-lg border text-xs font-medium transition-colors text-center
@@ -501,28 +692,115 @@ export function TemplateManager() {
                 </div>
               </div>
 
-              {/* Style */}
-              <div>
-                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Visual Style</label>
-                <div className="mt-2 grid grid-cols-3 gap-3">
-                  {STYLES.map(s => (
-                    <button key={s.value} onClick={() => setAiConfig(c => ({ ...c, style: s.value as any }))}
-                      className={`rounded-xl border p-3 text-left transition-colors
-                        ${aiConfig.style === s.value ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/40 hover:bg-accent'}`}>
-                      <p className={`text-sm font-semibold ${aiConfig.style === s.value ? 'text-primary' : ''}`}>{s.label}</p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5 leading-snug">{s.desc}</p>
-                    </button>
-                  ))}
+              {/* ── Row 3: Style + Output Format ── */}
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Visual Style</label>
+                  <div className="mt-2 space-y-2">
+                    {STYLES.map(s => (
+                      <button key={s.value} onClick={() => setAiConfig(c => ({ ...c, style: s.value as any }))}
+                        className={`w-full rounded-lg border p-3 text-left transition-colors
+                          ${aiConfig.style === s.value ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/40 hover:bg-accent'}`}>
+                        <p className={`text-sm font-semibold ${aiConfig.style === s.value ? 'text-primary' : ''}`}>{s.label}</p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5 leading-snug">{s.desc}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Output Format</label>
+                    <div className="mt-2 flex flex-col gap-2">
+                      {OUTPUT_FORMATS.map(f => (
+                        <button key={f.value} onClick={() => setAiConfig(c => ({ ...c, outputFormat: f.value as any }))}
+                          className={`flex items-center gap-2 rounded-lg border p-2.5 text-xs font-medium transition-colors text-left
+                            ${aiConfig.outputFormat === f.value ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/40 hover:bg-accent'}`}>
+                          {f.icon} {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tone</label>
+                    <div className="mt-2 flex flex-col gap-2">
+                      {TONES.map(t => (
+                        <button key={t.value} onClick={() => setAiConfig(c => ({ ...c, tone: t.value as any }))}
+                          className={`flex items-center justify-between rounded-lg border p-2.5 text-xs font-medium transition-colors text-left
+                            ${aiConfig.tone === t.value ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/40 hover:bg-accent'}`}>
+                          <span>{t.label}</span>
+                          <span className={`text-[10px] font-normal ${aiConfig.tone === t.value ? 'text-primary/70' : 'text-muted-foreground'}`}>{t.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* Summary */}
-              <div className="rounded-lg bg-muted/40 border border-border px-4 py-3 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Will generate: </span>
-                A <span className="text-primary font-medium">{aiConfig.style}</span> {TYPE_LABELS[aiConfig.type]?.toLowerCase()} template
-                tailored for the <span className="text-primary font-medium">
+              {/* ── Accent Color ── */}
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Brand / Accent Color</label>
+                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                  {ACCENT_PRESETS.map(p => (
+                    <button
+                      key={p.color}
+                      title={p.label}
+                      onClick={() => setAiConfig(c => ({ ...c, accentColor: p.color }))}
+                      style={{ backgroundColor: p.color }}
+                      className={`w-7 h-7 rounded-full transition-all ${aiConfig.accentColor === p.color ? 'ring-2 ring-offset-2 ring-foreground scale-110' : 'hover:scale-105'}`}
+                    />
+                  ))}
+                  <div className="flex items-center gap-1.5 ml-1">
+                    <input
+                      type="color"
+                      value={aiConfig.accentColor}
+                      onChange={e => setAiConfig(c => ({ ...c, accentColor: e.target.value }))}
+                      className="w-7 h-7 rounded-full border border-border cursor-pointer"
+                    />
+                    <span className="text-xs font-mono text-muted-foreground">{aiConfig.accentColor}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Advanced / Custom Instructions ── */}
+              <div>
+                <button
+                  onClick={() => setShowAdvanced(s => !s)}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showAdvanced ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  {showAdvanced ? 'Hide' : 'Show'} custom instructions
+                </button>
+                {showAdvanced && (
+                  <div className="mt-2">
+                    <textarea
+                      value={aiConfig.customInstructions}
+                      onChange={e => setAiConfig(c => ({ ...c, customInstructions: e.target.value }))}
+                      rows={3}
+                      placeholder="e.g. Add a financing disclaimer section. Use 'Client' instead of 'Customer'. Include a QR code placeholder."
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* ── Generation summary ── */}
+              <div className="rounded-lg bg-muted/40 border border-border px-4 py-3 text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
+                <span className="font-medium text-foreground">Will generate:</span>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold">{aiConfig.style}</span>
+                <span>{TYPE_LABELS[aiConfig.type]?.toLowerCase()}</span>
+                <span>for</span>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold">
                   {INDUSTRIES.find(i => i.value === aiConfig.industry)?.label}
-                </span> industry
+                </span>
+                <span>·</span>
+                <span>{aiConfig.tone} tone</span>
+                <span>·</span>
+                <span>{OUTPUT_FORMATS.find(f => f.value === aiConfig.outputFormat)?.label}</span>
+                <span>·</span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-3 h-3 rounded-full border border-white/30 inline-block" style={{ backgroundColor: aiConfig.accentColor }} />
+                  {aiConfig.accentColor}
+                </span>
               </div>
 
               <div className="flex gap-2">
@@ -539,11 +817,11 @@ export function TemplateManager() {
               </div>
             </div>
           ) : (
-            /* Review & Save */
+            /* ── Review & Save ── */
             <div className="space-y-4">
               <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
-                Template generated! Review, edit if needed, then save.
+                Template generated! Review the code and live preview below, then save.
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -561,32 +839,16 @@ export function TemplateManager() {
                 </div>
               </div>
 
-              {/* Preview toggle */}
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-muted-foreground">HTML Template</label>
-                <button onClick={() => setAiPreview(p => !p)}
-                  className="flex items-center gap-1 text-xs text-primary hover:underline">
-                  {aiPreview ? <><EyeOff className="w-3 h-3" /> Hide preview</> : <><Eye className="w-3 h-3" /> Live preview</>}
-                </button>
-              </div>
-
-              {aiPreview ? (
-                <div className="rounded-xl border border-border bg-white overflow-hidden">
-                  <iframe
-                    srcDoc={form.htmlBody}
-                    className="w-full h-[480px] border-0"
-                    sandbox="allow-same-origin"
-                    title="Generated template preview"
-                  />
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-medium text-muted-foreground">HTML Template</label>
+                  <PlaceholderPicker type={form.type} onInsert={handleInsertPlaceholder} />
                 </div>
-              ) : (
-                <textarea
+                <HtmlEditorPreview
                   value={form.htmlBody}
-                  onChange={e => setForm(f => ({ ...f, htmlBody: e.target.value }))}
-                  rows={14}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+                  onChange={v => setForm(f => ({ ...f, htmlBody: v }))}
                 />
-              )}
+              </div>
 
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" checked={form.isDefault} onChange={e => setForm(f => ({ ...f, isDefault: e.target.checked }))} />
@@ -594,9 +856,9 @@ export function TemplateManager() {
               </label>
 
               <div className="flex gap-2">
-                <button onClick={() => { setAiGenerated(null); setAiPreview(false) }}
-                  className="border border-border px-4 py-2 rounded-lg text-sm hover:bg-accent transition-colors">
-                  Regenerate
+                <button onClick={() => setAiGenerated(null)}
+                  className="flex items-center gap-1.5 border border-border px-4 py-2 rounded-lg text-sm hover:bg-accent transition-colors">
+                  <RefreshCw className="w-3.5 h-3.5" /> Regenerate
                 </button>
                 <button onClick={() => { setTab('list'); setAiGenerated(null) }}
                   className="border border-border px-4 py-2 rounded-lg text-sm hover:bg-accent transition-colors">

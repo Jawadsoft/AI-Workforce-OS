@@ -1,5 +1,5 @@
 -- CreateTable
-CREATE TABLE "IndustryKnowledgePack" (
+CREATE TABLE IF NOT EXISTS "IndustryKnowledgePack" (
     "id" TEXT NOT NULL,
     "industry" TEXT NOT NULL,
     "name" TEXT NOT NULL,
@@ -12,7 +12,7 @@ CREATE TABLE "IndustryKnowledgePack" (
 );
 
 -- CreateTable
-CREATE TABLE "IndustryKnowledgeDoc" (
+CREATE TABLE IF NOT EXISTS "IndustryKnowledgeDoc" (
     "id" TEXT NOT NULL,
     "packId" TEXT NOT NULL,
     "name" TEXT NOT NULL,
@@ -26,7 +26,7 @@ CREATE TABLE "IndustryKnowledgeDoc" (
 );
 
 -- CreateTable
-CREATE TABLE "IndustryKnowledgeChunk" (
+CREATE TABLE IF NOT EXISTS "IndustryKnowledgeChunk" (
     "id" TEXT NOT NULL,
     "docId" TEXT NOT NULL,
     "content" TEXT NOT NULL,
@@ -38,10 +38,18 @@ CREATE TABLE "IndustryKnowledgeChunk" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "IndustryKnowledgePack_industry_key" ON "IndustryKnowledgePack"("industry");
+CREATE UNIQUE INDEX IF NOT EXISTS "IndustryKnowledgePack_industry_key" ON "IndustryKnowledgePack"("industry");
 
 -- AddForeignKey
-ALTER TABLE "IndustryKnowledgeDoc" ADD CONSTRAINT "IndustryKnowledgeDoc_packId_fkey" FOREIGN KEY ("packId") REFERENCES "IndustryKnowledgePack"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "IndustryKnowledgeDoc" ADD CONSTRAINT "IndustryKnowledgeDoc_packId_fkey" FOREIGN KEY ("packId") REFERENCES "IndustryKnowledgePack"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "IndustryKnowledgeChunk" ADD CONSTRAINT "IndustryKnowledgeChunk_docId_fkey" FOREIGN KEY ("docId") REFERENCES "IndustryKnowledgeDoc"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "IndustryKnowledgeChunk" ADD CONSTRAINT "IndustryKnowledgeChunk_docId_fkey" FOREIGN KEY ("docId") REFERENCES "IndustryKnowledgeDoc"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;

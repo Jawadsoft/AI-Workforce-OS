@@ -36,15 +36,18 @@ export class TicketProcessorScheduler {
 
   @Cron('* * * * *')
   async processOpenTickets() {
-    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000)
+    const twoMinutesAgo    = new Date(Date.now() -  2 * 60 * 1000)
+    const fourHoursAgo     = new Date(Date.now() -  4 * 60 * 60 * 1000)
     const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000)
 
     // Two-tier fetch:
     // Tier 1 — OPEN tickets: never been woken (autoWakeAgent stamps IN_PROGRESS on first wake),
     //          so no idle gate needed — pick them up immediately on the first cron run.
-    // Tier 2 — IN_PROGRESS / ESCALATED: apply 2-min cooldown via updatedAt
-    //          so we don't re-wake the same agent on every consecutive minute.
-    const [freshTickets, idleTickets] = await Promise.all([
+    // Tier 2 — IN_PROGRESS / ESCALATED: 4-hour cooldown via updatedAt.
+    //          Once an agent has responded and said "I'll handle this on July 1", we must NOT
+    //          re-wake them every 2 minutes. Only re-visit after 4 hours (or ESCALATED urgency).
+    //          ESCALATED tickets still use 2-min cooldown so urgent issues are caught fast.
+    const [freshTickets, idleInProgress, idleEscalated] = await Promise.all([
       this.prisma.activityTicket.findMany({
         where: {
           status: 'OPEN',
@@ -59,22 +62,41 @@ export class TicketProcessorScheduler {
         orderBy: [{ priority: 'desc' }, { followUpAt: 'asc' }, { createdAt: 'asc' }],
         take: 10,
       }),
+      // IN_PROGRESS: 4-hour cooldown — agent already acknowledged, don't spam
       this.prisma.activityTicket.findMany({
         where: {
-          status: { in: ['IN_PROGRESS', 'ESCALATED'] },
+          status: 'IN_PROGRESS',
           assignedAgentId: { not: null },
           tenant: { isActive: true },
           createdAt: { gte: fortyEightHoursAgo },
-          updatedAt: { lt: twoMinutesAgo },   // 2-min cooldown for already-woken tickets
+          updatedAt: { lt: fourHoursAgo },
         },
         include: {
           assignedAgent: { select: { id: true, name: true, role: true, tenantId: true } },
           createdBy: { select: { id: true, name: true } },
         },
         orderBy: [{ priority: 'desc' }, { followUpAt: 'asc' }, { createdAt: 'asc' }],
-        take: 10,
+        take: 5,
+      }),
+      // ESCALATED: 2-min cooldown — urgent, needs fast attention
+      this.prisma.activityTicket.findMany({
+        where: {
+          status: 'ESCALATED',
+          assignedAgentId: { not: null },
+          tenant: { isActive: true },
+          createdAt: { gte: fortyEightHoursAgo },
+          updatedAt: { lt: twoMinutesAgo },
+        },
+        include: {
+          assignedAgent: { select: { id: true, name: true, role: true, tenantId: true } },
+          createdBy: { select: { id: true, name: true } },
+        },
+        orderBy: [{ priority: 'desc' }, { followUpAt: 'asc' }, { createdAt: 'asc' }],
+        take: 5,
       }),
     ])
+    // Merge all tiers, deduplicating by ticket ID
+    const idleTickets = [...idleInProgress, ...idleEscalated]
 
     // Merge: fresh (OPEN) tickets first, then idle in-progress ones
     // De-duplicate by ticket ID in case both queries somehow return the same row

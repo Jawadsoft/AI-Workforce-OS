@@ -69,3 +69,9 @@
   box-shadow: none;
   backdrop-filter: none;
 }
+
+/* ── Sound-wave animation for TTS speaking indicator ─────────────── */
+@keyframes soundwave {
+  0%, 100% { transform: scaleY(0.4); opacity: 0.5; }
+  50%       { transform: scaleY(1.0); opacity: 1;   }
+}

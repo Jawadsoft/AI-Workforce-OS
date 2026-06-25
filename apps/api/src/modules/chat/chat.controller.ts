@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, Res } from '@nestjs/common'
+import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, Res, HttpCode, StreamableFile } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { IsString, IsOptional } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
@@ -16,6 +16,11 @@ class CreateConversationDto {
 
 class SendMessageDto {
   @IsString() content: string
+}
+
+class TtsDto {
+  @IsString() text: string
+  @IsOptional() @IsString() agentName?: string
 }
 
 @ApiTags('Chat')
@@ -101,5 +106,21 @@ export class ChatController {
   @ApiOperation({ summary: 'Clear all messages in a conversation' })
   clearMessages(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.clearMessages(tenantId, id)
+  }
+
+  // ── ElevenLabs TTS proxy ──────────────────────────────────────────
+  // POST /chat/tts  { text, agentName? }
+  // Returns: audio/mpeg stream
+  @Post('tts')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Convert text to speech via ElevenLabs (proxied, key stays server-side)' })
+  async textToSpeech(
+    @Body() dto: TtsDto,
+    @Res() res: Response,
+  ) {
+    const audioStream = await this.service.textToSpeech(dto.text, dto.agentName)
+    ;(res as any).setHeader('Content-Type', 'audio/mpeg')
+    ;(res as any).setHeader('Transfer-Encoding', 'chunked')
+    audioStream.pipe(res as any)
   }
 }

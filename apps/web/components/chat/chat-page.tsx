@@ -3,23 +3,27 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle, Trash2 } from 'lucide-react'
+import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle, Trash2, Mic, MicOff, Volume2, VolumeX } from 'lucide-react'
+import { useSpeech } from '@/hooks/use-speech'
 import { CRMRecordCard } from './crm-record-card'
 import { ChatActionCard, type ActionCard } from './action-cards'
 import { resolveAvatarUrl } from '@/lib/utils'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1'
 
-type FilterTab = 'all' | 'chat' | 'email' | 'calls' | 'whatsapp' | 'website' | 'crm'
+type FilterTab = 'all' | 'chat' | 'activity' | 'email' | 'calls' | 'whatsapp' | 'website' | 'crm'
+
+const TICKET_BRIEF_TYPES = ['TICKET_BRIEF', 'SPECIALIST_UPDATE', 'TICKET_ASSIGNED']
 
 const FILTER_TABS: { id: FilterTab; label: string; icon: React.ReactNode; match: (b?: string | null) => boolean; comingSoon?: boolean }[] = [
   { id: 'all',      label: 'All',        icon: <LayoutList className="w-3.5 h-3.5" />,    match: () => true },
   { id: 'chat',     label: 'Agent Chat', icon: <MessageSquare className="w-3.5 h-3.5" />, match: (b) => !b },
+  { id: 'activity', label: 'Activity',   icon: <Zap className="w-3.5 h-3.5" />,           match: (b) => !!b && TICKET_BRIEF_TYPES.includes(b) },
   { id: 'email',    label: 'Emails',     icon: <Mail className="w-3.5 h-3.5" />,          match: (b) => b === 'email_briefing' },
   { id: 'calls',    label: 'Calls',      icon: <Phone className="w-3.5 h-3.5" />,         match: (b) => b === 'call_briefing',             comingSoon: true },
   { id: 'whatsapp', label: 'WhatsApp',   icon: <MessageCircle className="w-3.5 h-3.5" />, match: (b) => b === 'whatsapp_briefing', comingSoon: true },
   { id: 'website',  label: 'Website',    icon: <Globe className="w-3.5 h-3.5" />,         match: (b) => b === 'widget' },
-  { id: 'crm',      label: 'CRM',        icon: <Zap className="w-3.5 h-3.5" />,           match: (b) => !!b && !['email_briefing','call_briefing','whatsapp_briefing','widget'].includes(b) },
+  { id: 'crm',      label: 'CRM',        icon: <Zap className="w-3.5 h-3.5" />,           match: (b) => !!b && !TICKET_BRIEF_TYPES.includes(b) && !['email_briefing','call_briefing','whatsapp_briefing','widget'].includes(b) },
 ]
 
 interface Message {
@@ -49,6 +53,9 @@ function renderMarkdown(text: string) {
 
 // ── Briefing badge ─────────────────────────────────────────────────
 const BRIEFING_LABELS: Record<string, { label: string; color: string }> = {
+  'TICKET_BRIEF':       { label: 'Ticket Update',    color: 'bg-slate-500/10 text-slate-600' },
+  'SPECIALIST_UPDATE':  { label: 'Team Update',      color: 'bg-violet-500/10 text-violet-700' },
+  'TICKET_ASSIGNED':    { label: 'Ticket Assigned',  color: 'bg-amber-500/10 text-amber-700' },
   'lead.created':       { label: 'New Lead',         color: 'bg-green-500/10 text-green-700' },
   'lead.updated':       { label: 'Lead Updated',     color: 'bg-blue-500/10 text-blue-700' },
   'job.created':        { label: 'New Job',           color: 'bg-orange-500/10 text-orange-700' },
@@ -77,6 +84,29 @@ export function ChatPage() {
   const [checkingWith, setCheckingWith] = useState<string | null>(null)
   const [typingAgent, setTypingAgent] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const lastResponseRef = useRef<string>('')
+  // When TTS is on, we hold the pending refetch until after audio finishes
+  // so the message text appears AFTER being spoken (hear-then-read)
+  const [voiceRevealPending, setVoiceRevealPending] = useState(false)
+  // Ref so sendText can always read the current agent name without being in deps
+  const selectedAgentNameRef = useRef<string | undefined>(undefined)
+
+  // ── Voice (STT + TTS) ────────────────────────────────────────────────
+  const sendTextRef        = useRef<(t: string) => void>(() => {})
+  const refetchAfterTtsRef = useRef<(() => void) | null>(null)
+
+  const {
+    isListening, isSpeaking, ttsEnabled, sttSupported,
+    toggleListening, addSpeechChunk, flushSpeechBuffer, stopSpeaking, toggleTts, interimText,
+  } = useSpeech(
+    (transcript) => sendTextRef.current(transcript),
+    // onQueueDrained: called when all audio chunks have finished playing
+    () => {
+      setVoiceRevealPending(false)
+      refetchAfterTtsRef.current?.()
+      refetchAfterTtsRef.current = null
+    },
+  )
 
   // ── Load active agents ─────────────────────────────────────────────
   const { data: agents = [], isLoading: agentsLoading } = useQuery({
@@ -131,9 +161,9 @@ export function ChatPage() {
   }, [messages.length, streamingMsg])
 
   // ── Send / stream ──────────────────────────────────────────────────
-  const handleSend = useCallback(async () => {
-    if (!message.trim() || !conversationId || sending) return
-    const text = message.trim()
+  // sendText is the core function; handleSend is the button handler that reads from state
+  const sendText = useCallback(async (text: string) => {
+    if (!text.trim() || !conversationId || sending) return
     setMessage('')
     setSending(true)
     setStreamingMsg('')
@@ -166,19 +196,40 @@ export function ChatPage() {
           try {
             const payload = JSON.parse(line.slice(6))
             if (payload.typing) { setTypingAgent(payload.agentName ?? null) }
-            if (payload.token) { accumulated += payload.token; setStreamingMsg(accumulated); setCheckingWith(null); setTypingAgent(null) }
+            if (payload.token) {
+              accumulated += payload.token
+              setStreamingMsg(ttsEnabled ? null : accumulated)   // hide text while TTS streams
+              setCheckingWith(null); setTypingAgent(null)
+              // Stream tokens into TTS pipeline — fires parallel ElevenLabs fetches per sentence
+              if (ttsEnabled) addSpeechChunk(payload.token, selectedAgentNameRef.current)
+            }
             if (payload.checking) { setCheckingWith(payload.withName ?? 'team'); setTypingAgent(null) }
             if (payload.action_card) setPendingCards(prev => [...prev, payload.action_card as ActionCard])
-            if (payload.done) { setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null); await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] }) }
+            if (payload.done) {
+              setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null)
+              setSending(false)   // re-enable input immediately
+              if (accumulated && ttsEnabled) {
+                lastResponseRef.current = accumulated
+                setVoiceRevealPending(true)
+                // Flush any partial sentence left in the buffer
+                flushSpeechBuffer(selectedAgentNameRef.current)
+                // refetch will be triggered by onQueueDrained callback
+                refetchAfterTtsRef.current = () => {
+                  refetchMessages()
+                  qc.invalidateQueries({ queryKey: ['messages', conversationId] })
+                }
+              } else {
+                await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] })
+              }
+            }
             if (payload.error) { setStreamingMsg(`Error: ${payload.error}`); setCheckingWith(null); setTypingAgent(null) }
           } catch { /* partial */ }
         }
       }
     } catch (err: any) {
       if (err.name !== 'AbortError') {
-        setStreamingMsg(null)
-        setCheckingWith(null)
-        setTypingAgent(null)
+        setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null)
+        setVoiceRevealPending(false); refetchAfterTtsRef.current = null
         try {
           await api.post(`/chat/${conversationId}/messages`, { content: text })
           await refetchMessages()
@@ -187,9 +238,20 @@ export function ChatPage() {
     } finally {
       setSending(false)
     }
-  }, [message, conversationId, sending, refetchMessages, qc])
+  }, [conversationId, sending, refetchMessages, qc, addSpeechChunk, flushSpeechBuffer, ttsEnabled])
+
+  const handleSend = useCallback(() => {
+    sendText(message)
+  }, [message, sendText])
+
+  // Keep sendTextRef current so the useSpeech onTranscript always calls the latest sendText
+  useEffect(() => {
+    sendTextRef.current = sendText
+  }, [sendText])
 
   const selectedAgent = agents.find((a: any) => a.id === selectedAgentId)
+  // Keep ref in sync so sendText (defined above) can read the agent name without stale closure
+  selectedAgentNameRef.current = selectedAgent?.name
 
   // When user clicks a choice button in an ask_user card, auto-send it as a message
   const handleChoiceSelected = useCallback(async (choice: string) => {
@@ -223,19 +285,38 @@ export function ChatPage() {
           try {
             const payload = JSON.parse(line.slice(6))
             if (payload.typing) { setTypingAgent(payload.agentName ?? null) }
-            if (payload.token) { accumulated += payload.token; setStreamingMsg(accumulated); setCheckingWith(null); setTypingAgent(null) }
+            if (payload.token) {
+              accumulated += payload.token
+              setStreamingMsg(ttsEnabled ? null : accumulated)
+              setCheckingWith(null); setTypingAgent(null)
+              if (ttsEnabled) addSpeechChunk(payload.token, selectedAgentNameRef.current)
+            }
             if (payload.checking) { setCheckingWith(payload.withName ?? 'team'); setTypingAgent(null) }
             if (payload.action_card) setPendingCards(prev => [...prev, payload.action_card as ActionCard])
-            if (payload.done) { setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null); await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] }) }
+            if (payload.done) {
+              setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null)
+              setSending(false)
+              if (accumulated && ttsEnabled) {
+                lastResponseRef.current = accumulated
+                setVoiceRevealPending(true)
+                flushSpeechBuffer(selectedAgentNameRef.current)
+                refetchAfterTtsRef.current = () => {
+                  refetchMessages()
+                  qc.invalidateQueries({ queryKey: ['messages', conversationId] })
+                }
+              } else {
+                await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] })
+              }
+            }
           } catch { /* partial */ }
         }
       }
     } catch (err: any) {
-      if (err.name !== 'AbortError') { setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null) }
+      if (err.name !== 'AbortError') { setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null); setVoiceRevealPending(false); refetchAfterTtsRef.current = null }
     } finally {
       setSending(false)
     }
-  }, [conversationId, sending, refetchMessages, qc])
+  }, [conversationId, sending, refetchMessages, qc, addSpeechChunk, flushSpeechBuffer, ttsEnabled])
 
   // When the user declines a transfer, nudge the agent to continue helping directly
   const handleDeclineTransfer = useCallback(() => {
@@ -459,6 +540,31 @@ export function ChatPage() {
                   )
                 }
 
+                // When TTS is on and this is the streaming bubble, show waveform instead of text
+                if (msg.streaming && ttsEnabled) {
+                  return (
+                    <div key={msg.id} className="flex justify-start">
+                      <div className="bg-muted rounded-xl px-4 py-3 rounded-bl-none flex items-center gap-2.5">
+                        {/* Animated sound-wave bars */}
+                        {[0, 1, 2, 3, 4].map((i) => (
+                          <span
+                            key={i}
+                            className="inline-block w-1 rounded-full bg-primary/70"
+                            style={{
+                              height: `${12 + (i % 3) * 6}px`,
+                              animation: `soundwave 0.9s ease-in-out infinite`,
+                              animationDelay: `${i * 0.12}s`,
+                            }}
+                          />
+                        ))}
+                        <span className="text-xs text-muted-foreground ml-1">
+                          {selectedAgent?.name ?? 'Agent'} is speaking…
+                        </span>
+                      </div>
+                    </div>
+                  )
+                }
+
                 return (
                   <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
                     <div className="max-w-[72%] space-y-1">
@@ -481,6 +587,28 @@ export function ChatPage() {
                   </div>
                 )
               })}
+
+              {/* Speaking waveform — shown while ElevenLabs audio is playing (hear-then-read) */}
+              {voiceRevealPending && isSpeaking && (
+                <div className="flex justify-start">
+                  <div className="bg-muted rounded-xl px-4 py-3 rounded-bl-none flex items-center gap-2.5">
+                    {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+                      <span
+                        key={i}
+                        className="inline-block w-1 rounded-full bg-primary"
+                        style={{
+                          height: `${8 + Math.sin(i) * 8 + 8}px`,
+                          animation: 'soundwave 0.8s ease-in-out infinite',
+                          animationDelay: `${i * 0.1}s`,
+                        }}
+                      />
+                    ))}
+                    <span className="text-xs text-muted-foreground ml-1.5 font-medium">
+                      {selectedAgent?.name ?? 'Agent'} is speaking…
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Typing indicator — shown during thinking delay and while waiting for first token */}
               {sending && streamingMsg === '' && !checkingWith && (
@@ -535,22 +663,70 @@ export function ChatPage() {
             </div>
 
             {/* Input */}
-            <div className="p-3 border-t border-border flex gap-2">
-              <input
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
-                placeholder={`Message ${selectedAgent?.name ?? 'agent'}...`}
-                disabled={sending}
-                className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
-              />
-              <button
-                onClick={handleSend}
-                disabled={!message.trim() || sending}
-                className="p-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors"
-              >
-                <Send className="w-4 h-4" />
-              </button>
+            <div className="border-t border-border">
+              {/* Live interim transcript banner */}
+              {interimText && (
+                <div className="px-3 pt-2 text-xs text-muted-foreground italic animate-pulse flex items-center gap-1.5">
+                  <Mic className="w-3 h-3 text-red-500" />
+                  {interimText}
+                </div>
+              )}
+
+              <div className="p-3 flex gap-2 items-center">
+                {/* Mic button — STT */}
+                {sttSupported && (
+                  <button
+                    onClick={() => {
+                      // If agent is speaking, interrupt and start listening
+                      if (isSpeaking) stopSpeaking()
+                      toggleListening()
+                    }}
+                    title={isListening ? 'Stop listening' : 'Speak to send'}
+                    className={`p-2 rounded-md transition-colors flex-shrink-0 ${
+                      isListening
+                        ? 'bg-red-500 text-white animate-pulse hover:bg-red-600'
+                        : 'border border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                    }`}
+                  >
+                    {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                  </button>
+                )}
+
+                <input
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
+                  placeholder={isListening ? 'Listening…' : `Message ${selectedAgent?.name ?? 'agent'}...`}
+                  disabled={sending}
+                  className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                />
+
+                {/* TTS toggle — speaker on/off (ElevenLabs via backend) */}
+                <button
+                  onClick={toggleTts}
+                  title={ttsEnabled ? 'Mute agent voice' : 'Enable agent voice'}
+                  className={`p-2 rounded-md transition-colors flex-shrink-0 ${
+                    ttsEnabled
+                      ? isSpeaking
+                        ? 'bg-primary/10 text-primary animate-pulse border border-primary/30'
+                        : 'bg-primary/10 text-primary border border-primary/30'
+                      : 'border border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                >
+                  {ttsEnabled
+                    ? <Volume2 className="w-4 h-4" />
+                    : <VolumeX className="w-4 h-4" />
+                  }
+                </button>
+
+                <button
+                  onClick={handleSend}
+                  disabled={!message.trim() || sending}
+                  className="p-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors flex-shrink-0"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
         )

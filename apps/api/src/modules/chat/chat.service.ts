@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common'
+import { Injectable, NotFoundException, Logger, InternalServerErrorException } from '@nestjs/common'
+import { Readable } from 'stream'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
 import { CrmService } from '../crm/crm.service'
@@ -479,9 +480,10 @@ export class ChatService {
         return
       }
 
-      // Step 3 — save specialist's work to their OWN thread
+      // Step 3 — save specialist's work to their OWN thread as an internal briefing
+      // (briefingType = 'TICKET_BRIEF' keeps it out of the main chat tab)
       await this.prisma.message.create({
-        data: { conversationId: convId, role: 'ASSISTANT', content: response },
+        data: { conversationId: convId, role: 'ASSISTANT', content: response, briefingType: 'TICKET_BRIEF' },
       })
       await this.prisma.conversation.update({ where: { id: convId }, data: { updatedAt: new Date() } })
 
@@ -2104,5 +2106,74 @@ When chatting with the business owner/manager directly (in the internal chat thr
 - Be proactive: flag things that need attention without being asked.` : ''
 
     return `${header}${brainContext}${internalToolsSection}${teamCoordinationSection}${roleHandoffSection}${widgetSessionSection}${ticketsBlock}${crmContextBlock}${ragContext}${footer}`
+  }
+
+  // ── ElevenLabs TTS ───────────────────────────────────────────────────────
+
+  /**
+   * Maps agent first-names to curated ElevenLabs voice IDs.
+   * Any name not listed falls back to the env default (or Rachel).
+   * Voices are from the ElevenLabs free-tier pre-made library.
+   */
+  private readonly VOICE_MAP: Record<string, string> = {
+    // Female voices
+    nora:    '21m00Tcm4TlvDq8ikWAM', // Rachel  — calm, professional
+    sarah:   '21m00Tcm4TlvDq8ikWAM',
+    emma:    'EXAVITQu4vr4xnSDxMaL', // Bella   — warm, soft
+    lisa:    'MF3mGyEYCl7XYWbV9V6O', // Elli    — bright, emotional
+    maya:    'AZnzlk1XvdvUeBnXmlld', // Domi    — strong, confident
+    jackie:  'jBpfuIE2acCO8z3wKNLl', // Gigi    — friendly
+    // Male voices
+    jared:   'TxGEqnHWrfWFTfGW9XjX', // Josh    — deep, authoritative
+    will:    'pNInz6obpgDQGcFmaJgB', // Adam    — neutral male
+    chris:   'VR6AewLTigWG4xSOukaG', // Arnold  — crisp, direct
+    kevin:   'ErXwobaYiN019PkySvjV', // Antoni  — well-rounded
+    mike:    'yoZ06aMxZJJ28mfd3POQ', // Sam     — raspy, casual
+    tom:     'ODq5zmih8GrVes37Dx0d', // Patrick — confident
+  }
+
+  async textToSpeech(text: string, agentName?: string): Promise<Readable> {
+    const apiKey = process.env.ELEVENLABS_API_KEY
+    if (!apiKey || apiKey === '...') {
+      throw new InternalServerErrorException('ELEVENLABS_API_KEY is not configured')
+    }
+
+    // Resolve voice: check agent first name against map, then env default, then Rachel
+    const firstName = (agentName ?? '').split(' ')[0].toLowerCase()
+    const voiceId =
+      this.VOICE_MAP[firstName] ??
+      process.env.ELEVENLABS_VOICE_ID ??
+      '21m00Tcm4TlvDq8ikWAM'
+
+    const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': apiKey,
+        'Content-Type': 'application/json',
+        'Accept': 'audio/mpeg',
+      },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_turbo_v2',
+        voice_settings: {
+          stability: 0.45,
+          similarity_boost: 0.80,
+          style: 0.20,
+          use_speaker_boost: true,
+        },
+      }),
+    })
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => response.statusText)
+      this.logger.error(`[ElevenLabs] TTS error ${response.status}: ${errText}`)
+      throw new InternalServerErrorException(`ElevenLabs error: ${response.status}`)
+    }
+
+    // Convert the Web Streams ReadableStream to a Node.js Readable
+    const webStream = response.body!
+    return Readable.fromWeb(webStream as any)
   }
 }

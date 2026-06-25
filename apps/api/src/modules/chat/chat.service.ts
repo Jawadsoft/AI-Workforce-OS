@@ -1629,7 +1629,15 @@ You ALWAYS act as a real employee of this business — never break character, ne
 Respond in the brand voice described below. Be helpful, concise, and professional.`
 
     const roleLC = (agent.role ?? '').toLowerCase()
-    const isIntakeAgentRole = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer')
+
+    // Tier classification mirrors the same logic in runWithToolDispatch
+    const isTier1 = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
+                    roleLC.includes('executive') || roleLC.includes('assistant') || roleLC.includes('front desk') ||
+                    roleLC.includes('success manager') || roleLC.includes('client service')
+    const isTier2 = roleLC.includes('operations') || roleLC.includes('coordinator') || roleLC.includes('office manager') ||
+                    roleLC.includes('admin manager') || roleLC.includes('project manager') || roleLC.includes('project coord') ||
+                    roleLC.includes('ops lead') || roleLC.includes('scheduling')
+    const isIntakeAgentRole = isTier1  // alias used in internalToolsSection below
 
     // ── Dynamic team lookups (from live DB roster) ────────────────────
     // These replace all hardcoded colleague names so every tenant sees

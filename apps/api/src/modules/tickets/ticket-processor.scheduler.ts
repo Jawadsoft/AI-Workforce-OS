@@ -256,6 +256,45 @@ export class TicketProcessorScheduler {
           ticket.createdBy?.name,
         )
 
+        // Also alert the Tier 2 coordinator (operations/scheduling) so they can
+        // re-assign or follow up if the assigned agent still doesn't respond.
+        const tier2Keywords = ['operations', 'coordinator', 'office manager', 'admin manager', 'ops lead', 'scheduling']
+        const coordinator = await this.prisma.agent.findFirst({
+          where: {
+            tenantId: ticket.tenantId,
+            status: 'ACTIVE',
+            NOT: { id: ticket.assignedAgent.id },
+            OR: tier2Keywords.map(k => ({ role: { contains: k, mode: 'insensitive' as const } })),
+          },
+          orderBy: { createdAt: 'asc' },
+        })
+
+        if (coordinator) {
+          const coordBriefing = [
+            `⚠️ **Escalation alert — no response from ${ticket.assignedAgent.name}**`,
+            `Ticket #${String(ticket.ticketNumber ?? '').padStart(4, '0')} (ID: ${ticket.id.slice(-6)}): "${ticket.title}"`,
+            `Assigned to: ${ticket.assignedAgent.name} | Open for: ${ageMinutes} minutes with no action`,
+            ticket.contactRef ? `Contact: ${ticket.contactRef}` : '',
+            ``,
+            `As coordinator, you may want to:`,
+            `1. Reassign via update_ticket(ticketId: "${ticket.id.slice(-6)}", assignedAgentRole: "[correct role]")`,
+            `2. Or contact ${ticket.assignedAgent.name} directly to check their availability`,
+          ].filter(Boolean).join('\n')
+
+          this.logger.log(`[TicketProcessor] Alerting coordinator ${coordinator.name} about escalated ticket #${ticket.id.slice(-6)}`)
+          setImmediate(() => {
+            this.chat.autoWakeAgent(
+              ticket.tenantId,
+              coordinator.id,
+              ticket.id,
+              coordBriefing,
+              ticket.createdBy?.id ?? ticket.assignedAgent!.id,
+              ticket.conversationId ?? undefined,
+              ticket.createdBy?.name,
+            ).catch(e => this.logger.warn(`[TicketProcessor] Coordinator alert failed: ${e.message}`))
+          })
+        }
+
       } catch (err: any) {
         this.logger.warn(`[TicketProcessor] No-response escalation failed for ticket ${ticket.id.slice(-6)}: ${err.message}`)
       }

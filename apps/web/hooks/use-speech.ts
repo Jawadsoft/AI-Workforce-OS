@@ -2,6 +2,40 @@
 
 import { useRef, useState, useCallback, useEffect } from 'react'
 
+// ── Web Speech API types ───────────────────────────────────────────────────────
+// TypeScript's DOM lib doesn't always expose SpeechRecognition as a standalone
+// global type (only on window.*). Declare a minimal local interface instead.
+interface SpeechRecognitionResult {
+  readonly isFinal: boolean
+  readonly length: number
+  [index: number]: { transcript: string; confidence: number }
+}
+interface SpeechRecognitionResultList {
+  readonly length: number
+  [index: number]: SpeechRecognitionResult
+  item(index: number): SpeechRecognitionResult
+}
+interface SpeechRecognitionEvent extends Event {
+  readonly resultIndex: number
+  readonly results: SpeechRecognitionResultList
+}
+interface SpeechRecognitionErrorEvent extends Event {
+  readonly error: string
+  readonly message: string
+}
+interface SpeechRecognitionInstance {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  maxAlternatives: number
+  onresult: ((e: SpeechRecognitionEvent) => void) | null
+  onerror: ((e: SpeechRecognitionErrorEvent) => void) | null
+  onend: (() => void) | null
+  start(): void
+  stop(): void
+  abort(): void
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function stripMarkdown(text: string): string {
@@ -78,7 +112,7 @@ export function useSpeech(
   const [ttsEnabled,  setTtsEnabled]  = useState(false)
   const [interimText, setInterimText] = useState('')
 
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
   const currentAudioRef = useRef<HTMLAudioElement | null>(null)
 
   // Queue: each entry is a Promise<string | null> (object URL or null on error)
@@ -233,7 +267,7 @@ export function useSpeech(
     if (!sttSupported) return
     stopSpeaking()   // barge-in: kill audio
 
-    const SR: typeof SpeechRecognition =
+    const SR: new () => SpeechRecognitionInstance =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
 
     const r = new SR()

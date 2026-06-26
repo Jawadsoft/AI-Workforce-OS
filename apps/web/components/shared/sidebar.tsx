@@ -8,7 +8,7 @@ import {
   LayoutDashboard, Users, MessageSquare, CheckSquare,
   Clock, BookOpen, FileText, Plug, UserCog,
   BarChart3, Settings, Zap, PanelLeftClose, PanelLeftOpen, Phone,
-  CloudLightning, Wrench, ChevronDown, Ticket,
+  CloudLightning, Wrench, ChevronDown, Ticket, Share2,
 } from 'lucide-react'
 
 const navItems = [
@@ -20,6 +20,7 @@ const navItems = [
   { label: 'Approvals', href: '/approvals', icon: Clock },
   { label: 'Knowledge Base', href: '/knowledge', icon: BookOpen },
   { label: 'Documents', href: '/documents', icon: FileText },
+  { label: 'Social Media', href: '/social', icon: Share2 },
   { label: 'CRM', href: '/crm', icon: Plug },
   { label: 'Communications', href: '/communications', icon: Phone },
   { label: 'Webhooks', href: '/webhooks', icon: Zap },

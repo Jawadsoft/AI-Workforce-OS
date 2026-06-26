@@ -58,6 +58,7 @@ export class AgentsService {
     permissions: string[]
     status: string
     avatar: string
+    voiceId: string
     approvalRules: any
   }>) {
     return this.prisma.agent.updateMany({

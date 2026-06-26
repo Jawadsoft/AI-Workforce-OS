@@ -1,12 +1,14 @@
 import {
   Controller, Get, Post, Patch, Delete,
-  Param, Body, UseGuards,
+  Param, Body, UseGuards, Req,
 } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
-import { IsString, IsOptional, IsBoolean, IsArray, IsEmail, IsEnum } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsArray, IsEmail } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { SuperAdminGuard } from '../../common/guards/super-admin.guard'
 import { SuperAdminService } from './super-admin.service'
+import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
+import { ALL_FEATURES } from '../../common/feature-flags/feature-flags.constants'
 
 class CreateTemplateDto {
   @IsString() name: string
@@ -44,6 +46,17 @@ class CreateSuperAdminDto {
   @IsString() name: string
 }
 
+class SetFeatureFlagDto {
+  @IsString() feature: string
+  @IsBoolean() enabled: boolean
+  @IsOptional() @IsString() notes?: string
+}
+
+class BulkFeatureFlagDto {
+  @IsArray() features: string[]
+  @IsBoolean() enabled: boolean
+}
+
 // ── Protected routes (require SUPER_ADMIN role) ───────────────────
 
 @ApiTags('Super Admin')
@@ -51,7 +64,10 @@ class CreateSuperAdminDto {
 @UseGuards(JwtAuthGuard, SuperAdminGuard)
 @Controller('super-admin')
 export class SuperAdminController {
-  constructor(private readonly service: SuperAdminService) {}
+  constructor(
+    private readonly service: SuperAdminService,
+    private readonly featureFlags: FeatureFlagsService,
+  ) {}
 
   @Get('stats')
   @ApiOperation({ summary: 'Get platform-wide stats' })
@@ -147,6 +163,32 @@ export class SuperAdminController {
   @ApiOperation({ summary: 'Create a new super admin user' })
   createSuperAdmin(@Body() dto: CreateSuperAdminDto) {
     return this.service.createSuperAdmin(dto)
+  }
+
+  // ── Feature Flags ─────────────────────────────────────────────────
+
+  @Get('features')
+  @ApiOperation({ summary: 'List all available feature keys' })
+  listFeatureKeys() {
+    return { features: ALL_FEATURES }
+  }
+
+  @Get('tenants/:id/features')
+  @ApiOperation({ summary: 'Get all feature flags for a tenant' })
+  getTenantFeatures(@Param('id') id: string) {
+    return this.featureFlags.getAllFlagsForTenant(id)
+  }
+
+  @Post('tenants/:id/features')
+  @ApiOperation({ summary: 'Enable or disable a feature for a tenant' })
+  setFeature(@Param('id') id: string, @Body() dto: SetFeatureFlagDto, @Req() req: any) {
+    return this.featureFlags.setFeature(id, dto.feature, dto.enabled, req.user?.id, dto.notes)
+  }
+
+  @Post('tenants/:id/features/bulk')
+  @ApiOperation({ summary: 'Bulk enable or disable multiple features for a tenant' })
+  bulkSetFeatures(@Param('id') id: string, @Body() dto: BulkFeatureFlagDto, @Req() req: any) {
+    return this.featureFlags.setManyFeatures(id, dto.features, dto.enabled, req.user?.id)
   }
 }
 

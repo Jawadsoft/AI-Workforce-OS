@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { CurrentTenant, CurrentUser } from '../../common/decorators/tenant.decorator'
 import { TenantsService } from './tenants.service'
 import { EmailService } from '../email/email.service'
+import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
 
 class OnboardDto {
   @IsString() industry: string
@@ -27,7 +28,15 @@ export class TenantsController {
   constructor(
     private readonly service: TenantsService,
     private readonly email: EmailService,
+    private readonly featureFlags: FeatureFlagsService,
   ) {}
+
+  @Get('features')
+  @ApiOperation({ summary: 'Get enabled features for this tenant' })
+  async getFeatures(@CurrentTenant() tenantId: string) {
+    const features = await this.featureFlags.getEnabledFeatures(tenantId)
+    return { features }
+  }
 
   @Patch('onboard')
   @ApiOperation({ summary: 'Save onboarding info for tenant' })

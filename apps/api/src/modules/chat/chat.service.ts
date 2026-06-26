@@ -12,6 +12,7 @@ import { EmailService } from '../email/email.service'
 import { DocumentsService } from '../documents/documents.service'
 import { StormService } from '../storm/storm.service'
 import { MemoryService } from '../memory/memory.service'
+import { SocialService } from '../social/social.service'
 
 // Regex patterns to extract caller identity from first message
 const PHONE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/
@@ -177,6 +178,20 @@ const CRM_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'post_to_social',
+    description: 'Generate and queue a social media post. Use when staff asks to post something, create social content, or share something on Facebook/Instagram/LinkedIn/X. The post goes into the approval queue. Always show the full generated post text back to the user so they can see what was created.',
+    parameters: {
+      type: 'object',
+      properties: {
+        brief: { type: 'string', description: 'What the post should be about — a job completed, a review received, a promotion, a team update, etc.' },
+        platforms: { type: 'array', items: { type: 'string', enum: ['facebook', 'instagram', 'linkedin', 'x'] }, description: 'Which platforms to post to' },
+        contentType: { type: 'string', enum: ['educational', 'promotional', 'story', 'team', 'general'], description: 'Type of content — educational tips, promotional offer, customer story, team highlight, or general' },
+        scheduledAt: { type: 'string', description: 'ISO datetime to schedule the post e.g. "2026-07-01T09:00:00Z". Leave empty to post ASAP after approval.' },
+      },
+      required: ['brief', 'platforms'],
+    },
+  },
+  {
     name: 'suggest_transfer',
     description: 'Offer to connect the customer with a colleague who is better suited to handle their request. Use this when the customer asks something outside your area of expertise. Shows the customer a button to switch to the right person.',
     parameters: {
@@ -278,6 +293,7 @@ export class ChatService {
     private readonly documents: DocumentsService,
     private readonly storm: StormService,
     private readonly memory: MemoryService,
+    private readonly social: SocialService,
   ) {}
 
   async findAll(tenantId: string, agentId?: string) {
@@ -725,20 +741,23 @@ export class ChatService {
         .test(messages[messages.length - 1]?.content ?? '')
     const taskTools = userWantsTask ? ['create_internal_task'] : []
 
+    // social media tool — only for agents with the social_media tool flag
+    const socialTools = (agent.tools as string[])?.includes('post_to_social') ? ['post_to_social'] : []
+
     // Specialists can update/view tickets but NEVER create new ones (prevents duplicates during auto-wake/handoff)
     const specialistTicketTools = ['update_ticket', 'get_my_tickets', 'get_team_activity']
 
     const internalToolNames = isSpecialist
       // Called via handoff or auto-wake: update existing tickets only, no create_ticket
-      ? ['reply_to_widget_session', 'contact_customer', 'generate_document', 'ask_user', ...specialistTicketTools, ...schedulingTools]
+      ? ['reply_to_widget_session', 'contact_customer', 'generate_document', 'ask_user', ...specialistTicketTools, ...schedulingTools, ...socialTools]
       : isIntakeAgent
         // Intake agent: silent relay + explicit transfer when user requests it
-        ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...taskTools]
+        ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...taskTools, ...socialTools]
         : isStormAnalyst
           // Storm analyst: gets storm data tool + standard specialist tools
-          ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', 'fetch_storm_data', ...ticketToolNames, ...taskTools]
+          ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', 'fetch_storm_data', ...ticketToolNames, ...taskTools, ...socialTools]
           // Specialist agent (estimator, inspector, etc.): offer transfers, no silent relay
-          : ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...schedulingTools, ...taskTools]
+          : ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...schedulingTools, ...taskTools, ...socialTools]
 
     const allowedTools = CRM_TOOL_DEFINITIONS.filter(t =>
       agent.tools?.includes(t.name) || agent.tools?.includes('crm_all') || internalToolNames.includes(t.name)
@@ -1479,6 +1498,41 @@ export class ChatService {
           }
         }
 
+        // ── Social media tool ──────────────────────────────
+        if (toolName === 'post_to_social') {
+          try {
+            const drafts = await this.social.generatePosts({
+              tenantId,
+              agentId: agent.id,
+              brief: params.brief,
+              platforms: params.platforms ?? ['facebook'],
+              contentType: params.contentType,
+            })
+            const saved = await Promise.all(
+              drafts.map((draft) =>
+                this.social.createPost(tenantId, {
+                  agentId: agent.id,
+                  platform: draft.platform,
+                  content: draft.content,
+                  imageUrl: draft.imageUrl ?? undefined,
+                  imagePrompt: draft.imagePrompt ?? undefined,
+                  contentType: draft.contentType,
+                  scheduledAt: params.scheduledAt ? new Date(params.scheduledAt) : undefined,
+                  requireApproval: true,
+                }),
+              ),
+            )
+            const lines = saved.map((p: any) => {
+              const platformLabel = p.platform.charAt(0).toUpperCase() + p.platform.slice(1)
+              return `**${platformLabel}** (queued for approval):\n"${p.content}"\n${p.imageUrl ? `📸 Image: ${p.imageUrl}` : ''}`
+            })
+            return `Here are the generated social media posts — they've been sent to the approval queue:\n\n${lines.join('\n\n')}\n\nYou can review, edit, approve or schedule them in the **Social Media** section of the dashboard.`
+          } catch (err: any) {
+            if (err.message?.includes('not enabled')) return `Social media feature is not enabled for your account. Contact your administrator.`
+            return `Error creating social posts: ${err.message}`
+          }
+        }
+
         // ── CRM tools ──────────────────────────────────────
         if (!params.customerId && defaultCustomerId) {
           params.customerId = defaultCustomerId
@@ -1504,6 +1558,7 @@ export class ChatService {
     conversationId: string,
     content: string,
     emit: (data: object) => void,
+    attachments?: { url: string; name: string; mimeType: string }[],
   ) {
     const conv = await this.prisma.conversation.findFirst({
       where: { id: conversationId, tenantId },
@@ -1511,8 +1566,25 @@ export class ChatService {
     })
     if (!conv) throw new Error('Conversation not found')
 
-    // Save user message
-    await this.prisma.message.create({ data: { conversationId, role: 'USER', content } })
+    // When a file is attached but no message typed, auto-generate a helpful instruction
+    const hasAttachments = attachments && attachments.length > 0
+    const isImage = hasAttachments && attachments![0].mimeType.startsWith('image/')
+    const effectiveContent = content.trim()
+      || (hasAttachments
+        ? isImage
+          ? 'Please look at this image and describe what you see. Provide any relevant insights or recommendations based on its content.'
+          : `Please read the attached document "${attachments![0].name}" and give me a summary of the key points.`
+        : '')
+
+    // Save user message (with attachments metadata)
+    await this.prisma.message.create({
+      data: {
+        conversationId,
+        role: 'USER',
+        content: effectiveContent,
+        attachments: attachments ?? [],
+      },
+    })
 
     // Get most recent 14 messages (desc + reverse = latest messages in chronological order)
     const historyRaw2 = await this.prisma.message.findMany({
@@ -1558,12 +1630,58 @@ export class ChatService {
       }),
     ])
     const combinedRag = ragContext + memoryContext
-    const systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag, false, streamTicketsBlock, streamTeamRoster)
-    const messages = history
+
+    // ── Attachment context ─────────────────────────────────────────
+    // Extract text from uploaded documents, inject as context prefix
+    let attachmentContextBlock = ''
+    let visionImages: { url: string; name: string }[] = []
+    if (attachments && attachments.length > 0) {
+      const docTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/msword', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'text/csv', 'text/plain']
+      const imageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+
+      for (const att of attachments) {
+        if (imageTypes.some(t => att.mimeType.startsWith('image/'))) {
+          visionImages.push({ url: att.url, name: att.name })
+        } else if (docTypes.includes(att.mimeType)) {
+          try {
+            const fileBuffer = await fetch(att.url).then((r) => r.arrayBuffer()).then((b) => Buffer.from(b))
+            const text = await this.knowledge.extractTextFromBuffer(fileBuffer, att.mimeType, att.name)
+            if (text.trim()) {
+              attachmentContextBlock += `\n\n--- ATTACHED DOCUMENT: ${att.name} ---\n${text.slice(0, 6000)}\n--- END DOCUMENT ---`
+            }
+          } catch (err: any) {
+            this.logger.warn(`Failed to extract text from attachment ${att.name}: ${err.message}`)
+          }
+        }
+      }
+    }
+
+    const systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag + attachmentContextBlock, false, streamTicketsBlock, streamTeamRoster)
+
+    // Build messages — inject vision content for the last user message if images present
+    const baseMessages = history
       .filter(m => m.role === 'USER' || m.role === 'ASSISTANT')
-      // Strip any raw tool-call JSON that leaked into history
       .filter(m => !(m.role === 'ASSISTANT' && m.content.trim().includes('__tool__')))
       .map(m => ({ role: m.role === 'USER' ? 'user' : 'assistant' as 'user' | 'assistant', content: m.content }))
+
+    // If there are vision images, replace the last user message with a multi-modal content array
+    const messages = (visionImages.length > 0 && baseMessages.length > 0)
+      ? [
+          ...baseMessages.slice(0, -1),
+          {
+            role: 'user' as const,
+            content: [
+              { type: 'text', text: effectiveContent },
+              ...visionImages.map(img => ({
+                type: 'image_url',
+                image_url: { url: img.url, detail: 'high' },
+              })),
+            ] as any,
+          },
+        ]
+      : baseMessages
 
     // Natural thinking delay — makes the agent feel human, not instant-bot.
     // Scales with message complexity (longer questions = slightly longer pause).
@@ -2132,18 +2250,27 @@ When chatting with the business owner/manager directly (in the internal chat thr
     tom:     'ODq5zmih8GrVes37Dx0d', // Patrick — confident
   }
 
-  async textToSpeech(text: string, agentName?: string): Promise<Readable> {
+  async textToSpeech(text: string, agentName?: string, agentId?: string): Promise<Readable> {
     const apiKey = process.env.ELEVENLABS_API_KEY
     if (!apiKey || apiKey === '...') {
       throw new InternalServerErrorException('ELEVENLABS_API_KEY is not configured')
     }
 
-    // Resolve voice: check agent first name against map, then env default, then Rachel
-    const firstName = (agentName ?? '').split(' ')[0].toLowerCase()
-    const voiceId =
-      this.VOICE_MAP[firstName] ??
-      process.env.ELEVENLABS_VOICE_ID ??
-      '21m00Tcm4TlvDq8ikWAM'
+    // Priority: 1) agent.voiceId from DB  2) name-based map  3) env default  4) Rachel
+    let voiceId: string | undefined
+    if (agentId) {
+      const agent = await this.prisma.agent.findFirst({ where: { id: agentId } })
+      voiceId = (agent as any)?.voiceId ?? undefined
+      if (!voiceId && agent?.name) {
+        const firstName = agent.name.split(' ')[0].toLowerCase()
+        voiceId = this.VOICE_MAP[firstName]
+      }
+    }
+    if (!voiceId) {
+      const firstName = (agentName ?? '').split(' ')[0].toLowerCase()
+      voiceId = this.VOICE_MAP[firstName]
+    }
+    voiceId = voiceId ?? process.env.ELEVENLABS_VOICE_ID ?? '21m00Tcm4TlvDq8ikWAM'
 
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`
 

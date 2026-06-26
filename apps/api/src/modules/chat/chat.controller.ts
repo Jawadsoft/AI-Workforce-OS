@@ -1,9 +1,11 @@
-import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, Res, HttpCode, StreamableFile } from '@nestjs/common'
+import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, Res, HttpCode, UseInterceptors, UploadedFile } from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { IsString, IsOptional } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { CurrentTenant, CurrentUser } from '../../common/decorators/tenant.decorator'
 import { ChatService } from './chat.service'
+import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import type { Response } from 'express'
 
 class CreateConversationDto {
@@ -21,6 +23,7 @@ class SendMessageDto {
 class TtsDto {
   @IsString() text: string
   @IsOptional() @IsString() agentName?: string
+  @IsOptional() @IsString() agentId?: string
 }
 
 @ApiTags('Chat')
@@ -28,7 +31,10 @@ class TtsDto {
 @UseGuards(JwtAuthGuard)
 @Controller('chat')
 export class ChatController {
-  constructor(private readonly service: ChatService) {}
+  constructor(
+    private readonly service: ChatService,
+    private readonly cloudinary: CloudinaryService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'List all conversations' })
@@ -86,6 +92,48 @@ export class ChatController {
     }
   }
 
+  // ── Streaming with file attachment (multipart → SSE) ─────────────
+  // POST /chat/:id/stream  (multipart/form-data: content + file?)
+  // Returns same SSE format as GET /chat/:id/stream
+
+  @Post(':id/stream')
+  @ApiOperation({ summary: 'Stream AI response with optional file/image attachment' })
+  @UseInterceptors(FileInterceptor('file'))
+  async streamWithFile(
+    @CurrentTenant() tenantId: string,
+    @Param('id') id: string,
+    @Body('content') content: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Res() res: Response,
+  ) {
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+    res.flushHeaders()
+
+    const send = (data: object) => { res.write(`data: ${JSON.stringify(data)}\n\n`) }
+
+    try {
+      let attachments: { url: string; name: string; mimeType: string }[] | undefined
+      if (file) {
+        const url = await this.cloudinary.upload(
+          tenantId, 'chat-attachments', `${Date.now()}-${file.originalname}`,
+          file.buffer, file.mimetype,
+          file.mimetype.startsWith('image/') ? 'image' : 'raw',
+        )
+        attachments = [{ url, name: file.originalname, mimeType: file.mimetype }]
+        // Emit attachment metadata so frontend can render it immediately
+        send({ attachment: { url, name: file.originalname, mimeType: file.mimetype } })
+      }
+      await this.service.streamMessage(tenantId, id, content ?? '', send, attachments)
+    } catch (err: any) {
+      send({ error: err.message ?? 'Stream error' })
+    } finally {
+      res.end()
+    }
+  }
+
   @Get('agents/:agentId/system-prompt')
   @ApiOperation({ summary: 'Preview the full system prompt sent to this agent' })
   getSystemPrompt(@CurrentTenant() tenantId: string, @Param('agentId') agentId: string) {
@@ -118,7 +166,7 @@ export class ChatController {
     @Body() dto: TtsDto,
     @Res() res: Response,
   ) {
-    const audioStream = await this.service.textToSpeech(dto.text, dto.agentName)
+    const audioStream = await this.service.textToSpeech(dto.text, dto.agentName, dto.agentId)
     ;(res as any).setHeader('Content-Type', 'audio/mpeg')
     ;(res as any).setHeader('Transfer-Encoding', 'chunked')
     audioStream.pipe(res as any)

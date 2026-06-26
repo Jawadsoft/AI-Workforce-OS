@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck, CheckSquare, FileText, Camera, EyeOff, Eye } from 'lucide-react'
+import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck, CheckSquare, FileText, Camera, EyeOff, Eye, Volume2, Play } from 'lucide-react'
 import { AgentCRMPermissions } from './agent-crm-permissions'
 import { useAuthStore } from '@/stores/auth.store'
 import { toast } from 'sonner'
@@ -23,6 +23,8 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   const [edited, setEdited] = useState<any>(null)
   const [saved, setSaved] = useState(false)
   const [confirmDeactivate, setConfirmDeactivate] = useState(false)
+  const [voiceSearch, setVoiceSearch] = useState('')
+  const [previewingVoice, setPreviewingVoice] = useState<string | null>(null)
 
   const { data: agent, isLoading } = useQuery({
     queryKey: ['agent', agentId],
@@ -41,10 +43,16 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
     enabled: tab === 'Conversations',
   })
 
+  const { data: voices = [] } = useQuery({
+    queryKey: ['elevenlabs-voices'],
+    queryFn: () => api.get('/agents/voices').then((r) => r.data),
+    enabled: tab === 'Configuration',
+    staleTime: 5 * 60 * 1000,
+  })
+
   const updateMutation = useMutation({
     mutationFn: () => {
-      // Only send fields accepted by UpdateAgentDto (avatar is handled by its own upload endpoint)
-      const { name, role, prompt, tools, permissions, status, approvalRules } = edited ?? {}
+      const { name, role, prompt, tools, permissions, status, approvalRules, voiceId } = edited ?? {}
       const payload: any = {}
       if (name !== undefined) payload.name = name
       if (role !== undefined) payload.role = role
@@ -53,6 +61,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
       if (permissions !== undefined) payload.permissions = permissions
       if (status !== undefined) payload.status = status
       if (approvalRules !== undefined) payload.approvalRules = approvalRules
+      if (voiceId !== undefined) payload.voiceId = voiceId
       return api.patch(`/agents/${agentId}`, payload)
     },
     onSuccess: () => {
@@ -96,6 +105,19 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   }
 
   const data = edited ?? agent
+
+  const previewVoice = async (previewUrl: string | undefined, voiceId: string) => {
+    if (!previewUrl) return
+    setPreviewingVoice(voiceId)
+    try {
+      const audio = new Audio(previewUrl)
+      audio.onended = () => setPreviewingVoice(null)
+      audio.onerror = () => setPreviewingVoice(null)
+      await audio.play()
+    } catch {
+      setPreviewingVoice(null)
+    }
+  }
 
   const toggleTool = (t: string) => {
     const tools = data.tools ?? []
@@ -281,6 +303,78 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               ))}
             </div>
           </div>
+          {/* Voice Selection */}
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <Volume2 className="w-4 h-4 text-muted-foreground" />
+              <label className="text-sm font-medium">Agent Voice</label>
+              {data.voiceId && (
+                <span className="text-xs text-muted-foreground ml-auto">
+                  {(voices as any[]).find((v: any) => v.voice_id === data.voiceId)?.name ?? data.voiceId}
+                </span>
+              )}
+            </div>
+            <input
+              type="text"
+              placeholder="Search voices..."
+              value={voiceSearch}
+              onChange={(e) => setVoiceSearch(e.target.value)}
+              className="w-full mb-2 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            {voices.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-2">
+                {tab === 'Configuration' ? 'Loading voices…' : ''}
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
+                {(voices as any[])
+                  .filter((v: any) =>
+                    !voiceSearch || v.name.toLowerCase().includes(voiceSearch.toLowerCase())
+                  )
+                  .map((voice: any) => {
+                    const isSelected = data.voiceId === voice.voice_id
+                    return (
+                      <div
+                        key={voice.voice_id}
+                        onClick={canEdit ? () => setEdited({ ...(edited ?? agent), voiceId: voice.voice_id }) : undefined}
+                        className={`relative flex flex-col gap-1 rounded-lg border p-3 cursor-pointer transition-colors ${
+                          isSelected
+                            ? 'border-primary bg-primary/10'
+                            : 'border-border hover:border-muted-foreground'
+                        } ${!canEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-sm font-medium truncate">{voice.name}</span>
+                          {voice.preview_url && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); previewVoice(voice.preview_url, voice.voice_id) }}
+                              className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full hover:bg-accent transition-colors"
+                              title="Preview voice"
+                            >
+                              {previewingVoice === voice.voice_id
+                                ? <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                                : <Play className="w-3 h-3 text-muted-foreground" />
+                              }
+                            </button>
+                          )}
+                        </div>
+                        {voice.labels?.gender && (
+                          <span className="text-xs text-muted-foreground capitalize">{voice.labels.gender}</span>
+                        )}
+                        {isSelected && (
+                          <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-primary" />
+                        )}
+                      </div>
+                    )
+                  })}
+              </div>
+            )}
+            {!canEdit && data.voiceId && (
+              <p className="text-xs text-muted-foreground mt-1">Voice: {(voices as any[]).find((v: any) => v.voice_id === data.voiceId)?.name ?? data.voiceId}</p>
+            )}
+          </div>
+
           {edited && (
             <div className="flex items-center justify-end gap-3">
               <button

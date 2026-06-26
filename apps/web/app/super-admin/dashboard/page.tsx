@@ -90,6 +90,24 @@ const emptyConfig = { industry: '', crmProvider: '', crmName: '', crmBaseUrl: ''
 
 const TABS = ['Overview', 'Approvals', 'Tenants', 'Marketplace']
 
+const ALL_FEATURE_FLAGS = [
+  { key: 'widget',               label: 'Website Widget',           desc: 'Public chat widget embed' },
+  { key: 'document_generation',  label: 'Document Generation',      desc: 'AI-generated PDFs & estimates' },
+  { key: 'crm_integration',      label: 'CRM Integration',          desc: 'CRM connectors & data sync' },
+  { key: 'email_scanner',        label: 'Email Scanner',            desc: 'Gmail/IMAP inbox monitoring' },
+  { key: 'twilio_communications',label: 'SMS / WhatsApp / Voice',   desc: 'Twilio SMS, WhatsApp and phone' },
+  { key: 'storm_data',           label: 'Storm Data (NOAA)',        desc: 'Hail/tornado/wind reports for agents' },
+  { key: 'marketplace',          label: 'Agent Marketplace',        desc: 'Template agent library' },
+  { key: 'file_uploads',         label: 'File & Image Uploads',     desc: 'Attach images/docs in chat (vision)' },
+  { key: 'social_media',         label: 'Social Media',            desc: 'AI post generation & scheduling' },
+  { key: 'blog_generation',      label: 'Blog Generation',          desc: 'AI blog writing & CMS publishing' },
+  { key: 'google_reviews',       label: 'Google Reviews',           desc: 'Review monitoring & reply drafts' },
+  { key: 'follow_up_sequences',  label: 'Follow-up Sequences',      desc: 'Automated email/SMS follow-up campaigns' },
+  { key: 'calendar_integration', label: 'Calendar Integration',     desc: 'Google/Outlook real calendar booking' },
+  { key: 'sms_tools',            label: 'SMS Tool Access',          desc: 'Full tool suite on SMS/WhatsApp channels' },
+  { key: 'agent_analytics',      label: 'Agent Analytics Queries',  desc: 'Agents can answer analytics questions' },
+]
+
 export default function SuperAdminDashboard() {
   const router = useRouter()
   const [tab, setTab] = useState('Overview')
@@ -108,6 +126,9 @@ export default function SuperAdminDashboard() {
   const [widgetAgents, setWidgetAgents] = useState<TenantAgent[]>([])
   const [widgetLoading, setWidgetLoading] = useState(false)
   const [copiedLink, setCopiedLink] = useState('')
+  const [featureTenant, setFeatureTenant] = useState<Tenant | null>(null)
+  const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({})
+  const [featureSaving, setFeatureSaving] = useState(false)
 
   const api = useSAApi()
 
@@ -142,6 +163,34 @@ export default function SuperAdminDashboard() {
     if (!confirm('Permanently delete this tenant? All data will be lost.')) return
     await api.delete(`/super-admin/tenants/${id}`)
     loadData()
+  }
+
+  async function openFeatureFlags(tenant: Tenant) {
+    setFeatureTenant(tenant)
+    try {
+      const res = await api.get(`/super-admin/tenants/${tenant.id}/features`)
+      const flagMap: Record<string, boolean> = {}
+      for (const f of ALL_FEATURE_FLAGS) flagMap[f.key] = false
+      for (const flag of res.data) { if (flag.enabled) flagMap[flag.feature] = true }
+      // defaults
+      if (!res.data.find((f: any) => f.feature === 'widget')) flagMap['widget'] = true
+      if (!res.data.find((f: any) => f.feature === 'document_generation')) flagMap['document_generation'] = true
+      if (!res.data.find((f: any) => f.feature === 'marketplace')) flagMap['marketplace'] = true
+      setFeatureFlags(flagMap)
+    } catch { setFeatureFlags({}) }
+  }
+
+  async function saveFeatureFlags() {
+    if (!featureTenant) return
+    setFeatureSaving(true)
+    try {
+      await Promise.all(
+        Object.entries(featureFlags).map(([feature, enabled]) =>
+          api.post(`/super-admin/tenants/${featureTenant.id}/features`, { feature, enabled })
+        )
+      )
+      setFeatureTenant(null)
+    } catch { /* ignore */ } finally { setFeatureSaving(false) }
   }
 
   async function approveTenant(id: string) {
@@ -287,6 +336,7 @@ export default function SuperAdminDashboard() {
                 onDelete={deleteTenant}
                 onConfigure={openConfigModal}
                 onWidget={openWidgetModal}
+                onFeatures={openFeatureFlags}
               />
             )}
             {tab === 'Marketplace' && (
@@ -395,6 +445,55 @@ export default function SuperAdminDashboard() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Feature Flags Modal */}
+      {featureTenant && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-lg bg-gray-900 rounded-2xl border border-gray-700 p-6 space-y-5 max-h-[90vh] overflow-y-auto">
+            <div>
+              <h2 className="text-lg font-bold text-white">Feature Flags</h2>
+              <p className="text-sm text-gray-400 mt-0.5">{featureTenant.name} — enable or disable platform features</p>
+            </div>
+
+            <div className="space-y-2">
+              {ALL_FEATURE_FLAGS.map(f => (
+                <div key={f.key} className="flex items-center justify-between px-4 py-3 bg-gray-800 rounded-xl border border-gray-700">
+                  <div>
+                    <p className="text-sm font-medium text-white">{f.label}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{f.desc}</p>
+                  </div>
+                  <button
+                    onClick={() => setFeatureFlags(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${featureFlags[f.key] ? 'bg-indigo-600' : 'bg-gray-600'}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${featureFlags[f.key] ? 'translate-x-6' : 'translate-x-1'}`} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="bg-indigo-900/20 border border-indigo-800 rounded-lg px-4 py-3 text-xs text-indigo-300">
+              Changes take effect immediately. The tenant's UI will update on their next page load.
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={saveFeatureFlags}
+                disabled={featureSaving}
+                className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-semibold py-2.5 rounded-lg text-sm transition-colors"
+              >
+                {featureSaving ? 'Saving...' : 'Save Feature Flags'}
+              </button>
+              <button
+                onClick={() => setFeatureTenant(null)}
+                className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium py-2.5 rounded-lg text-sm transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -686,7 +785,7 @@ function ApprovalsTab({ tenants, onApprove, onReject }: {
 
 // ── Tenants Tab ───────────────────────────────────────────────────
 
-function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure, onWidget }: {
+function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure, onWidget, onFeatures }: {
   tenants: Tenant[]
   search: string
   onSearch: (v: string) => void
@@ -694,6 +793,7 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
   onDelete: (id: string) => void
   onConfigure: (t: Tenant) => void
   onWidget: (t: Tenant) => void
+  onFeatures: (t: Tenant) => void
 }) {
   return (
     <div className="space-y-6">
@@ -768,6 +868,12 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
                       className="text-xs px-2.5 py-1 rounded-md font-medium bg-indigo-900/40 text-indigo-400 hover:bg-indigo-900/70 transition-colors"
                     >
                       Configure
+                    </button>
+                    <button
+                      onClick={() => onFeatures(t)}
+                      className="text-xs px-2.5 py-1 rounded-md font-medium bg-purple-900/40 text-purple-400 hover:bg-purple-900/70 transition-colors"
+                    >
+                      Features
                     </button>
                     <button
                       onClick={() => onToggle(t.id, t.isActive)}

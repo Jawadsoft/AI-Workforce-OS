@@ -41,6 +41,9 @@ model Tenant {
   processedEmails   ProcessedEmail[]
   stormReports      StormReport[]
   conversationSummaries ConversationSummary[]
+  featureFlags      TenantFeatureFlag[]
+  socialAccounts    SocialAccount[]
+  socialPosts       SocialPost[]
 }
 
 // ─────────────────────────────────────────────
@@ -77,6 +80,7 @@ model Agent {
   role         String
   industry     Industry
   avatar       String?
+  voiceId      String?
   prompt       String      @db.Text
   status       AgentStatus @default(ACTIVE)
   permissions  String[]
@@ -146,6 +150,7 @@ model Message {
   role           MessageRole
   content        String      @db.Text
   briefingType   String?
+  attachments    Json        @default("[]")
   metadata       Json        @default("{}")
   createdAt      DateTime    @default(now())
 
@@ -703,4 +708,77 @@ model StormReport {
   @@index([tenantId, reportDate])
   @@index([tenantId, state])
   @@index([tenantId, type, reportDate])
+}
+
+// ─────────────────────────────────────────────
+// FEATURE FLAGS (Super Admin per-tenant control)
+// ─────────────────────────────────────────────
+
+model TenantFeatureFlag {
+  id        String   @id @default(cuid())
+  tenantId  String
+  feature   String
+  enabled   Boolean  @default(false)
+  enabledAt DateTime?
+  enabledBy String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, feature])
+  @@index([tenantId])
+}
+
+// ─────────────────────────────────────────────
+// SOCIAL MEDIA
+// ─────────────────────────────────────────────
+
+model SocialAccount {
+  id           String   @id @default(cuid())
+  tenantId     String
+  platform     String   // "facebook" | "instagram" | "linkedin" | "x"
+  accountName  String
+  pageId       String?
+  accessToken  String   @db.Text
+  refreshToken String?  @db.Text
+  expiresAt    DateTime?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  posts  SocialPost[]
+
+  @@unique([tenantId, platform])
+  @@index([tenantId])
+}
+
+model SocialPost {
+  id              String    @id @default(cuid())
+  tenantId        String
+  agentId         String?
+  socialAccountId String?
+  platform        String
+  content         String    @db.Text
+  imageUrl        String?
+  imagePrompt     String?
+  contentType     String    @default("general") // "educational" | "promotional" | "story" | "team" | "review" | "general"
+  status          String    @default("draft")   // "draft" | "pending_approval" | "scheduled" | "published" | "failed"
+  scheduledAt     DateTime?
+  publishedAt     DateTime?
+  platformPostId  String?
+  errorMessage    String?
+  approvalId      String?
+  metadata        Json      @default("{}")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([tenantId, platform])
+  @@index([scheduledAt])
 }

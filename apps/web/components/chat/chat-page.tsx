@@ -3,11 +3,12 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle, Trash2, Mic, MicOff, Volume2, VolumeX } from 'lucide-react'
+import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle, Trash2, Mic, MicOff, Volume2, VolumeX, Paperclip, X, FileText, Image } from 'lucide-react'
 import { useSpeech } from '@/hooks/use-speech'
 import { CRMRecordCard } from './crm-record-card'
 import { ChatActionCard, type ActionCard } from './action-cards'
 import { resolveAvatarUrl } from '@/lib/utils'
+import { useFeatures, FEATURES } from '@/hooks/use-features'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1'
 
@@ -26,11 +27,18 @@ const FILTER_TABS: { id: FilterTab; label: string; icon: React.ReactNode; match:
   { id: 'crm',      label: 'CRM',        icon: <Zap className="w-3.5 h-3.5" />,           match: (b) => !!b && !TICKET_BRIEF_TYPES.includes(b) && !['email_briefing','call_briefing','whatsapp_briefing','widget'].includes(b) },
 ]
 
+interface Attachment {
+  url: string
+  name: string
+  mimeType: string
+}
+
 interface Message {
   id: string
   role: 'USER' | 'ASSISTANT'
   content: string
   briefingType?: string | null
+  attachments?: Attachment[]
   createdAt: string
   streaming?: boolean
 }
@@ -85,6 +93,11 @@ export function ChatPage() {
   const [typingAgent, setTypingAgent] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const lastResponseRef = useRef<string>('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [uploadedAttachment, setUploadedAttachment] = useState<Attachment | null>(null)
+  const { isEnabled } = useFeatures()
+  const fileUploadsEnabled = isEnabled(FEATURES.FILE_UPLOADS)
   // When TTS is on, we hold the pending refetch until after audio finishes
   // so the message text appears AFTER being spoken (hear-then-read)
   const [voiceRevealPending, setVoiceRevealPending] = useState(false)
@@ -162,9 +175,12 @@ export function ChatPage() {
 
   // ── Send / stream ──────────────────────────────────────────────────
   // sendText is the core function; handleSend is the button handler that reads from state
-  const sendText = useCallback(async (text: string) => {
-    if (!text.trim() || !conversationId || sending) return
+  const sendText = useCallback(async (text: string, fileOverride?: File | null) => {
+    const file = fileOverride !== undefined ? fileOverride : pendingFile
+    if (!text.trim() && !file) return
+    if (!conversationId || sending) return
     setMessage('')
+    setPendingFile(null)
     setSending(true)
     setStreamingMsg('')
     setPendingCards([])
@@ -174,13 +190,33 @@ export function ChatPage() {
     abortRef.current = controller
 
     const authToken = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null
-    const url = `${API_BASE}/chat/${conversationId}/stream?content=${encodeURIComponent(text)}`
 
-    try {
-      const resp = await fetch(url, {
+    // Use POST multipart if there's a file, otherwise use GET stream
+    const isMultipart = !!file
+    const url = isMultipart
+      ? `${API_BASE}/chat/${conversationId}/stream`
+      : `${API_BASE}/chat/${conversationId}/stream?content=${encodeURIComponent(text)}`
+
+    let fetchInit: RequestInit
+    if (isMultipart) {
+      const formData = new FormData()
+      formData.append('content', text)
+      if (file) formData.append('file', file)
+      fetchInit = {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+        body: formData,
+        signal: controller.signal,
+      }
+    } else {
+      fetchInit = {
         headers: { Authorization: `Bearer ${authToken}` },
         signal: controller.signal,
-      })
+      }
+    }
+
+    try {
+      const resp = await fetch(url, fetchInit)
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
 
       const reader = resp.body!.getReader()
@@ -196,30 +232,32 @@ export function ChatPage() {
           try {
             const payload = JSON.parse(line.slice(6))
             if (payload.typing) { setTypingAgent(payload.agentName ?? null) }
+            if (payload.attachment) { setUploadedAttachment(payload.attachment as Attachment) }
             if (payload.token) {
               accumulated += payload.token
               setStreamingMsg(ttsEnabled ? null : accumulated)   // hide text while TTS streams
               setCheckingWith(null); setTypingAgent(null)
               // Stream tokens into TTS pipeline — fires parallel ElevenLabs fetches per sentence
-              if (ttsEnabled) addSpeechChunk(payload.token, selectedAgentNameRef.current)
+              if (ttsEnabled) addSpeechChunk(payload.token, selectedAgentNameRef.current, selectedAgentId ?? undefined)
             }
             if (payload.checking) { setCheckingWith(payload.withName ?? 'team'); setTypingAgent(null) }
             if (payload.action_card) setPendingCards(prev => [...prev, payload.action_card as ActionCard])
             if (payload.done) {
               setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null)
-              setSending(false)   // re-enable input immediately
+              setSending(false)
               if (accumulated && ttsEnabled) {
                 lastResponseRef.current = accumulated
                 setVoiceRevealPending(true)
-                // Flush any partial sentence left in the buffer
-                flushSpeechBuffer(selectedAgentNameRef.current)
+                flushSpeechBuffer(selectedAgentNameRef.current, selectedAgentId ?? undefined)
                 // refetch will be triggered by onQueueDrained callback
                 refetchAfterTtsRef.current = () => {
                   refetchMessages()
                   qc.invalidateQueries({ queryKey: ['messages', conversationId] })
+                  setUploadedAttachment(null)
                 }
               } else {
                 await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] })
+                setUploadedAttachment(null)
               }
             }
             if (payload.error) { setStreamingMsg(`Error: ${payload.error}`); setCheckingWith(null); setTypingAgent(null) }
@@ -241,8 +279,9 @@ export function ChatPage() {
   }, [conversationId, sending, refetchMessages, qc, addSpeechChunk, flushSpeechBuffer, ttsEnabled])
 
   const handleSend = useCallback(() => {
-    sendText(message)
-  }, [message, sendText])
+    if (!message.trim() && !pendingFile) return
+    sendText(message, pendingFile)  // pass pendingFile explicitly to avoid stale closure
+  }, [message, pendingFile, sendText])
 
   // Keep sendTextRef current so the useSpeech onTranscript always calls the latest sendText
   useEffect(() => {
@@ -289,7 +328,7 @@ export function ChatPage() {
               accumulated += payload.token
               setStreamingMsg(ttsEnabled ? null : accumulated)
               setCheckingWith(null); setTypingAgent(null)
-              if (ttsEnabled) addSpeechChunk(payload.token, selectedAgentNameRef.current)
+              if (ttsEnabled) addSpeechChunk(payload.token, selectedAgentNameRef.current, selectedAgentId ?? undefined)
             }
             if (payload.checking) { setCheckingWith(payload.withName ?? 'team'); setTypingAgent(null) }
             if (payload.action_card) setPendingCards(prev => [...prev, payload.action_card as ActionCard])
@@ -299,7 +338,7 @@ export function ChatPage() {
               if (accumulated && ttsEnabled) {
                 lastResponseRef.current = accumulated
                 setVoiceRevealPending(true)
-                flushSpeechBuffer(selectedAgentNameRef.current)
+                flushSpeechBuffer(selectedAgentNameRef.current, selectedAgentId ?? undefined)
                 refetchAfterTtsRef.current = () => {
                   refetchMessages()
                   qc.invalidateQueries({ queryKey: ['messages', conversationId] })
@@ -565,24 +604,60 @@ export function ChatPage() {
                   )
                 }
 
+                const msgAttachments: Attachment[] = Array.isArray(msg.attachments) ? msg.attachments : []
                 return (
                   <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                    <div className="max-w-[72%] space-y-1">
-                      <div className={`rounded-xl px-4 py-2.5 text-sm ${
-                        isUser
-                          ? 'bg-primary text-primary-foreground rounded-br-none'
-                          : 'bg-muted text-foreground rounded-bl-none'
-                      }`}>
-                        <p className="whitespace-pre-wrap break-words">{msg.content}</p>
-                        {msg.streaming && (
-                          <span className="inline-block w-1.5 h-4 bg-current ml-0.5 animate-pulse rounded-sm align-text-bottom" />
-                        )}
-                        {!msg.streaming && (
-                          <p className={`text-xs mt-1 ${isUser ? 'text-primary-foreground/60' : 'text-muted-foreground'}`}>
-                            {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </p>
-                        )}
-                      </div>
+                    <div className="max-w-[72%] space-y-1.5">
+                      {/* Attachment previews */}
+                      {msgAttachments.length > 0 && (
+                        <div className={`flex flex-col gap-1.5 ${isUser ? 'items-end' : 'items-start'}`}>
+                          {msgAttachments.map((att, ai) => (
+                            att.mimeType.startsWith('image/') ? (
+                              <img
+                                key={ai}
+                                src={att.url}
+                                alt={att.name}
+                                className="max-w-xs rounded-xl object-cover border border-border cursor-pointer hover:opacity-90 transition-opacity"
+                                onClick={() => window.open(att.url, '_blank')}
+                              />
+                            ) : (
+                              <a
+                                key={ai}
+                                href={att.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs border transition-colors ${
+                                  isUser ? 'bg-primary/80 text-primary-foreground border-primary/50 hover:bg-primary/70' : 'bg-muted border-border hover:bg-accent'
+                                }`}
+                              >
+                                <FileText className="w-3.5 h-3.5 shrink-0" />
+                                <span className="truncate max-w-[180px]">{att.name}</span>
+                              </a>
+                            )
+                          ))}
+                        </div>
+                      )}
+                      {/* Message bubble */}
+                      {(msg.content || msg.streaming) && (
+                        <div className={`rounded-xl px-4 py-2.5 text-sm ${
+                          isUser
+                            ? 'bg-primary text-primary-foreground rounded-br-none'
+                            : 'bg-muted text-foreground rounded-bl-none'
+                        }`}>
+                          {msg.role === 'ASSISTANT' && !msg.streaming
+                            ? <div className="space-y-0.5">{renderMarkdown(msg.content)}</div>
+                            : <p className="whitespace-pre-wrap break-words">{msg.content}</p>
+                          }
+                          {msg.streaming && (
+                            <span className="inline-block w-1.5 h-4 bg-current ml-0.5 animate-pulse rounded-sm align-text-bottom" />
+                          )}
+                          {!msg.streaming && (
+                            <p className={`text-xs mt-1 ${isUser ? 'text-primary-foreground/60' : 'text-muted-foreground'}`}>
+                              {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )
@@ -606,6 +681,26 @@ export function ChatPage() {
                     <span className="text-xs text-muted-foreground ml-1.5 font-medium">
                       {selectedAgent?.name ?? 'Agent'} is speaking…
                     </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Optimistic attachment preview — shown immediately after upload, before refetch */}
+              {uploadedAttachment && (
+                <div className="flex justify-end">
+                  <div className="max-w-[72%]">
+                    {uploadedAttachment.mimeType.startsWith('image/') ? (
+                      <img
+                        src={uploadedAttachment.url}
+                        alt={uploadedAttachment.name}
+                        className="max-w-xs rounded-xl object-cover border border-border"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-primary/80 text-primary-foreground border border-primary/50">
+                        <FileText className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate max-w-[180px]">{uploadedAttachment.name}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -672,12 +767,67 @@ export function ChatPage() {
                 </div>
               )}
 
+              {/* File preview strip */}
+              {pendingFile && (
+                <div className="px-3 pt-2 pb-1 flex items-center gap-2">
+                  <div className="flex items-center gap-2 bg-muted rounded-lg px-3 py-1.5 text-xs max-w-[260px]">
+                    {pendingFile.type.startsWith('image/') ? (
+                      <>
+                        <Image className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                        <img
+                          src={URL.createObjectURL(pendingFile)}
+                          alt={pendingFile.name}
+                          className="h-8 w-8 rounded object-cover"
+                        />
+                      </>
+                    ) : (
+                      <FileText className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                    )}
+                    <span className="truncate text-muted-foreground">{pendingFile.name}</span>
+                    <button
+                      onClick={() => setPendingFile(null)}
+                      className="ml-auto text-muted-foreground hover:text-foreground shrink-0"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="p-3 flex gap-2 items-center">
+                {/* File attach button — only shown when feature enabled */}
+                {fileUploadsEnabled && (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      accept="image/*,.pdf,.doc,.docx,.xlsx,.csv,.txt"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0]
+                        if (f) setPendingFile(f)
+                        e.target.value = ''
+                      }}
+                    />
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={sending}
+                      title="Attach image or document"
+                      className={`p-2 rounded-md transition-colors flex-shrink-0 ${
+                        pendingFile
+                          ? 'bg-blue-500/10 text-blue-500 border border-blue-500/30'
+                          : 'border border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                      } disabled:opacity-50`}
+                    >
+                      <Paperclip className="w-4 h-4" />
+                    </button>
+                  </>
+                )}
+
                 {/* Mic button — STT */}
                 {sttSupported && (
                   <button
                     onClick={() => {
-                      // If agent is speaking, interrupt and start listening
                       if (isSpeaking) stopSpeaking()
                       toggleListening()
                     }}
@@ -695,13 +845,13 @@ export function ChatPage() {
                 <input
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
-                  placeholder={isListening ? 'Listening…' : `Message ${selectedAgent?.name ?? 'agent'}...`}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(message, pendingFile) } }}
+                  placeholder={isListening ? 'Listening…' : pendingFile ? `Add a message about ${pendingFile.name}…` : `Message ${selectedAgent?.name ?? 'agent'}...`}
                   disabled={sending}
                   className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
                 />
 
-                {/* TTS toggle — speaker on/off (ElevenLabs via backend) */}
+                {/* TTS toggle */}
                 <button
                   onClick={toggleTts}
                   title={ttsEnabled ? 'Mute agent voice' : 'Enable agent voice'}
@@ -713,15 +863,12 @@ export function ChatPage() {
                       : 'border border-border text-muted-foreground hover:bg-muted hover:text-foreground'
                   }`}
                 >
-                  {ttsEnabled
-                    ? <Volume2 className="w-4 h-4" />
-                    : <VolumeX className="w-4 h-4" />
-                  }
+                  {ttsEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
                 </button>
 
                 <button
                   onClick={handleSend}
-                  disabled={!message.trim() || sending}
+                  disabled={(!message.trim() && !pendingFile) || sending}
                   className="p-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors flex-shrink-0"
                 >
                   <Send className="w-4 h-4" />

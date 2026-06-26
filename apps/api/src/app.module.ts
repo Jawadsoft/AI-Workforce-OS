@@ -21,6 +21,7 @@ import { SuperAdminModule } from './modules/super-admin/super-admin.module'
 import { PublicChatModule } from './modules/public-chat/public-chat.module'
 import { PrismaModule } from './common/prisma/prisma.module'
 import { CloudinaryModule } from './common/cloudinary/cloudinary.module'
+import { FeatureFlagsModule } from './common/feature-flags/feature-flags.module'
 import { QueueModule } from './queue/queue.module'
 import { RealtimeModule } from './realtime/realtime.module'
 import { IntegrationsModule } from './modules/integrations/integrations.module'
@@ -37,6 +38,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     ScheduleModule.forRoot(),
     PrismaModule,
     CloudinaryModule,
+    FeatureFlagsModule,
     QueueModule,
     RealtimeModule,
     AIModule,

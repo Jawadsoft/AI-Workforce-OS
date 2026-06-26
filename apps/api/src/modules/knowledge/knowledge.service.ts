@@ -142,6 +142,19 @@ export class KnowledgeService {
 
   // ── Text extraction by file type ──────────────────────────────────
 
+  async extractTextFromBuffer(buffer: Buffer, mimeType: string, filename: string): Promise<string> {
+    const mimeToExt: Record<string, string> = {
+      'application/pdf': '.pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+      'application/msword': '.docx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+      'text/csv': '.csv',
+      'text/plain': '.txt',
+    }
+    const ext = mimeToExt[mimeType] ?? filename.slice(filename.lastIndexOf('.')) ?? '.txt'
+    return this.extractText(buffer, ext)
+  }
+
   private async extractText(buffer: Buffer, ext: string): Promise<string> {
     switch (ext) {
       case '.txt':
@@ -173,7 +186,7 @@ export class KnowledgeService {
 
   private async extractPDF(buffer: Buffer): Promise<string> {
     try {
-      const pdfParse = await import('pdf-parse').then(m => m.default ?? m)
+      const pdfParse = await import('pdf-parse').then(m => (m as any).default ?? m) as any
       const result = await pdfParse(buffer)
       return result.text
     } catch (err: any) {
@@ -187,7 +200,8 @@ export class KnowledgeService {
 
   private async extractDOCX(buffer: Buffer): Promise<string> {
     try {
-      const mammoth = await import('mammoth')
+      const mod = await import('mammoth')
+      const mammoth = (mod as any).default ?? mod
       const result = await mammoth.extractRawText({ buffer })
       return result.value
     } catch (err: any) {

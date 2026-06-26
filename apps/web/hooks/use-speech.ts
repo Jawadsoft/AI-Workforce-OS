@@ -92,9 +92,9 @@ export interface UseSpeechReturn {
   stopListening:     () => void
   toggleListening:   () => void
   /** Streaming TTS: call once per sentence as LLM tokens arrive */
-  addSpeechChunk:    (text: string, agentName?: string) => void
+  addSpeechChunk:    (text: string, agentName?: string, agentId?: string) => void
   /** Call after stream ends — flushes any remaining sentence buffer */
-  flushSpeechBuffer: (agentName?: string) => void
+  flushSpeechBuffer: (agentName?: string, agentId?: string) => void
   /** Stop playback and clear the whole queue (barge-in / mute) */
   stopSpeaking:      () => void
   toggleTts:         () => void
@@ -144,7 +144,7 @@ export function useSpeech(
   // ── Internal: fetch one sentence from backend ─────────────────────────
 
   const fetchAudio = useCallback(
-    (text: string, agentName?: string): Promise<string | null> => {
+    (text: string, agentName?: string, agentId?: string): Promise<string | null> => {
       const authToken =
         typeof window !== 'undefined' ? localStorage.getItem('access_token') : null
       return fetch(`${API_BASE}/chat/tts`, {
@@ -153,7 +153,7 @@ export function useSpeech(
           'Content-Type': 'application/json',
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
-        body: JSON.stringify({ text, agentName }),
+        body: JSON.stringify({ text, agentName, agentId }),
       })
         .then(r => r.ok ? r.blob() : Promise.reject(r.status))
         .then(blob => URL.createObjectURL(blob))
@@ -214,7 +214,7 @@ export function useSpeech(
    * Internally buffers it, extracts complete sentences, and fires
    * parallel ElevenLabs fetches — then feeds them into the sequential player.
    */
-  const addSpeechChunk = useCallback((token: string, agentName?: string) => {
+  const addSpeechChunk = useCallback((token: string, agentName?: string, agentId?: string) => {
     if (!ttsEnabledRef.current) return
     sentenceBufferRef.current += token
     const { sentences, remaining } = extractSentences(
@@ -225,24 +225,19 @@ export function useSpeech(
     if (sentences.length === 0) return
 
     for (const sentence of sentences) {
-      // Fire fetch immediately (parallel) — push the Promise into the queue
-      queueRef.current.push(fetchAudio(sentence, agentName))
+      queueRef.current.push(fetchAudio(sentence, agentName, agentId))
     }
-    playQueue()   // idempotent — only one player loop runs at a time
+    playQueue()
   }, [fetchAudio, playQueue])
 
-  /**
-   * Call after the LLM stream ends to flush any partial sentence left in the buffer.
-   */
-  const flushSpeechBuffer = useCallback((agentName?: string) => {
+  const flushSpeechBuffer = useCallback((agentName?: string, agentId?: string) => {
     if (!ttsEnabledRef.current) return
     const remaining = stripMarkdown(sentenceBufferRef.current).trim()
     sentenceBufferRef.current = ''
     if (remaining.length >= 3) {
-      queueRef.current.push(fetchAudio(remaining, agentName))
+      queueRef.current.push(fetchAudio(remaining, agentName, agentId))
       playQueue()
     } else if (queueRef.current.length === 0 && !isPlayingRef.current) {
-      // Nothing queued and nothing playing — drain immediately
       onQueueDrainedRef.current?.()
     }
   }, [fetchAudio, playQueue])

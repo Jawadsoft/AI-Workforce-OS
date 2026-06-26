@@ -26,6 +26,7 @@ class UpdateAgentDto {
   @IsOptional() @IsArray() permissions?: string[]
   @IsOptional() @IsString() status?: string
   @IsOptional() @IsString() avatar?: string
+  @IsOptional() @IsString() voiceId?: string
   @IsOptional() approvalRules?: any
 }
 
@@ -53,6 +54,12 @@ export class AgentsController {
   @ApiOperation({ summary: 'Get marketplace templates' })
   getTemplates() {
     return this.service.getTemplates()
+  }
+
+  @Get('voices')
+  @ApiOperation({ summary: 'List available ElevenLabs voices for agent voice selection' })
+  getVoices() {
+    return this.voice.getVoices()
   }
 
   @Get(':id')

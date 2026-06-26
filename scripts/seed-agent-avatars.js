@@ -1,5 +1,5 @@
 /**
- * Copies agent avatar images into apps/api/uploads/avatars/
+ * Uploads agent avatar images to S3 (or local disk as fallback)
  * and updates AgentTemplate + Agent records in the DB.
  *
  * Run from workspace root:
@@ -9,6 +9,15 @@
 const { PrismaClient } = require('@prisma/client')
 const fs = require('fs')
 const path = require('path')
+
+// Load .env manually (no dotenv dependency needed)
+const envPath = path.join(__dirname, '..', '.env')
+if (fs.existsSync(envPath)) {
+  fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
+    const [key, ...vals] = line.replace(/#.*/,'').trim().split('=')
+    if (key && vals.length) process.env[key.trim()] = vals.join('=').trim().replace(/^["']|["']$/g, '')
+  })
+}
 
 const prisma = new PrismaClient()
 
@@ -40,36 +49,69 @@ const AVATAR_MAP = [
   { agentName: 'Nora',    src: `${PFX}Jackie-6603c504-366f-4f48-ad63-112826911497.png`, dest: 'nora.png'    },
 ]
 
-async function main() {
-  // 1 — ensure uploads dir exists
+// ── Cloudinary helpers ───────────────────────────────────────────────────
+const CLOUD_NAME   = process.env.CLOUDINARY_CLOUD_NAME ?? ''
+const CLOUD_KEY    = process.env.CLOUDINARY_API_KEY ?? ''
+const CLOUD_SECRET = process.env.CLOUDINARY_API_SECRET ?? ''
+const USE_CLOUDINARY = CLOUD_NAME.length > 0 && CLOUD_KEY.length > 0 && CLOUD_SECRET.length > 0
+
+// Resolve cloudinary from the API package where it was installed
+const cloudinaryPath = path.join(__dirname, '..', 'apps', 'api', 'node_modules', 'cloudinary')
+
+if (USE_CLOUDINARY) {
+  const { v2: cloudinary } = require(cloudinaryPath)
+  cloudinary.config({ cloud_name: CLOUD_NAME, api_key: CLOUD_KEY, api_secret: CLOUD_SECRET })
+}
+
+async function uploadFile(srcPath, destFilename) {
+  const buffer = fs.readFileSync(srcPath)
+
+  if (USE_CLOUDINARY) {
+    const { v2: cloudinary } = require(cloudinaryPath)
+    const publicId = destFilename.replace(/\.[^.]+$/, '')
+    return new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'ai-workforce/avatars', public_id: publicId, overwrite: true, resource_type: 'image' },
+        (err, result) => {
+          if (err || !result) return reject(err ?? new Error('Upload failed'))
+          resolve(result.secure_url)
+        },
+      )
+      stream.end(buffer)
+    })
+  }
+
+  // Local fallback
   fs.mkdirSync(UPLOADS_DIR, { recursive: true })
+  fs.copyFileSync(srcPath, path.join(UPLOADS_DIR, destFilename))
+  return `/uploads/avatars/${destFilename}`
+}
+
+async function main() {
+  console.log(USE_CLOUDINARY ? `☁  Uploading to Cloudinary (${CLOUD_NAME})` : `💾  Saving to local disk (Cloudinary not configured)`)
 
   for (const entry of AVATAR_MAP) {
-    const srcPath  = path.join(ASSETS_DIR, entry.src)
-    const destPath = path.join(UPLOADS_DIR, entry.dest)
-    const avatarUrl = `/uploads/avatars/${entry.dest}`
+    const srcPath = path.join(ASSETS_DIR, entry.src)
 
-    // Copy image
     if (!fs.existsSync(srcPath)) {
       console.warn(`⚠  Source not found, skipping: ${entry.src}`)
       continue
     }
-    fs.copyFileSync(srcPath, destPath)
-    console.log(`✓  Copied  ${entry.dest}`)
 
-    // Update AgentTemplate rows whose name starts with this agent name
+    const avatarUrl = await uploadFile(srcPath, entry.dest)
+    console.log(`✓  ${entry.dest}  →  ${avatarUrl}`)
+
     const updatedTemplates = await prisma.agentTemplate.updateMany({
       where: { name: { startsWith: entry.agentName } },
       data:  { avatar: avatarUrl },
     })
 
-    // Update Agent rows whose name starts with this agent name
     const updatedAgents = await prisma.agent.updateMany({
       where: { name: { startsWith: entry.agentName } },
       data:  { avatar: avatarUrl },
     })
 
-    console.log(`   Templates updated: ${updatedTemplates.count}  |  Agents updated: ${updatedAgents.count}`)
+    console.log(`   Templates: ${updatedTemplates.count}  |  Agents: ${updatedAgents.count}`)
   }
 
   console.log('\n✅  All done!')

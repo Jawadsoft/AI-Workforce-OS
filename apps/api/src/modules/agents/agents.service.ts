@@ -1,13 +1,15 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
 import { PrismaService } from '../../common/prisma/prisma.service'
-import { v2 as cloudinary } from 'cloudinary'
-import * as fs from 'fs'
+import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import * as path from 'path'
 import * as crypto from 'crypto'
 
 @Injectable()
 export class AgentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cloudinary: CloudinaryService,
+  ) {}
 
   findAll(tenantId: string) {
     return this.prisma.agent.findMany({
@@ -141,75 +143,14 @@ export class AgentsService {
 
     const ext = path.extname(file.originalname).toLowerCase() || '.jpg'
     const filename = `${agentId}-${crypto.randomBytes(6).toString('hex')}${ext}`
-    const avatarUrl = await this.storeFile(tenantId, filename, file.buffer, file.mimetype)
+    const avatarUrl = await this.cloudinary.upload(tenantId, 'avatars', filename, file.buffer, file.mimetype, 'image')
 
-    // Clean up previous avatar
-    if (agent.avatar) await this.deleteFile(agent.avatar)
+    if (agent.avatar) await this.cloudinary.delete(agent.avatar)
 
     return this.prisma.agent.update({
       where: { id: agentId },
       data: { avatar: avatarUrl },
     })
-  }
-
-  // ── Storage helpers: Cloudinary in production, local disk in dev ────
-
-  private useCloudinary(): boolean {
-    return !!(
-      process.env.CLOUDINARY_CLOUD_NAME &&
-      process.env.CLOUDINARY_API_KEY &&
-      process.env.CLOUDINARY_API_SECRET
-    )
-  }
-
-  private configureCloudinary() {
-    cloudinary.config({
-      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-      api_key: process.env.CLOUDINARY_API_KEY,
-      api_secret: process.env.CLOUDINARY_API_SECRET,
-    })
-  }
-
-  private async storeFile(tenantId: string, filename: string, buffer: Buffer, mimetype: string): Promise<string> {
-    if (this.useCloudinary()) {
-      this.configureCloudinary()
-      // Each tenant gets its own Cloudinary folder: ai-workforce/tenants/<tenantId>/avatars
-      const folder = `ai-workforce/tenants/${tenantId}/avatars`
-      const publicId = filename.replace(/\.[^.]+$/, '') // Cloudinary manages the extension
-      return new Promise((resolve, reject) => {
-        const upload = cloudinary.uploader.upload_stream(
-          { folder, public_id: publicId, overwrite: true, resource_type: 'image' },
-          (err, result) => {
-            if (err || !result) return reject(err ?? new Error('Cloudinary upload failed'))
-            resolve(result.secure_url)
-          },
-        )
-        upload.end(buffer)
-      })
-    }
-
-    // Local disk fallback for development: uploads/tenants/<tenantId>/avatars/<filename>
-    const localKey = path.join('tenants', tenantId, 'avatars', filename)
-    const localPath = path.join(process.cwd(), 'uploads', localKey)
-    fs.mkdirSync(path.dirname(localPath), { recursive: true })
-    fs.writeFileSync(localPath, buffer)
-    return `/uploads/${localKey.replace(/\\/g, '/')}`
-  }
-
-  private async deleteFile(avatarUrl: string): Promise<void> {
-    try {
-      if (avatarUrl.includes('cloudinary.com')) {
-        this.configureCloudinary()
-        // Extract public_id from URL: .../upload/v123/ai-workforce/avatars/filename.jpg
-        const match = avatarUrl.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[^.]+)?$/)
-        if (match) await cloudinary.uploader.destroy(match[1])
-      } else if (avatarUrl.startsWith('/uploads/')) {
-        const localPath = path.join(process.cwd(), avatarUrl)
-        if (fs.existsSync(localPath)) fs.unlinkSync(localPath)
-      }
-    } catch {
-      // Non-fatal — cleanup failure should not block the new upload
-    }
   }
 
   async getCRMAccess(tenantId: string, agentId: string) {

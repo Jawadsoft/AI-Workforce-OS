@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, Logger } from '@nestjs/common'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
 import { DocumentTemplatesService } from '../document-templates/document-templates.service'
+import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
@@ -140,6 +141,7 @@ export class DocumentsService {
     private readonly prisma: PrismaService,
     private readonly ai: AIService,
     private readonly docTemplates: DocumentTemplatesService,
+    private readonly cloudinary: CloudinaryService,
   ) {
     if (!fs.existsSync(this.outputDir)) fs.mkdirSync(this.outputDir, { recursive: true })
   }
@@ -247,14 +249,13 @@ Rules:
     let fileUrl: string
     let format = 'HTML'
     try {
-      fileUrl = await this.renderPDF(html, input.title)
+      fileUrl = await this.renderPDF(html, input.title, tenantId)
       format = 'PDF'
     } catch {
-      // puppeteer not available — save HTML
+      // puppeteer not available — save as HTML
       const filename = `${crypto.randomUUID()}.html`
-      const filePath = path.join(this.outputDir, filename)
-      fs.writeFileSync(filePath, html)
-      fileUrl = `/generated-docs/${filename}`
+      const buffer = Buffer.from(html, 'utf8')
+      fileUrl = await this.cloudinary.upload(tenantId, 'generated-docs', filename, buffer, 'text/html', 'raw')
     }
 
     return this.prisma.generatedDocument.create({
@@ -271,31 +272,37 @@ Rules:
     })
   }
 
-  private async renderPDF(html: string, title: string): Promise<string> {
+  private async renderPDF(html: string, title: string, tenantId: string): Promise<string> {
     const puppeteer = await import('puppeteer').then(m => m.default ?? m)
     const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] })
     const page = await browser.newPage()
     await page.setContent(html, { waitUntil: 'networkidle0' })
     const filename = `${crypto.randomUUID()}.pdf`
-    const filePath = path.join(this.outputDir, filename)
-    await page.pdf({ path: filePath, format: 'A4', printBackground: true, margin: { top: '15mm', bottom: '15mm', left: '15mm', right: '15mm' } })
+    const tmpPath = path.join(this.outputDir, filename)
+    await page.pdf({ path: tmpPath, format: 'A4', printBackground: true, margin: { top: '15mm', bottom: '15mm', left: '15mm', right: '15mm' } })
     await browser.close()
-    return `/generated-docs/${filename}`
+
+    // Upload generated PDF to Cloudinary then clean up the temp file
+    const buffer = fs.readFileSync(tmpPath)
+    const fileUrl = await this.cloudinary.upload(tenantId, 'generated-docs', filename, buffer, 'application/pdf', 'raw')
+    fs.unlinkSync(tmpPath)
+    return fileUrl
   }
 
   async remove(tenantId: string, id: string) {
     const doc = await this.prisma.generatedDocument.findFirst({ where: { id, tenantId } })
     if (!doc) throw new NotFoundException('Document not found')
-    if (doc.fileUrl) {
-      const fp = this.resolveStoredFile(doc.fileUrl)
-      if (fs.existsSync(fp)) fs.unlinkSync(fp)
-    }
+    if (doc.fileUrl) await this.cloudinary.delete(doc.fileUrl)
     return this.prisma.generatedDocument.delete({ where: { id } })
   }
 
   resolveStoredFile(fileUrl: string) {
-    const filename = path.basename(fileUrl)
-    return path.join(this.outputDir, filename)
+    // Legacy local path support
+    if (fileUrl.startsWith('/')) {
+      const filename = path.basename(fileUrl)
+      return path.join(this.outputDir, filename)
+    }
+    return fileUrl
   }
 
   getTemplateTypes() {

@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, Logger, BadRequestException } from '@nes
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
 import { IndustryKnowledgeService } from './industry-knowledge.service'
+import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
@@ -40,14 +41,15 @@ function cosineSimilarity(a: number[], b: number[]): number {
 @Injectable()
 export class KnowledgeService {
   private readonly logger = new Logger(KnowledgeService.name)
-  private readonly uploadDir = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads')
+  private readonly localUploadDir = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads')
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly ai: AIService,
     private readonly industryKnowledge: IndustryKnowledgeService,
+    private readonly cloudinary: CloudinaryService,
   ) {
-    if (!fs.existsSync(this.uploadDir)) fs.mkdirSync(this.uploadDir, { recursive: true })
+    if (!fs.existsSync(this.localUploadDir)) fs.mkdirSync(this.localUploadDir, { recursive: true })
   }
 
   // ── List documents ────────────────────────────────────────────────
@@ -71,10 +73,10 @@ export class KnowledgeService {
     const allowed = ['.pdf', '.txt', '.md', '.docx', '.csv']
     if (!allowed.includes(ext)) throw new BadRequestException(`File type ${ext} not supported. Use: ${allowed.join(', ')}`)
 
-    // Save file
     const filename = `${crypto.randomUUID()}${ext}`
-    const filePath = path.join(this.uploadDir, filename)
-    fs.writeFileSync(filePath, file.buffer)
+
+    // Upload to Cloudinary (or local disk in dev) — per-tenant folder
+    const fileUrl = await this.cloudinary.upload(tenantId, 'knowledge', filename, file.buffer, file.mimetype, 'raw')
 
     // Create DB record (status = processing)
     const doc = await this.prisma.knowledgeDocument.create({
@@ -82,14 +84,14 @@ export class KnowledgeService {
         tenantId,
         name: file.originalname,
         fileType: ext.replace('.', ''),
-        fileUrl: `/uploads/${filename}`,
+        fileUrl,
         fileSize: file.size,
         status: 'processing',
       },
     })
 
-    // Process async (non-blocking)
-    this.processDocument(doc.id, filePath, file.buffer, ext).catch(err => {
+    // Process async (non-blocking) — we already have the buffer so no need to read from disk
+    this.processDocument(doc.id, null, file.buffer, ext).catch(err => {
       this.logger.error(`Failed to process doc ${doc.id}: ${err.message}`)
       this.prisma.knowledgeDocument.update({ where: { id: doc.id }, data: { status: 'error' } }).catch(() => {})
     })
@@ -97,7 +99,7 @@ export class KnowledgeService {
     return doc
   }
 
-  private async processDocument(docId: string, filePath: string, buffer: Buffer, ext: string) {
+  private async processDocument(docId: string, _filePath: string | null, buffer: Buffer, ext: string) {
     this.logger.log(`Processing document ${docId} (${ext})`)
 
     // Extract text
@@ -273,14 +275,7 @@ export class KnowledgeService {
     if (!doc) throw new NotFoundException('Document not found')
     await this.prisma.knowledgeChunk.deleteMany({ where: { documentId: id } })
     await this.prisma.agentKnowledge.deleteMany({ where: { documentId: id } })
-    // Delete file
-    const filePath = this.resolveStoredFile(doc.fileUrl)
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
+    await this.cloudinary.delete(doc.fileUrl)
     return this.prisma.knowledgeDocument.delete({ where: { id } })
-  }
-
-  private resolveStoredFile(fileUrl: string) {
-    const filename = path.basename(fileUrl)
-    return path.join(this.uploadDir, filename)
   }
 }

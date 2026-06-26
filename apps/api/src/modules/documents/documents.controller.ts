@@ -47,6 +47,12 @@ export class DocumentsController {
     const doc = await this.service.findAll(tenantId).then(docs => docs.find(d => d.id === id))
     if (!doc?.fileUrl) return res.status(404).json({ message: 'Not found' })
 
+    // Cloudinary / remote URL — redirect the browser directly to the CDN
+    if (doc.fileUrl.startsWith('http')) {
+      return res.redirect(doc.fileUrl)
+    }
+
+    // Legacy local file fallback
     const filePath = this.service.resolveStoredFile(doc.fileUrl)
     if (!fs.existsSync(filePath)) return res.status(404).json({ message: 'File not found on disk' })
 

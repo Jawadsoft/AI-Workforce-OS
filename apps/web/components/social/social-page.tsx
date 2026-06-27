@@ -1,14 +1,17 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
 import { useFeatures, FEATURES } from '@/hooks/use-features'
+import { useAuthStore } from '@/stores/auth.store'
 import {
   Sparkles, Image, Send, Clock, CheckCircle, XCircle,
   Loader2, Plus, Trash2, Edit2, Calendar, RefreshCw,
-  Facebook, Linkedin, Twitter, Instagram, LayoutGrid, List
+  Facebook, Linkedin, Twitter, Instagram, LayoutGrid, List,
+  BarChart2, Star, Link2, Unlink
 } from 'lucide-react'
 
 const PLATFORM_ICONS: Record<string, React.ReactNode> = {
@@ -29,13 +32,39 @@ const STATUS_STYLES: Record<string, string> = {
 const CONTENT_TYPES = ['educational', 'promotional', 'story', 'team', 'general']
 const PLATFORMS     = ['facebook', 'instagram', 'linkedin', 'x']
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1'
+
+const PLATFORM_LABELS: Record<string, string> = {
+  facebook:  'Facebook + Instagram',
+  linkedin:  'LinkedIn',
+  x:         'X (Twitter)',
+}
+
 export function SocialPage() {
   const qc = useQueryClient()
   const { isEnabled } = useFeatures()
+  const { user } = useAuthStore()
   const fileRef = useRef<HTMLInputElement>(null)
+  const searchParams = useSearchParams()
 
-  const [tab, setTab] = useState<'posts' | 'generate' | 'accounts'>('posts')
+  const [tab, setTab] = useState<'posts' | 'generate' | 'calendar' | 'analytics' | 'accounts'>('posts')
   const [viewMode, setViewMode] = useState<'list' | 'gallery'>('list')
+
+  // Handle OAuth redirect params
+  useEffect(() => {
+    const connected = searchParams?.get('connected')
+    const error = searchParams?.get('error')
+    if (connected) {
+      toast.success(`${connected} account connected successfully!`)
+      qc.invalidateQueries({ queryKey: ['social-accounts'] })
+      setTab('accounts')
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+    if (error) {
+      toast.error(`OAuth error: ${error}`)
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [searchParams, qc])
   const [filterStatus, setFilterStatus] = useState('')
   const [filterPlatform, setFilterPlatform] = useState('')
   const [editingPost, setEditingPost] = useState<any>(null)
@@ -61,6 +90,46 @@ export function SocialPage() {
     queryFn: () => api.get('/social/accounts').then((r) => r.data),
     enabled: isEnabled(FEATURES.SOCIAL_MEDIA),
   })
+
+  const { data: analytics } = useQuery({
+    queryKey: ['social-analytics'],
+    queryFn: () => api.get('/social/analytics').then((r) => r.data),
+    enabled: tab === 'analytics' && isEnabled(FEATURES.SOCIAL_MEDIA),
+  })
+
+  // Calendar state
+  const [calDays, setCalDays] = useState(30)
+  const [calPlatforms, setCalPlatforms] = useState<string[]>(['facebook', 'instagram'])
+  const [calItems, setCalItems] = useState<any[]>([])
+  const [generatingCal, setGeneratingCal] = useState(false)
+
+  async function handleGenerateCalendar() {
+    setGeneratingCal(true)
+    try {
+      const res = await api.post('/social/calendar', { days: calDays, platforms: calPlatforms })
+      setCalItems(Array.isArray(res.data) ? res.data : [])
+    } catch { toast.error('Failed to generate calendar') }
+    finally { setGeneratingCal(false) }
+  }
+
+  // Review-to-post state
+  const [reviewText, setReviewText] = useState('')
+  const [reviewerName, setReviewerName] = useState('')
+  const [reviewRating, setReviewRating] = useState(5)
+  const [reviewPlatforms, setReviewPlatforms] = useState<string[]>(['facebook'])
+  const [generatingReview, setGeneratingReview] = useState(false)
+
+  async function handleReviewToPost() {
+    if (!reviewText.trim()) return
+    setGeneratingReview(true)
+    try {
+      await api.post('/social/review-to-post', { reviewText, reviewerName: reviewerName || undefined, rating: reviewRating, platforms: reviewPlatforms })
+      qc.invalidateQueries({ queryKey: ['social-posts'] })
+      toast.success('Review posts queued for approval!')
+      setReviewText(''); setReviewerName('')
+    } catch { toast.error('Failed to create review posts') }
+    finally { setGeneratingReview(false) }
+  }
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => api.post(`/social/posts/${id}/approve`),
@@ -151,7 +220,7 @@ export function SocialPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-border pb-0">
-        {([['posts', 'Posts'], ['generate', 'Generate'], ['accounts', 'Connected Accounts']] as const).map(([key, label]) => (
+        {([['posts', 'Posts'], ['generate', 'Generate'], ['calendar', 'Calendar'], ['analytics', 'Analytics'], ['accounts', 'Accounts']] as const).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -340,44 +409,270 @@ export function SocialPage() {
         </div>
       )}
 
+      {/* Calendar Tab */}
+      {tab === 'calendar' && (
+        <div className="space-y-6">
+          {/* Review-to-Post */}
+          <div className="rounded-xl border border-border bg-card p-5 space-y-4">
+            <h3 className="font-semibold">Review → Social Post</h3>
+            <p className="text-sm text-muted-foreground">Turn a customer review into ready-to-approve social posts.</p>
+            <textarea
+              value={reviewText}
+              onChange={(e) => setReviewText(e.target.value)}
+              placeholder="Paste the customer review here..."
+              rows={3}
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+            />
+            <div className="grid grid-cols-2 gap-3">
+              <input
+                value={reviewerName}
+                onChange={(e) => setReviewerName(e.target.value)}
+                placeholder="Customer name (optional)"
+                className="rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <select
+                value={reviewRating}
+                onChange={(e) => setReviewRating(Number(e.target.value))}
+                className="rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {[5,4,3,2,1].map((r) => <option key={r} value={r}>{r} stars</option>)}
+              </select>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {PLATFORMS.map((p) => (
+                <button key={p} onClick={() => setReviewPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p])}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm transition-colors ${reviewPlatforms.includes(p) ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-muted-foreground'}`}>
+                  {PLATFORM_ICONS[p]} {p}
+                </button>
+              ))}
+            </div>
+            <button onClick={handleReviewToPost} disabled={generatingReview || !reviewText.trim() || reviewPlatforms.length === 0}
+              className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors">
+              {generatingReview ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {generatingReview ? 'Creating posts...' : 'Create Posts from Review'}
+            </button>
+          </div>
+
+          {/* Content Calendar Generator */}
+          <div className="rounded-xl border border-border bg-card p-5 space-y-4">
+            <h3 className="font-semibold">Content Calendar</h3>
+            <p className="text-sm text-muted-foreground">Generate a content plan with topic ideas for the coming days.</p>
+            <div className="flex gap-3 flex-wrap items-center">
+              <select value={calDays} onChange={(e) => setCalDays(Number(e.target.value))}
+                className="text-sm border border-border bg-background rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-ring">
+                <option value={7}>7 days</option>
+                <option value={14}>14 days</option>
+                <option value={30}>30 days</option>
+              </select>
+              <div className="flex gap-2 flex-wrap">
+                {PLATFORMS.map((p) => (
+                  <button key={p} onClick={() => setCalPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p])}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm transition-colors ${calPlatforms.includes(p) ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>
+                    {PLATFORM_ICONS[p]} {p}
+                  </button>
+                ))}
+              </div>
+              <button onClick={handleGenerateCalendar} disabled={generatingCal || calPlatforms.length === 0}
+                className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors ml-auto">
+                {generatingCal ? <Loader2 className="w-4 h-4 animate-spin" /> : <Calendar className="w-4 h-4" />}
+                {generatingCal ? 'Generating...' : 'Generate Calendar'}
+              </button>
+            </div>
+            {calItems.length > 0 && (
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {calItems.map((item: any, i: number) => (
+                  <div key={i} className="flex gap-3 p-3 rounded-lg border border-border bg-background">
+                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary shrink-0">
+                      {item.day}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {PLATFORM_ICONS[item.platform]}
+                        <span className="text-xs bg-muted px-2 py-0.5 rounded-full capitalize">{item.contentType}</span>
+                        <span className="text-xs text-muted-foreground">{item.bestTime}</span>
+                      </div>
+                      <p className="text-sm font-medium mt-0.5">{item.topic}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{item.brief}</p>
+                    </div>
+                    <button
+                      onClick={() => { setBrief(item.brief); setPlatforms([item.platform]); setContentType(item.contentType); setTab('generate') }}
+                      className="text-xs text-primary hover:underline shrink-0"
+                    >
+                      Generate →
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Analytics Tab */}
+      {tab === 'analytics' && (
+        <div className="space-y-4">
+          {!analytics ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {[1,2,3,4].map((i) => <div key={i} className="h-20 bg-muted rounded-xl animate-pulse" />)}
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {[
+                  { label: 'Total Posts', value: analytics.total ?? 0 },
+                  { label: 'Published This Week', value: analytics.thisWeek ?? 0 },
+                  { label: 'Pending Approval', value: analytics.pending ?? 0 },
+                  { label: 'Platforms Active', value: Object.keys(analytics.byPlatform ?? {}).length },
+                ].map((s) => (
+                  <div key={s.label} className="rounded-xl border border-border bg-card p-4">
+                    <p className="text-2xl font-bold">{s.value}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{s.label}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h4 className="text-sm font-semibold mb-3">Posts by Platform</h4>
+                  <div className="space-y-2">
+                    {Object.entries(analytics.byPlatform ?? {}).map(([p, count]: any) => (
+                      <div key={p} className="flex items-center gap-2">
+                        {PLATFORM_ICONS[p]}
+                        <span className="text-sm capitalize flex-1">{p}</span>
+                        <span className="text-sm font-medium">{count}</span>
+                      </div>
+                    ))}
+                    {Object.keys(analytics.byPlatform ?? {}).length === 0 && <p className="text-xs text-muted-foreground">No posts yet</p>}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h4 className="text-sm font-semibold mb-3">Posts by Status</h4>
+                  <div className="space-y-2">
+                    {Object.entries(analytics.byStatus ?? {}).map(([s, count]: any) => (
+                      <div key={s} className="flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${STATUS_STYLES[s]?.includes('green') ? 'bg-green-500' : STATUS_STYLES[s]?.includes('blue') ? 'bg-blue-500' : STATUS_STYLES[s]?.includes('yellow') ? 'bg-yellow-500' : 'bg-gray-400'}`} />
+                        <span className="text-sm capitalize flex-1">{s.replace('_', ' ')}</span>
+                        <span className="text-sm font-medium">{count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {(analytics.recentPosts ?? []).length > 0 && (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h4 className="text-sm font-semibold mb-3">Recently Published</h4>
+                  <div className="space-y-2">
+                    {analytics.recentPosts.map((p: any, i: number) => (
+                      <div key={i} className="flex items-center gap-2 text-xs">
+                        {PLATFORM_ICONS[p.platform]}
+                        <span className="flex-1 truncate text-muted-foreground">{p.content.slice(0, 60)}…</span>
+                        <span className="text-muted-foreground shrink-0">{p.publishedAt ? new Date(p.publishedAt).toLocaleDateString() : ''}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {/* Accounts Tab */}
       {tab === 'accounts' && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border bg-card p-5">
             <h3 className="font-semibold mb-1">Connected Social Accounts</h3>
-            <p className="text-sm text-muted-foreground mb-4">Platform OAuth connections will appear here once configured.</p>
+            <p className="text-sm text-muted-foreground mb-4">
+              Connect your business accounts so agents can publish directly to your social platforms.
+            </p>
 
-            {accounts.length === 0 ? (
-              <div className="space-y-3">
-                {PLATFORMS.map((p) => (
-                  <div key={p} className="flex items-center justify-between p-3 border border-border rounded-lg">
+            {/* OAuth connect buttons — shown per platform group */}
+            {(['facebook', 'linkedin', 'x'] as const).map((platform) => {
+              const connected = accounts.find((a: any) => a.platform === platform || (platform === 'facebook' && a.platform === 'instagram'))
+              const facebookAcc = accounts.find((a: any) => a.platform === 'facebook')
+              const instagramAcc = accounts.find((a: any) => a.platform === 'instagram')
+
+              if (platform === 'facebook') {
+                return (
+                  <div key="facebook" className="border border-border rounded-xl p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Facebook className="w-5 h-5 text-blue-500" />
+                        <span className="font-medium text-sm">Facebook + Instagram</span>
+                      </div>
+                      {!facebookAcc ? (
+                        <a
+                          href={`${API_URL}/social/oauth/facebook/connect?tenantId=${user?.tenantId}`}
+                          className="flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          <Link2 className="w-3.5 h-3.5" /> Connect
+                        </a>
+                      ) : (
+                        <button
+                          onClick={() => { if (confirm('Disconnect Facebook?')) api.delete(`/social/accounts/${facebookAcc.id}`).then(() => qc.invalidateQueries({ queryKey: ['social-accounts'] })) }}
+                          className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300 transition-colors"
+                        >
+                          <Unlink className="w-3.5 h-3.5" /> Disconnect
+                        </button>
+                      )}
+                    </div>
+                    {facebookAcc && (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground pl-1">
+                        <CheckCircle className="w-3.5 h-3.5 text-green-400" />
+                        <span className="text-green-400 font-medium">{facebookAcc.accountName}</span>
+                        {instagramAcc && <span>· Instagram: <span className="text-green-400 font-medium">{instagramAcc.accountName}</span></span>}
+                      </div>
+                    )}
+                  </div>
+                )
+              }
+
+              const acc = accounts.find((a: any) => a.platform === platform)
+              const label = PLATFORM_LABELS[platform]
+              const icon = platform === 'linkedin'
+                ? <Linkedin className="w-5 h-5 text-blue-400" />
+                : <Twitter className="w-5 h-5 text-gray-300" />
+              const connectColor = platform === 'linkedin' ? 'bg-blue-700 hover:bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'
+
+              return (
+                <div key={platform} className="border border-border rounded-xl p-4">
+                  <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      {PLATFORM_ICONS[p]}
-                      <span className="text-sm font-medium capitalize">{p}</span>
+                      {icon}
+                      <span className="font-medium text-sm">{label}</span>
                     </div>
-                    <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">Coming soon — requires OAuth setup</span>
+                    {!acc ? (
+                      <a
+                        href={`${API_URL}/social/oauth/${platform}/connect?tenantId=${user?.tenantId}`}
+                        className={`flex items-center gap-1.5 text-xs ${connectColor} text-white px-3 py-1.5 rounded-lg transition-colors`}
+                      >
+                        <Link2 className="w-3.5 h-3.5" /> Connect
+                      </a>
+                    ) : (
+                      <button
+                        onClick={() => { if (confirm(`Disconnect ${label}?`)) api.delete(`/social/accounts/${acc.id}`).then(() => qc.invalidateQueries({ queryKey: ['social-accounts'] })) }}
+                        className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300 transition-colors"
+                      >
+                        <Unlink className="w-3.5 h-3.5" /> Disconnect
+                      </button>
+                    )}
                   </div>
-                ))}
-              </div>
-            ) : (
-              accounts.map((acc: any) => (
-                <div key={acc.id} className="flex items-center justify-between p-3 border border-border rounded-lg">
-                  <div className="flex items-center gap-2">
-                    {PLATFORM_ICONS[acc.platform]}
-                    <div>
-                      <p className="text-sm font-medium">{acc.accountName}</p>
-                      <p className="text-xs text-muted-foreground">{acc.platform}</p>
+                  {acc && (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground mt-2 pl-1">
+                      <CheckCircle className="w-3.5 h-3.5 text-green-400" />
+                      <span className="text-green-400 font-medium">{acc.accountName}</span>
+                      {acc.expiresAt && <span>· Expires {new Date(acc.expiresAt).toLocaleDateString()}</span>}
                     </div>
-                  </div>
-                  <button
-                    onClick={() => { if (confirm('Disconnect this account?')) api.delete(`/social/accounts/${acc.id}`).then(() => qc.invalidateQueries({ queryKey: ['social-accounts'] })) }}
-                    className="text-xs text-red-400 hover:text-red-300 transition-colors"
-                  >
-                    Disconnect
-                  </button>
+                  )}
                 </div>
-              ))
-            )}
+              )
+            })}
+
+            <div className="mt-4 p-3 rounded-lg bg-muted/40 text-xs text-muted-foreground space-y-1">
+              <p className="font-medium text-foreground">Setup required before connecting</p>
+              <p>1. Create developer apps at developers.facebook.com, linkedin.com/developers, developer.twitter.com</p>
+              <p>2. Add your redirect URIs and copy the App ID / Client ID into your <code className="font-mono bg-muted px-1 rounded">.env</code></p>
+              <p>3. Set <code className="font-mono bg-muted px-1 rounded">SOCIAL_OAUTH_REDIRECT_BASE</code> to your API domain</p>
+            </div>
           </div>
         </div>
       )}

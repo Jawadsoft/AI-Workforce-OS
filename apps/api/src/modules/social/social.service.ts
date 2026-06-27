@@ -296,6 +296,90 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     }
   }
 
+  // ── Platform safety constants ────────────────────────────────────
+  private readonly PLATFORM_LIMITS: Record<string, { daily: number; weekly: number; minGapHours: number }> = {
+    facebook:  { daily: 5,  weekly: 25, minGapHours: 2 },
+    instagram: { daily: 3,  weekly: 15, minGapHours: 3 },
+    linkedin:  { daily: 2,  weekly: 5,  minGapHours: 4 },
+    x:         { daily: 10, weekly: 50, minGapHours: 0.5 },
+  }
+
+  // ── Content hash for deduplication ────────────────────────────────
+  private contentHash(content: string): string {
+    let hash = 0
+    for (let i = 0; i < content.length; i++) {
+      hash = ((hash << 5) - hash) + content.charCodeAt(i)
+      hash |= 0
+    }
+    return Math.abs(hash).toString(16)
+  }
+
+  // ── Safety check before publishing ────────────────────────────────
+  async checkPublishSafety(tenantId: string, platform: string, content: string): Promise<{
+    safe: boolean
+    reason?: string
+    nextSafeSlot?: Date
+  }> {
+    const limits = this.PLATFORM_LIMITS[platform]
+    if (!limits) return { safe: true }
+
+    const now = new Date()
+    const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
+    const weekStart = new Date(now); weekStart.setDate(weekStart.getDate() - 7)
+
+    // Check daily limit
+    const dailyCount = await this.prisma.socialPost.count({
+      where: { tenantId, platform, status: 'published', publishedAt: { gte: dayStart } },
+    })
+    if (dailyCount >= limits.daily) {
+      const nextDay = new Date(dayStart); nextDay.setDate(nextDay.getDate() + 1)
+      return { safe: false, reason: `Daily limit reached for ${platform} (${limits.daily}/day)`, nextSafeSlot: nextDay }
+    }
+
+    // Check weekly limit
+    const weeklyCount = await this.prisma.socialPost.count({
+      where: { tenantId, platform, status: 'published', publishedAt: { gte: weekStart } },
+    })
+    if (weeklyCount >= limits.weekly) {
+      return { safe: false, reason: `Weekly limit reached for ${platform} (${limits.weekly}/week)` }
+    }
+
+    // Check minimum gap between posts
+    const lastPost = await this.prisma.socialPost.findFirst({
+      where: { tenantId, platform, status: 'published' },
+      orderBy: { publishedAt: 'desc' },
+    })
+    if (lastPost?.publishedAt) {
+      const gapMs = limits.minGapHours * 60 * 60 * 1000
+      const elapsed = now.getTime() - new Date(lastPost.publishedAt).getTime()
+      if (elapsed < gapMs) {
+        const nextSafeSlot = new Date(new Date(lastPost.publishedAt).getTime() + gapMs)
+        return { safe: false, reason: `Too soon since last ${platform} post`, nextSafeSlot }
+      }
+    }
+
+    // Check content duplicate (last 30 published posts)
+    const recentPosts = await this.prisma.socialPost.findMany({
+      where: { tenantId, platform, status: 'published' },
+      orderBy: { publishedAt: 'desc' },
+      take: 30,
+      select: { content: true },
+    })
+    const newHash = this.contentHash(content)
+    const isDuplicate = recentPosts.some((p) => this.contentHash(p.content) === newHash)
+    if (isDuplicate) {
+      return { safe: false, reason: 'Duplicate content detected — this post has been published before' }
+    }
+
+    return { safe: true }
+  }
+
+  // ── Add random jitter to scheduled time ───────────────────────────
+  private addJitter(date: Date): Date {
+    const jitterMs = (Math.random() * 30 - 15) * 60 * 1000 // ±15 minutes
+    return new Date(date.getTime() + jitterMs)
+  }
+
   // ── Post queue (save as draft/pending approval) ───────────────────
 
   async createPost(tenantId: string, data: {
@@ -312,6 +396,9 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
 
     const status = data.requireApproval ? 'pending_approval' : (data.scheduledAt ? 'scheduled' : 'draft')
 
+    // Apply jitter to scheduled time to avoid bot-like exact timestamps
+    const scheduledAt = data.scheduledAt ? this.addJitter(data.scheduledAt) : undefined
+
     return this.prisma.socialPost.create({
       data: {
         tenantId,
@@ -322,7 +409,8 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
         imagePrompt: data.imagePrompt,
         contentType: data.contentType ?? 'general',
         status,
-        scheduledAt: data.scheduledAt,
+        scheduledAt,
+        metadata: { contentHash: this.contentHash(data.content) } as any,
       },
     })
   }
@@ -408,10 +496,30 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
 
   private async publishPost(post: any) {
     if (!post.socialAccount) {
+      // No account connected — mark as draft (not failed) so it can be manually published later
       await this.prisma.socialPost.update({
         where: { id: post.id },
-        data: { status: 'failed', errorMessage: 'No connected social account for this platform' },
+        data: { status: 'draft', errorMessage: 'No connected social account for this platform' },
       })
+      return
+    }
+
+    // Safety check before publishing
+    const safety = await this.checkPublishSafety(post.tenantId, post.platform, post.content)
+    if (!safety.safe) {
+      this.logger.warn(`Safety check blocked post ${post.id}: ${safety.reason}`)
+      if (safety.nextSafeSlot) {
+        // Reschedule to next safe slot automatically
+        await this.prisma.socialPost.update({
+          where: { id: post.id },
+          data: { scheduledAt: this.addJitter(safety.nextSafeSlot), errorMessage: `Auto-rescheduled: ${safety.reason}` },
+        })
+      } else {
+        await this.prisma.socialPost.update({
+          where: { id: post.id },
+          data: { status: 'failed', errorMessage: safety.reason },
+        })
+      }
       return
     }
 
@@ -419,15 +527,37 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
       await this.publishToPlatform(post)
       await this.prisma.socialPost.update({
         where: { id: post.id },
-        data: { status: 'published', publishedAt: new Date() },
+        data: { status: 'published', publishedAt: new Date(), errorMessage: null },
       })
       this.logger.log(`Published post ${post.id} to ${post.platform}`)
     } catch (err: any) {
-      this.logger.error(`Failed to publish post ${post.id}: ${err.message}`)
-      await this.prisma.socialPost.update({
-        where: { id: post.id },
-        data: { status: 'failed', errorMessage: err.message },
-      })
+      const msg = String(err.message ?? err)
+      const status = err.status ?? err.response?.status ?? 0
+
+      if (status === 429) {
+        // Rate limited — reschedule 2 hours later
+        const retry = new Date(Date.now() + 2 * 60 * 60 * 1000)
+        await this.prisma.socialPost.update({
+          where: { id: post.id },
+          data: { scheduledAt: retry, errorMessage: `Rate limited — retrying at ${retry.toISOString()}` },
+        })
+      } else if (status === 401 || status === 403) {
+        // Auth error — pause account, notify
+        await this.prisma.socialAccount.update({
+          where: { id: post.socialAccount.id },
+          data: { isActive: false },
+        })
+        await this.prisma.socialPost.update({
+          where: { id: post.id },
+          data: { status: 'failed', errorMessage: `Account auth error — account paused. Re-connect in Social Media settings.` },
+        })
+      } else {
+        this.logger.error(`Failed to publish post ${post.id}: ${msg}`)
+        await this.prisma.socialPost.update({
+          where: { id: post.id },
+          data: { status: 'failed', errorMessage: msg },
+        })
+      }
     }
   }
 
@@ -449,6 +579,149 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
         break
       default:
         throw new Error(`Unsupported platform: ${platform}`)
+    }
+  }
+
+  // ── Review-to-post ────────────────────────────────────────────────
+  async reviewToPost(tenantId: string, opts: {
+    agentId?: string
+    reviewText: string
+    reviewerName?: string
+    rating?: number
+    platforms: string[]
+  }) {
+    await this.requireSocialFeature(tenantId)
+    const brainContext = ''
+    const posts = await Promise.all(
+      opts.platforms.map(async (platform) => {
+        const spec = PLATFORM_SPECS[platform] ?? PLATFORM_SPECS.facebook
+        const prompt = `Write a ${platform} post thanking a customer for their review. 
+Platform style: ${spec.style}. Max ${spec.maxLength} chars. Use ${spec.hashtagCount} hashtags max.
+${opts.reviewerName ? `Customer name: ${opts.reviewerName}` : ''}
+${opts.rating ? `Rating: ${opts.rating}/5 stars` : ''}
+Review: "${opts.reviewText}"
+
+Write something warm, genuine, and specific to what they said. Don't be generic.
+Return only the post text, no commentary.`
+
+        const response = await this.getOpenAI().chat.completions.create({
+          model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.8,
+        })
+        const content = response.choices[0].message.content ?? ''
+        return this.createPost(tenantId, {
+          agentId: opts.agentId,
+          platform,
+          content,
+          contentType: 'story',
+          requireApproval: true,
+        })
+      })
+    )
+    return posts
+  }
+
+  // ── Cross-platform repurpose ───────────────────────────────────────
+  async repurposeContent(tenantId: string, opts: {
+    agentId?: string
+    sourceContent: string
+    sourceType: 'blog' | 'email' | 'document' | 'text'
+    platforms: string[]
+  }) {
+    await this.requireSocialFeature(tenantId)
+    const posts = await Promise.all(
+      opts.platforms.map(async (platform) => {
+        const spec = PLATFORM_SPECS[platform] ?? PLATFORM_SPECS.facebook
+        const prompt = `Repurpose this ${opts.sourceType} content into a ${platform} post.
+Platform style: ${spec.style}. Max ${spec.maxLength} chars. Use ${spec.hashtagCount} hashtags max.
+
+Source content:
+${opts.sourceContent.slice(0, 3000)}
+
+Write a native ${platform} post that captures the key message. Make it feel original, not copy-pasted.
+Return only the post text.`
+
+        const response = await this.getOpenAI().chat.completions.create({
+          model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.85,
+        })
+        const content = response.choices[0].message.content ?? ''
+        return this.createPost(tenantId, {
+          agentId: opts.agentId,
+          platform,
+          content,
+          contentType: 'general',
+          requireApproval: true,
+        })
+      })
+    )
+    return posts
+  }
+
+  // ── Content calendar ─────────────────────────────────────────────
+  async generateCalendar(tenantId: string, opts: {
+    days: number
+    platforms: string[]
+    industry?: string
+  }) {
+    await this.requireSocialFeature(tenantId)
+    const prompt = `Create a ${opts.days}-day social media content calendar for a ${opts.industry ?? 'service'} business.
+Platforms: ${opts.platforms.join(', ')}
+Content mix: 40% educational, 20% promotional, 20% customer stories, 20% team/culture.
+
+Return a JSON array of ${opts.days} items, each with:
+{ "day": number, "platform": string, "contentType": string, "topic": string, "brief": string, "bestTime": string }
+
+Return only the JSON array.`
+
+    const response = await this.getOpenAI().chat.completions.create({
+      model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+    })
+    try {
+      const parsed = JSON.parse(response.choices[0].message.content ?? '{}')
+      return parsed.items ?? parsed.calendar ?? parsed
+    } catch {
+      return []
+    }
+  }
+
+  // ── Social analytics ─────────────────────────────────────────────
+  async getAnalytics(tenantId: string) {
+    await this.requireSocialFeature(tenantId)
+
+    const [total, byStatus, byPlatform, recent] = await Promise.all([
+      this.prisma.socialPost.count({ where: { tenantId } }),
+      this.prisma.socialPost.groupBy({ by: ['status'], where: { tenantId }, _count: true }),
+      this.prisma.socialPost.groupBy({ by: ['platform'], where: { tenantId }, _count: true }),
+      this.prisma.socialPost.findMany({
+        where: { tenantId, status: 'published' },
+        orderBy: { publishedAt: 'desc' },
+        take: 10,
+        select: { platform: true, contentType: true, publishedAt: true, content: true },
+      }),
+    ])
+
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    const thisWeek = await this.prisma.socialPost.count({
+      where: { tenantId, status: 'published', publishedAt: { gte: weekAgo } },
+    })
+
+    const pending = await this.prisma.socialPost.count({
+      where: { tenantId, status: 'pending_approval' },
+    })
+
+    return {
+      total,
+      thisWeek,
+      pending,
+      byStatus: Object.fromEntries(byStatus.map((s) => [s.status, s._count])),
+      byPlatform: Object.fromEntries(byPlatform.map((p) => [p.platform, p._count])),
+      recentPosts: recent,
     }
   }
 
@@ -525,5 +798,197 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     })
     if (!res.ok) throw new Error(`X API error: ${await res.text()}`)
     return res.json()
+  }
+
+  // ── OAuth callback handlers ────────────────────────────────────────
+
+  async handleFacebookCallback(tenantId: string, code: string): Promise<void> {
+    const appId     = this.config.get('FACEBOOK_APP_ID')
+    const appSecret = this.config.get('FACEBOOK_APP_SECRET')
+    const base      = this.config.get('SOCIAL_OAUTH_REDIRECT_BASE')
+    const redirectUri = `${base}/social/oauth/facebook/callback`
+
+    // Exchange code → short-lived token
+    const tokenRes = await fetch(
+      `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`,
+    )
+    if (!tokenRes.ok) throw new Error(`Facebook token exchange failed: ${await tokenRes.text()}`)
+    const { access_token: shortToken } = await tokenRes.json()
+
+    // Exchange short → long-lived page token
+    const longRes = await fetch(
+      `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortToken}`,
+    )
+    if (!longRes.ok) throw new Error(`Facebook long-lived token failed: ${await longRes.text()}`)
+    const { access_token: userToken } = await longRes.json()
+
+    // Get the user's Pages (pick first one)
+    const pagesRes = await fetch(
+      `https://graph.facebook.com/v19.0/me/accounts?access_token=${userToken}`,
+    )
+    if (!pagesRes.ok) throw new Error(`Facebook Pages fetch failed: ${await pagesRes.text()}`)
+    const { data: pages } = await pagesRes.json()
+    if (!pages?.length) throw new Error('No Facebook Pages found. Make sure your app has pages_manage_posts permission.')
+
+    // Use first page (most tenants only have one business page)
+    const page = pages[0]
+    await this.prisma.socialAccount.upsert({
+      where: { tenantId_platform: { tenantId, platform: 'facebook' } },
+      create: {
+        tenantId,
+        platform: 'facebook',
+        accountName: page.name,
+        pageId: page.id,
+        accessToken: page.access_token,  // page-scoped token (never expires)
+        isActive: true,
+      },
+      update: {
+        accountName: page.name,
+        pageId: page.id,
+        accessToken: page.access_token,
+        isActive: true,
+      },
+    })
+
+    // Also link Instagram Business Account if present on first page
+    const igRes = await fetch(
+      `https://graph.facebook.com/v19.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`,
+    )
+    const igData = await igRes.json()
+    if (igData.instagram_business_account) {
+      const igId = igData.instagram_business_account.id
+      const igInfoRes = await fetch(`https://graph.facebook.com/v19.0/${igId}?fields=name,username&access_token=${page.access_token}`)
+      const igInfo = igInfoRes.ok ? await igInfoRes.json() : {}
+      await this.prisma.socialAccount.upsert({
+        where: { tenantId_platform: { tenantId, platform: 'instagram' } },
+        create: {
+          tenantId,
+          platform: 'instagram',
+          accountName: igInfo.username ?? igInfo.name ?? 'Instagram',
+          pageId: igId,
+          accessToken: page.access_token,
+          isActive: true,
+        },
+        update: {
+          accountName: igInfo.username ?? igInfo.name ?? 'Instagram',
+          pageId: igId,
+          accessToken: page.access_token,
+          isActive: true,
+        },
+      })
+    }
+
+    this.logger.log(`Facebook + Instagram accounts connected for tenant ${tenantId}`)
+  }
+
+  async handleLinkedInCallback(tenantId: string, code: string): Promise<void> {
+    const clientId     = this.config.get('LINKEDIN_CLIENT_ID')
+    const clientSecret = this.config.get('LINKEDIN_CLIENT_SECRET')
+    const base         = this.config.get('SOCIAL_OAUTH_REDIRECT_BASE')
+    const redirectUri  = `${base}/social/oauth/linkedin/callback`
+
+    // Exchange code → access token
+    const params = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      client_id: clientId,
+      client_secret: clientSecret,
+    })
+    const tokenRes = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    })
+    if (!tokenRes.ok) throw new Error(`LinkedIn token exchange failed: ${await tokenRes.text()}`)
+    const { access_token, expires_in } = await tokenRes.json()
+
+    // Get profile
+    const profileRes = await fetch('https://api.linkedin.com/v2/userinfo', {
+      headers: { Authorization: `Bearer ${access_token}` },
+    })
+    if (!profileRes.ok) throw new Error(`LinkedIn profile fetch failed: ${await profileRes.text()}`)
+    const profile = await profileRes.json()
+
+    const expiresAt = expires_in ? new Date(Date.now() + expires_in * 1000) : null
+
+    await this.prisma.socialAccount.upsert({
+      where: { tenantId_platform: { tenantId, platform: 'linkedin' } },
+      create: {
+        tenantId,
+        platform: 'linkedin',
+        accountName: profile.name ?? profile.email ?? 'LinkedIn',
+        pageId: profile.sub,
+        accessToken: access_token,
+        expiresAt,
+        isActive: true,
+      },
+      update: {
+        accountName: profile.name ?? profile.email ?? 'LinkedIn',
+        accessToken: access_token,
+        expiresAt,
+        isActive: true,
+      },
+    })
+
+    this.logger.log(`LinkedIn account connected for tenant ${tenantId}`)
+  }
+
+  async handleXCallback(tenantId: string, code: string): Promise<void> {
+    const clientId     = this.config.get('X_CLIENT_ID')
+    const clientSecret = this.config.get('X_CLIENT_SECRET')
+    const base         = this.config.get('SOCIAL_OAUTH_REDIRECT_BASE')
+    const redirectUri  = `${base}/social/oauth/x/callback`
+
+    // Exchange code → access token (PKCE plain — challenge stored client-side; server just passes it)
+    const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
+    const params = new URLSearchParams({
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri,
+      code_verifier: 'plain',  // must match challenge sent in connect step
+    })
+    const tokenRes = await fetch('https://api.twitter.com/2/oauth2/token', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    })
+    if (!tokenRes.ok) throw new Error(`X token exchange failed: ${await tokenRes.text()}`)
+    const { access_token, refresh_token, expires_in } = await tokenRes.json()
+
+    // Get user profile
+    const userRes = await fetch('https://api.twitter.com/2/users/me', {
+      headers: { Authorization: `Bearer ${access_token}` },
+    })
+    if (!userRes.ok) throw new Error(`X user fetch failed: ${await userRes.text()}`)
+    const { data: xUser } = await userRes.json()
+
+    const expiresAt = expires_in ? new Date(Date.now() + expires_in * 1000) : null
+
+    await this.prisma.socialAccount.upsert({
+      where: { tenantId_platform: { tenantId, platform: 'x' } },
+      create: {
+        tenantId,
+        platform: 'x',
+        accountName: xUser.name ?? xUser.username ?? 'X Account',
+        pageId: xUser.id,
+        accessToken: access_token,
+        refreshToken: refresh_token ?? null,
+        expiresAt,
+        isActive: true,
+      },
+      update: {
+        accountName: xUser.name ?? xUser.username ?? 'X Account',
+        accessToken: access_token,
+        refreshToken: refresh_token ?? null,
+        expiresAt,
+        isActive: true,
+      },
+    })
+
+    this.logger.log(`X account connected for tenant ${tenantId}`)
   }
 }

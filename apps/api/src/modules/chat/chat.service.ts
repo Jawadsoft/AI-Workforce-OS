@@ -192,6 +192,33 @@ const CRM_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'review_to_post',
+    description: 'Turn a customer review or testimonial into social media posts. Use when staff shares a review or says something like "we got a 5-star review from John, post about it". Always show the generated posts back to the user.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reviewText: { type: 'string', description: 'The full text of the customer review or testimonial' },
+        reviewerName: { type: 'string', description: 'Customer name if available' },
+        rating: { type: 'number', description: 'Star rating (1-5) if available' },
+        platforms: { type: 'array', items: { type: 'string', enum: ['facebook', 'instagram', 'linkedin', 'x'] }, description: 'Which platforms to post to' },
+      },
+      required: ['reviewText', 'platforms'],
+    },
+  },
+  {
+    name: 'repurpose_content',
+    description: 'Repurpose existing content (blog post, email, document, or any text) into platform-specific social media posts. Use when staff says "turn this blog post into social posts" or "repurpose this for Instagram". Always show the posts back.',
+    parameters: {
+      type: 'object',
+      properties: {
+        sourceContent: { type: 'string', description: 'The full source content to repurpose' },
+        sourceType: { type: 'string', enum: ['blog', 'email', 'document', 'text'], description: 'Type of the source content' },
+        platforms: { type: 'array', items: { type: 'string', enum: ['facebook', 'instagram', 'linkedin', 'x'] }, description: 'Target platforms' },
+      },
+      required: ['sourceContent', 'platforms'],
+    },
+  },
+  {
     name: 'suggest_transfer',
     description: 'Offer to connect the customer with a colleague who is better suited to handle their request. Use this when the customer asks something outside your area of expertise. Shows the customer a button to switch to the right person.',
     parameters: {
@@ -741,8 +768,11 @@ export class ChatService {
         .test(messages[messages.length - 1]?.content ?? '')
     const taskTools = userWantsTask ? ['create_internal_task'] : []
 
-    // social media tool — only for agents with the social_media tool flag
-    const socialTools = (agent.tools as string[])?.includes('post_to_social') ? ['post_to_social'] : []
+    // social media tools — only for agents with the post_to_social tool flag
+    const agentTools = agent.tools as string[] ?? []
+    const socialTools = agentTools.includes('post_to_social')
+      ? ['post_to_social', 'review_to_post', 'repurpose_content']
+      : []
 
     // Specialists can update/view tickets but NEVER create new ones (prevents duplicates during auto-wake/handoff)
     const specialistTicketTools = ['update_ticket', 'get_my_tickets', 'get_team_activity']
@@ -1530,6 +1560,44 @@ export class ChatService {
           } catch (err: any) {
             if (err.message?.includes('not enabled')) return `Social media feature is not enabled for your account. Contact your administrator.`
             return `Error creating social posts: ${err.message}`
+          }
+        }
+
+        if (toolName === 'review_to_post') {
+          try {
+            const saved = await this.social.reviewToPost(tenantId, {
+              agentId: agent.id,
+              reviewText: params.reviewText,
+              reviewerName: params.reviewerName,
+              rating: params.rating,
+              platforms: params.platforms ?? ['facebook'],
+            })
+            const lines = saved.map((p: any) => {
+              const platformLabel = p.platform.charAt(0).toUpperCase() + p.platform.slice(1)
+              return `**${platformLabel}** (queued for approval):\n"${p.content}"`
+            })
+            const reviewer = params.reviewerName ? ` from ${params.reviewerName}` : ''
+            return `Here are the posts based on the customer review${reviewer}:\n\n${lines.join('\n\n')}\n\nReview and approve them in the **Social Media** section.`
+          } catch (err: any) {
+            return `Error creating review posts: ${err.message}`
+          }
+        }
+
+        if (toolName === 'repurpose_content') {
+          try {
+            const saved = await this.social.repurposeContent(tenantId, {
+              agentId: agent.id,
+              sourceContent: params.sourceContent,
+              sourceType: params.sourceType ?? 'text',
+              platforms: params.platforms ?? ['facebook'],
+            })
+            const lines = saved.map((p: any) => {
+              const platformLabel = p.platform.charAt(0).toUpperCase() + p.platform.slice(1)
+              return `**${platformLabel}** (queued for approval):\n"${p.content}"`
+            })
+            return `Here are the repurposed posts for each platform:\n\n${lines.join('\n\n')}\n\nReview and approve them in the **Social Media** section.`
+          } catch (err: any) {
+            return `Error repurposing content: ${err.message}`
           }
         }
 

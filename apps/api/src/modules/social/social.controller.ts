@@ -1,14 +1,16 @@
 import {
   Controller, Get, Post, Patch, Delete,
-  Param, Body, Query, UseGuards, UploadedFile, UseInterceptors,
+  Param, Body, Query, UseGuards, UploadedFile, UseInterceptors, Res,
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { IsString, IsOptional, IsArray, IsBoolean, IsDateString } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
+import { Public } from '../../common/decorators/public.decorator'
 import { CurrentTenant } from '../../common/decorators/tenant.decorator'
 import { SocialService } from './social.service'
 import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
+import { ConfigService } from '@nestjs/config'
 
 class GeneratePostDto {
   @IsString() brief: string
@@ -41,6 +43,7 @@ export class SocialController {
   constructor(
     private readonly service: SocialService,
     private readonly cloudinary: CloudinaryService,
+    private readonly config: ConfigService,
   ) {}
 
   // ── Post generation ───────────────────────────────────────────────
@@ -128,6 +131,147 @@ export class SocialController {
   @ApiOperation({ summary: 'Delete a draft or scheduled post' })
   deletePost(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.deletePost(tenantId, id)
+  }
+
+  // ── Review-to-post ────────────────────────────────────────────────
+
+  @Post('review-to-post')
+  @ApiOperation({ summary: 'Turn a customer review into social media posts' })
+  reviewToPost(@CurrentTenant() tenantId: string, @Body() body: any) {
+    return this.service.reviewToPost(tenantId, {
+      reviewText: body.reviewText,
+      reviewerName: body.reviewerName,
+      rating: body.rating,
+      platforms: Array.isArray(body.platforms) ? body.platforms : (body.platforms ?? 'facebook').split(','),
+    })
+  }
+
+  // ── Cross-platform repurpose ───────────────────────────────────────
+
+  @Post('repurpose')
+  @ApiOperation({ summary: 'Repurpose existing content into platform-specific posts' })
+  repurpose(@CurrentTenant() tenantId: string, @Body() body: any) {
+    return this.service.repurposeContent(tenantId, {
+      sourceContent: body.sourceContent,
+      sourceType: body.sourceType ?? 'text',
+      platforms: Array.isArray(body.platforms) ? body.platforms : (body.platforms ?? 'facebook').split(','),
+    })
+  }
+
+  // ── Content calendar ─────────────────────────────────────────────
+
+  @Post('calendar')
+  @ApiOperation({ summary: 'Generate a content calendar' })
+  generateCalendar(@CurrentTenant() tenantId: string, @Body() body: any) {
+    return this.service.generateCalendar(tenantId, {
+      days: body.days ?? 30,
+      platforms: Array.isArray(body.platforms) ? body.platforms : ['facebook', 'instagram'],
+      industry: body.industry,
+    })
+  }
+
+  // ── Analytics ────────────────────────────────────────────────────
+
+  @Get('analytics')
+  @ApiOperation({ summary: 'Get social media analytics summary' })
+  getAnalytics(@CurrentTenant() tenantId: string) {
+    return this.service.getAnalytics(tenantId)
+  }
+
+  // ── Safety check ─────────────────────────────────────────────────
+
+  @Post('safety-check')
+  @ApiOperation({ summary: 'Check if a post is safe to publish (rate limits, duplicates)' })
+  safetyCheck(@CurrentTenant() tenantId: string, @Body() body: any) {
+    return this.service.checkPublishSafety(tenantId, body.platform, body.content)
+  }
+
+  // ── OAuth: Facebook + Instagram ───────────────────────────────────
+
+  @Public()
+  @Get('oauth/facebook/connect')
+  @ApiOperation({ summary: 'Start Facebook/Instagram OAuth flow' })
+  facebookConnect(@Query('tenantId') tenantId: string, @Res() res: any) {
+    const appId = this.config.get('FACEBOOK_APP_ID')
+    const redirectBase = this.config.get('SOCIAL_OAUTH_REDIRECT_BASE')
+    const redirectUri = encodeURIComponent(`${redirectBase}/social/oauth/facebook/callback`)
+    const scope = 'pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish'
+    const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64')
+    const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&response_type=code`
+    return res.redirect(url)
+  }
+
+  @Public()
+  @Get('oauth/facebook/callback')
+  @ApiOperation({ summary: 'Facebook OAuth callback' })
+  async facebookCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: any) {
+    const frontendUrl = this.config.get('FRONTEND_URL') ?? 'http://localhost:3000'
+    try {
+      const { tenantId } = JSON.parse(Buffer.from(state, 'base64').toString())
+      await this.service.handleFacebookCallback(tenantId, code)
+      return res.redirect(`${frontendUrl}/social?connected=facebook`)
+    } catch (err: any) {
+      return res.redirect(`${frontendUrl}/social?error=${encodeURIComponent(err.message)}`)
+    }
+  }
+
+  // ── OAuth: LinkedIn ───────────────────────────────────────────────
+
+  @Public()
+  @Get('oauth/linkedin/connect')
+  @ApiOperation({ summary: 'Start LinkedIn OAuth flow' })
+  linkedinConnect(@Query('tenantId') tenantId: string, @Res() res: any) {
+    const clientId = this.config.get('LINKEDIN_CLIENT_ID')
+    const redirectBase = this.config.get('SOCIAL_OAUTH_REDIRECT_BASE')
+    const redirectUri = encodeURIComponent(`${redirectBase}/social/oauth/linkedin/callback`)
+    const scope = 'openid%20profile%20w_member_social'
+    const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64')
+    const url = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${clientId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}`
+    return res.redirect(url)
+  }
+
+  @Public()
+  @Get('oauth/linkedin/callback')
+  @ApiOperation({ summary: 'LinkedIn OAuth callback' })
+  async linkedinCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: any) {
+    const frontendUrl = this.config.get('FRONTEND_URL') ?? 'http://localhost:3000'
+    try {
+      const { tenantId } = JSON.parse(Buffer.from(state, 'base64').toString())
+      await this.service.handleLinkedInCallback(tenantId, code)
+      return res.redirect(`${frontendUrl}/social?connected=linkedin`)
+    } catch (err: any) {
+      return res.redirect(`${frontendUrl}/social?error=${encodeURIComponent(err.message)}`)
+    }
+  }
+
+  // ── OAuth: X (Twitter) ────────────────────────────────────────────
+
+  @Public()
+  @Get('oauth/x/connect')
+  @ApiOperation({ summary: 'Start X/Twitter OAuth 2.0 flow' })
+  xConnect(@Query('tenantId') tenantId: string, @Res() res: any) {
+    const clientId = this.config.get('X_CLIENT_ID')
+    const redirectBase = this.config.get('SOCIAL_OAUTH_REDIRECT_BASE')
+    const redirectUri = encodeURIComponent(`${redirectBase}/social/oauth/x/callback`)
+    const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64')
+    const challenge = Buffer.from(Math.random().toString(36)).toString('base64').replace(/[^a-zA-Z0-9]/g, '')
+    const scope = 'tweet.read%20tweet.write%20users.read%20offline.access'
+    const url = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&code_challenge=${challenge}&code_challenge_method=plain`
+    return res.redirect(url)
+  }
+
+  @Public()
+  @Get('oauth/x/callback')
+  @ApiOperation({ summary: 'X/Twitter OAuth callback' })
+  async xCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: any) {
+    const frontendUrl = this.config.get('FRONTEND_URL') ?? 'http://localhost:3000'
+    try {
+      const { tenantId } = JSON.parse(Buffer.from(state, 'base64').toString())
+      await this.service.handleXCallback(tenantId, code)
+      return res.redirect(`${frontendUrl}/social?connected=x`)
+    } catch (err: any) {
+      return res.redirect(`${frontendUrl}/social?error=${encodeURIComponent(err.message)}`)
+    }
   }
 
   // ── Connected accounts ────────────────────────────────────────────

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle, Trash2, Mic, MicOff, Volume2, VolumeX, Paperclip, X, FileText, Image } from 'lucide-react'
+import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle, Trash2, Mic, MicOff, Volume2, VolumeX, Paperclip, X, FileText, Image, ChevronLeft } from 'lucide-react'
 import { useSpeech } from '@/hooks/use-speech'
 import { CRMRecordCard } from './crm-record-card'
 import { ChatActionCard, type ActionCard } from './action-cards'
@@ -372,109 +372,136 @@ export function ChatPage() {
     },
   })
 
-  return (
-    <div className="flex h-[calc(100vh-112px)] border border-border rounded-lg overflow-hidden bg-card">
+  // Mobile: show agent list OR chat (WhatsApp style)
+  const [mobileChatOpen, setMobileChatOpen] = useState(false)
 
-      {/* ── Agent sidebar ──────────────────────────────────────────── */}
-      <div className="w-64 border-r border-border flex flex-col shrink-0 bg-muted/20">
-        <div className="px-4 py-3 border-b border-border">
-          <p className="text-sm font-semibold">Your Agents</p>
-          <p className="text-xs text-muted-foreground mt-0.5">Select an agent to chat</p>
+  const handleSelectAgent = (agentId: string) => {
+    setSelectedAgentId(agentId)
+    setMobileChatOpen(true)
+  }
+
+  return (
+    <div className="flex h-full border border-border sm:rounded-lg overflow-hidden bg-card">
+
+      {/* ── Agent list (left panel on desktop / full screen on mobile) ── */}
+      <div className={`
+        flex-col shrink-0 bg-card border-r border-border
+        w-full sm:w-72 sm:flex
+        ${mobileChatOpen ? 'hidden sm:flex' : 'flex'}
+      `}>
+        {/* List header */}
+        <div className="px-4 py-4 border-b border-border bg-muted/20">
+          <p className="text-base font-semibold">Agents</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{agents.length} active</p>
         </div>
 
-        <div className="flex-1 overflow-y-auto py-2">
+        <div className="flex-1 overflow-y-auto">
           {agentsLoading ? (
-            <div className="flex items-center gap-2 px-4 py-3 text-muted-foreground text-sm">
-              <Loader2 className="w-4 h-4 animate-spin" /> Loading agents...
+            <div className="flex items-center gap-2 px-4 py-6 text-muted-foreground text-sm justify-center">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading...
             </div>
           ) : agents.length === 0 ? (
-            <div className="px-4 py-6 text-center">
-              <MessageSquare className="w-6 h-6 text-muted-foreground mx-auto mb-2" />
-              <p className="text-xs text-muted-foreground">No active agents yet</p>
+            <div className="px-4 py-10 text-center">
+              <MessageSquare className="w-8 h-8 text-muted-foreground mx-auto mb-3" />
+              <p className="text-sm text-muted-foreground">No active agents yet</p>
             </div>
           ) : (
-            agents.map((agent: any) => (
-              <button
-                key={agent.id}
-                onClick={() => setSelectedAgentId(agent.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors border-b border-border/50 ${
-                  selectedAgentId === agent.id
-                    ? 'bg-primary/10 border-l-2 border-l-primary'
-                    : 'hover:bg-accent/50'
-                }`}
-              >
-                {resolveAvatarUrl(agent.avatar) ? (
-                  <img src={resolveAvatarUrl(agent.avatar)!} alt={agent.name} className="w-9 h-9 rounded-full object-cover shrink-0" />
-                ) : (
-                  <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary shrink-0">
-                    {agent.name?.[0] ?? 'A'}
+            agents.map((agent: any) => {
+              const isSelected = selectedAgentId === agent.id
+              return (
+                <button
+                  key={agent.id}
+                  onClick={() => handleSelectAgent(agent.id)}
+                  className={`w-full flex items-center gap-3 px-4 py-3.5 text-left transition-colors border-b border-border/40 ${
+                    isSelected ? 'bg-primary/8 border-l-[3px] border-l-primary' : 'hover:bg-accent/60 active:bg-accent'
+                  }`}
+                >
+                  <div className="relative shrink-0">
+                    {resolveAvatarUrl(agent.avatar) ? (
+                      <img src={resolveAvatarUrl(agent.avatar)!} alt={agent.name} className="w-11 h-11 rounded-full object-cover" />
+                    ) : (
+                      <div className="w-11 h-11 rounded-full bg-primary/10 flex items-center justify-center text-base font-bold text-primary">
+                        {agent.name?.[0] ?? 'A'}
+                      </div>
+                    )}
+                    <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-background" />
                   </div>
-                )}
-                <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">{agent.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{agent.role}</p>
-                </div>
-                <div className="w-2 h-2 rounded-full bg-green-500 shrink-0 ml-auto" title="Active" />
-              </button>
-            ))
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold truncate">{agent.name}</p>
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate mt-0.5">{agent.role}</p>
+                  </div>
+                  <ChevronLeft className="w-4 h-4 text-muted-foreground rotate-180 shrink-0 sm:hidden" />
+                </button>
+              )
+            })
           )}
         </div>
       </div>
 
-      {/* ── Chat window ────────────────────────────────────────────── */}
+      {/* ── Chat panel (right on desktop / full screen on mobile) ── */}
       {selectedAgentId ? (
         primaryQuery.isLoading ? (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="flex items-center gap-2 text-muted-foreground text-sm">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              Opening conversation with {selectedAgent?.name}...
+          <div className={`flex-1 flex items-center justify-center bg-card ${mobileChatOpen ? 'flex' : 'hidden sm:flex'}`}>
+            <div className="flex flex-col items-center gap-3 text-muted-foreground">
+              <Loader2 className="w-6 h-6 animate-spin" />
+              <p className="text-sm">Opening chat with {selectedAgent?.name}...</p>
             </div>
           </div>
         ) : (
-          <div className="flex-1 flex flex-col min-w-0">
-            {/* Header */}
-            <div className="border-b border-border">
-              <div className="px-4 py-3 flex items-center gap-3">
+          <div className={`flex-1 flex flex-col min-w-0 bg-card ${mobileChatOpen ? 'flex' : 'hidden sm:flex'}`}>
+            {/* Chat header */}
+            <div className="border-b border-border bg-card/95 backdrop-blur-sm">
+              <div className="px-3 sm:px-4 py-3 flex items-center gap-3">
+                {/* Back button — mobile only */}
+                <button
+                  onClick={() => setMobileChatOpen(false)}
+                  className="sm:hidden p-1.5 -ml-1 rounded-full text-muted-foreground hover:bg-accent transition-colors"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+
                 {resolveAvatarUrl(selectedAgent?.avatar) ? (
-                  <img src={resolveAvatarUrl(selectedAgent?.avatar)!} alt={selectedAgent?.name} className="w-8 h-8 rounded-full object-cover" />
+                  <img src={resolveAvatarUrl(selectedAgent?.avatar)!} alt={selectedAgent?.name} className="w-9 h-9 rounded-full object-cover shrink-0" />
                 ) : (
-                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary">
+                  <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary shrink-0">
                     {selectedAgent?.name?.[0] ?? 'A'}
                   </div>
                 )}
-                <div className="flex-1">
-                  <p className="text-sm font-semibold">{selectedAgent?.name}</p>
-                  <p className="text-xs text-muted-foreground">{selectedAgent?.role}</p>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold truncate leading-tight">{selectedAgent?.name}</p>
+                  <p className="text-xs text-green-500 font-medium">Online</p>
                 </div>
-                {/* Clear conversation button */}
+
+                {/* Clear button */}
                 {!confirmClear ? (
                   <button
                     onClick={() => setConfirmClear(true)}
-                    className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                    className="p-2 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0"
                     title="Clear conversation"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
                 ) : (
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-muted-foreground">Clear all?</span>
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       onClick={() => clearMutation.mutate()}
                       disabled={clearMutation.isPending}
-                      className="text-xs px-2 py-1 rounded bg-destructive text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50 transition-colors"
+                      className="text-xs px-2.5 py-1 rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50 transition-colors"
                     >
-                      {clearMutation.isPending ? 'Clearing...' : 'Yes, clear'}
+                      {clearMutation.isPending ? '...' : 'Clear'}
                     </button>
                     <button
                       onClick={() => setConfirmClear(false)}
-                      className="text-xs px-2 py-1 rounded border border-border hover:bg-accent transition-colors"
+                      className="text-xs px-2.5 py-1 rounded-full border border-border hover:bg-accent transition-colors"
                     >
-                      Cancel
+                      No
                     </button>
                   </div>
                 )}
 
-                <div className="flex items-center gap-1.5 text-xs text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full">
+                <div className="hidden sm:flex items-center gap-1.5 text-xs text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full shrink-0">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
                   Active
                 </div>
@@ -518,7 +545,7 @@ export function ChatPage() {
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2 sm:space-y-3 bg-muted/5">
               {messages.length === 0 && !streamingMsg && (
                 <div className="text-center py-16">
                   <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary mx-auto mb-4">
@@ -555,7 +582,7 @@ export function ChatPage() {
                   // Proactive briefing — distinct style
                   return (
                     <div key={msg.id} className="flex justify-start">
-                      <div className="max-w-[80%] space-y-1.5">
+                      <div className="max-w-[90%] sm:max-w-[80%] space-y-1.5">
                         <div className="flex items-center gap-1.5">
                           {briefingInfo && (
                             <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${briefingInfo.color}`}>
@@ -607,7 +634,7 @@ export function ChatPage() {
                 const msgAttachments: Attachment[] = Array.isArray(msg.attachments) ? msg.attachments : []
                 return (
                   <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                    <div className="max-w-[72%] space-y-1.5">
+                    <div className="max-w-[88%] sm:max-w-[72%] space-y-1.5">
                       {/* Attachment previews */}
                       {msgAttachments.length > 0 && (
                         <div className={`flex flex-col gap-1.5 ${isUser ? 'items-end' : 'items-start'}`}>
@@ -757,133 +784,101 @@ export function ChatPage() {
               <div ref={bottomRef} />
             </div>
 
-            {/* Input */}
-            <div className="border-t border-border">
-              {/* Live interim transcript banner */}
+            {/* Input bar */}
+            <div className="border-t border-border bg-card px-3 pt-2 pb-3 sm:px-4 sm:py-3">
+              {/* Interim STT transcript */}
               {interimText && (
-                <div className="px-3 pt-2 text-xs text-muted-foreground italic animate-pulse flex items-center gap-1.5">
+                <div className="mb-1.5 text-xs text-muted-foreground italic animate-pulse flex items-center gap-1.5">
                   <Mic className="w-3 h-3 text-red-500" />
                   {interimText}
                 </div>
               )}
 
-              {/* File preview strip */}
+              {/* File preview */}
               {pendingFile && (
-                <div className="px-3 pt-2 pb-1 flex items-center gap-2">
-                  <div className="flex items-center gap-2 bg-muted rounded-lg px-3 py-1.5 text-xs max-w-[260px]">
-                    {pendingFile.type.startsWith('image/') ? (
-                      <>
-                        <Image className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                        <img
-                          src={URL.createObjectURL(pendingFile)}
-                          alt={pendingFile.name}
-                          className="h-8 w-8 rounded object-cover"
-                        />
-                      </>
-                    ) : (
-                      <FileText className="w-3.5 h-3.5 text-orange-500 shrink-0" />
-                    )}
-                    <span className="truncate text-muted-foreground">{pendingFile.name}</span>
-                    <button
-                      onClick={() => setPendingFile(null)}
-                      className="ml-auto text-muted-foreground hover:text-foreground shrink-0"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                <div className="mb-2 flex items-center gap-2 bg-muted rounded-xl px-3 py-2 text-xs max-w-xs">
+                  {pendingFile.type.startsWith('image/') ? (
+                    <img src={URL.createObjectURL(pendingFile)} alt={pendingFile.name} className="h-8 w-8 rounded-lg object-cover shrink-0" />
+                  ) : (
+                    <FileText className="w-4 h-4 text-orange-500 shrink-0" />
+                  )}
+                  <span className="truncate text-muted-foreground flex-1">{pendingFile.name}</span>
+                  <button onClick={() => setPendingFile(null)} className="text-muted-foreground hover:text-foreground shrink-0">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               )}
 
-              <div className="p-3 flex gap-2 items-center">
-                {/* File attach button — only shown when feature enabled */}
-                {fileUploadsEnabled && (
-                  <>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      className="hidden"
-                      accept="image/*,.pdf,.doc,.docx,.xlsx,.csv,.txt"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0]
-                        if (f) setPendingFile(f)
-                        e.target.value = ''
-                      }}
-                    />
+              <div className="flex items-center gap-2">
+                {/* Left actions */}
+                <div className="flex items-center gap-1 shrink-0">
+                  {fileUploadsEnabled && (
+                    <>
+                      <input ref={fileInputRef} type="file" className="hidden"
+                        accept="image/*,.pdf,.doc,.docx,.xlsx,.csv,.txt"
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) setPendingFile(f); e.target.value = '' }}
+                      />
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={sending}
+                        title="Attach file"
+                        className={`p-2 rounded-full transition-colors ${pendingFile ? 'text-blue-500 bg-blue-500/10' : 'text-muted-foreground hover:text-foreground hover:bg-muted'} disabled:opacity-50`}
+                      >
+                        <Paperclip className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
+                  {sttSupported && (
                     <button
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={sending}
-                      title="Attach image or document"
-                      className={`p-2 rounded-md transition-colors flex-shrink-0 ${
-                        pendingFile
-                          ? 'bg-blue-500/10 text-blue-500 border border-blue-500/30'
-                          : 'border border-border text-muted-foreground hover:bg-muted hover:text-foreground'
-                      } disabled:opacity-50`}
+                      onClick={() => { if (isSpeaking) stopSpeaking(); toggleListening() }}
+                      title={isListening ? 'Stop' : 'Speak'}
+                      className={`p-2 rounded-full transition-colors ${isListening ? 'bg-red-500 text-white animate-pulse' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
                     >
-                      <Paperclip className="w-4 h-4" />
+                      {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
                     </button>
-                  </>
-                )}
+                  )}
+                </div>
 
-                {/* Mic button — STT */}
-                {sttSupported && (
-                  <button
-                    onClick={() => {
-                      if (isSpeaking) stopSpeaking()
-                      toggleListening()
-                    }}
-                    title={isListening ? 'Stop listening' : 'Speak to send'}
-                    className={`p-2 rounded-md transition-colors flex-shrink-0 ${
-                      isListening
-                        ? 'bg-red-500 text-white animate-pulse hover:bg-red-600'
-                        : 'border border-border text-muted-foreground hover:bg-muted hover:text-foreground'
-                    }`}
-                  >
-                    {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                  </button>
-                )}
-
+                {/* Text input */}
                 <input
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(message, pendingFile) } }}
-                  placeholder={isListening ? 'Listening…' : pendingFile ? `Add a message about ${pendingFile.name}…` : `Message ${selectedAgent?.name ?? 'agent'}...`}
+                  placeholder={isListening ? 'Listening…' : pendingFile ? 'Add a message…' : `Message ${selectedAgent?.name ?? 'agent'}…`}
                   disabled={sending}
-                  className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                  className="flex-1 min-w-0 rounded-full border border-border bg-muted/50 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:bg-background transition-colors disabled:opacity-50"
                 />
 
-                {/* TTS toggle */}
-                <button
-                  onClick={toggleTts}
-                  title={ttsEnabled ? 'Mute agent voice' : 'Enable agent voice'}
-                  className={`p-2 rounded-md transition-colors flex-shrink-0 ${
-                    ttsEnabled
-                      ? isSpeaking
-                        ? 'bg-primary/10 text-primary animate-pulse border border-primary/30'
-                        : 'bg-primary/10 text-primary border border-primary/30'
-                      : 'border border-border text-muted-foreground hover:bg-muted hover:text-foreground'
-                  }`}
-                >
-                  {ttsEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-                </button>
-
-                <button
-                  onClick={handleSend}
-                  disabled={(!message.trim() && !pendingFile) || sending}
-                  className="p-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors flex-shrink-0"
-                >
-                  <Send className="w-4 h-4" />
-                </button>
+                {/* Right actions */}
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={toggleTts}
+                    title={ttsEnabled ? 'Mute voice' : 'Enable voice'}
+                    className={`hidden sm:flex p-2 rounded-full transition-colors ${ttsEnabled ? (isSpeaking ? 'text-primary animate-pulse' : 'text-primary') : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+                  >
+                    {ttsEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
+                  </button>
+                  <button
+                    onClick={handleSend}
+                    disabled={(!message.trim() && !pendingFile) || sending}
+                    className="p-2.5 bg-primary text-primary-foreground rounded-full hover:bg-primary/90 disabled:opacity-40 transition-all disabled:scale-95 active:scale-95"
+                  >
+                    {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
         )
       ) : (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center space-y-3 max-w-sm">
-            <MessageSquare className="w-12 h-12 text-muted-foreground mx-auto" />
-            <p className="text-base font-medium">Select an agent to get started</p>
-            <p className="text-sm text-muted-foreground">
-              Each agent has one persistent conversation thread. They'll also update you here automatically when they handle customers, webhook events, or tasks on your behalf.
+        <div className="flex-1 hidden sm:flex items-center justify-center bg-muted/10">
+          <div className="text-center space-y-3 max-w-sm px-6">
+            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto">
+              <MessageSquare className="w-8 h-8 text-primary/50" />
+            </div>
+            <p className="text-base font-semibold">Select an agent</p>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Tap an agent from the list to start chatting. Agents will also update you here automatically when they handle tasks on your behalf.
             </p>
           </div>
         </div>

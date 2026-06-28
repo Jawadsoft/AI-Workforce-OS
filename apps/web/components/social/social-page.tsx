@@ -202,29 +202,30 @@ export function SocialPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6 p-6">
+    <div className="max-w-5xl mx-auto space-y-4 pb-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Social Media</h1>
-          <p className="text-sm text-muted-foreground mt-1">Generate, schedule, and publish AI-crafted posts</p>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl sm:text-2xl font-bold">Social Media</h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">Generate, schedule, and publish AI posts</p>
         </div>
         <button
           onClick={() => setTab('generate')}
-          className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors"
+          className="flex items-center gap-1.5 bg-primary text-primary-foreground px-3 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors shrink-0"
         >
           <Sparkles className="w-4 h-4" />
-          Generate Post
+          <span className="hidden sm:inline">Generate Post</span>
+          <span className="sm:hidden">Generate</span>
         </button>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-border pb-0">
+      {/* Tabs — scrollable on mobile */}
+      <div className="flex gap-0 border-b border-border overflow-x-auto scrollbar-hide">
         {([['posts', 'Posts'], ['generate', 'Generate'], ['calendar', 'Calendar'], ['analytics', 'Analytics'], ['accounts', 'Accounts']] as const).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${tab === key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            className={`px-3 sm:px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap shrink-0 ${tab === key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
           >
             {label}
           </button>
@@ -235,11 +236,11 @@ export function SocialPage() {
       {tab === 'posts' && (
         <div className="space-y-4">
           {/* Filters + view toggle */}
-          <div className="flex gap-3 flex-wrap items-center">
+          <div className="flex flex-wrap gap-2 items-center">
             <select
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
-              className="text-sm border border-border bg-background rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring"
+              className="text-sm border border-border bg-background rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring flex-1 sm:flex-none min-w-0"
             >
               <option value="">All Statuses</option>
               {['draft', 'pending_approval', 'scheduled', 'published', 'failed'].map((s) => (
@@ -249,12 +250,12 @@ export function SocialPage() {
             <select
               value={filterPlatform}
               onChange={(e) => setFilterPlatform(e.target.value)}
-              className="text-sm border border-border bg-background rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring"
+              className="text-sm border border-border bg-background rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring flex-1 sm:flex-none min-w-0"
             >
               <option value="">All Platforms</option>
               {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
-            <div className="ml-auto flex items-center gap-1 border border-border rounded-lg p-0.5">
+            <div className="ml-auto flex items-center gap-1 border border-border rounded-lg p-0.5 shrink-0">
               <button
                 onClick={() => setViewMode('list')}
                 className={`p-1.5 rounded-md transition-colors ${viewMode === 'list' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
@@ -344,7 +345,7 @@ export function SocialPage() {
             </div>
 
             {/* Content Type + Image */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="text-sm font-medium">Content Type (optional)</label>
                 <select
@@ -386,7 +387,7 @@ export function SocialPage() {
             <button
               onClick={handleGenerate}
               disabled={generating || !brief.trim() || platforms.length === 0}
-              className="flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              className="flex items-center justify-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors w-full sm:w-auto"
             >
               {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
               {generating ? 'Generating...' : 'Generate Posts'}
@@ -423,7 +424,7 @@ export function SocialPage() {
               rows={3}
               className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
             />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <input
                 value={reviewerName}
                 onChange={(e) => setReviewerName(e.target.value)}
@@ -447,7 +448,7 @@ export function SocialPage() {
               ))}
             </div>
             <button onClick={handleReviewToPost} disabled={generatingReview || !reviewText.trim() || reviewPlatforms.length === 0}
-              className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors">
+              className="flex items-center justify-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors w-full sm:w-auto">
               {generatingReview ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
               {generatingReview ? 'Creating posts...' : 'Create Posts from Review'}
             </button>
@@ -457,9 +458,9 @@ export function SocialPage() {
           <div className="rounded-xl border border-border bg-card p-5 space-y-4">
             <h3 className="font-semibold">Content Calendar</h3>
             <p className="text-sm text-muted-foreground">Generate a content plan with topic ideas for the coming days.</p>
-            <div className="flex gap-3 flex-wrap items-center">
+            <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:flex-wrap">
               <select value={calDays} onChange={(e) => setCalDays(Number(e.target.value))}
-                className="text-sm border border-border bg-background rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-ring">
+                className="text-sm border border-border bg-background rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-ring w-full sm:w-auto">
                 <option value={7}>7 days</option>
                 <option value={14}>14 days</option>
                 <option value={30}>30 days</option>
@@ -473,7 +474,7 @@ export function SocialPage() {
                 ))}
               </div>
               <button onClick={handleGenerateCalendar} disabled={generatingCal || calPlatforms.length === 0}
-                className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors ml-auto">
+                className="flex items-center justify-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors sm:ml-auto w-full sm:w-auto">
                 {generatingCal ? <Loader2 className="w-4 h-4 animate-spin" /> : <Calendar className="w-4 h-4" />}
                 {generatingCal ? 'Generating...' : 'Generate Calendar'}
               </button>
@@ -530,7 +531,7 @@ export function SocialPage() {
                   </div>
                 ))}
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="rounded-xl border border-border bg-card p-4">
                   <h4 className="text-sm font-semibold mb-3">Posts by Platform</h4>
                   <div className="space-y-2">
@@ -724,18 +725,17 @@ function PostCard({ post, onApprove, onDelete, onEdit }: {
   onEdit: () => void
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4 flex gap-4">
+    <div className="rounded-xl border border-border bg-card p-3 sm:p-4 flex gap-3">
       {post.imageUrl && (
-        <img src={post.imageUrl} alt="" className="w-20 h-20 rounded-lg object-cover shrink-0" />
+        <img src={post.imageUrl} alt="" className="w-14 h-14 sm:w-20 sm:h-20 rounded-lg object-cover shrink-0" />
       )}
-      <div className="flex-1 min-w-0 space-y-2">
-        <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex-1 min-w-0 space-y-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
           {PLATFORM_ICONS[post.platform]}
-          <span className="text-xs capitalize text-muted-foreground">{post.platform}</span>
           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_STYLES[post.status] ?? ''}`}>
             {post.status.replace('_', ' ')}
           </span>
-          <span className="text-xs text-muted-foreground capitalize bg-muted px-2 py-0.5 rounded-full">
+          <span className="text-xs text-muted-foreground capitalize bg-muted px-2 py-0.5 rounded-full hidden sm:inline">
             {post.contentType}
           </span>
         </div>
@@ -867,7 +867,7 @@ function DraftCard({ draft, onSave }: { draft: any; onSave: (data: any) => void 
       <div className="flex gap-2">
         <button
           onClick={() => onSave({ platform: draft.platform, content, imageUrl: draft.imageUrl, contentType: draft.contentType })}
-          className="flex items-center gap-1.5 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors"
+          className="flex items-center justify-center gap-1.5 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors w-full sm:w-auto"
         >
           <Send className="w-3.5 h-3.5" />
           Send to Approval Queue

@@ -51,7 +51,21 @@ const config: Config = {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // scrollbar-hide utility
+    function ({ addUtilities }: any) {
+      addUtilities({
+        '.scrollbar-hide': {
+          '-ms-overflow-style': 'none',
+          'scrollbar-width': 'none',
+          '&::-webkit-scrollbar': { display: 'none' },
+        },
+        '.pb-safe': {
+          'padding-bottom': 'env(safe-area-inset-bottom, 0px)',
+        },
+      })
+    },
+  ],
 }
 
 export default config

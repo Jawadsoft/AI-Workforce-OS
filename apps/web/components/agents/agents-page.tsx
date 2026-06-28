@@ -77,10 +77,10 @@ export function AgentsPage() {
   })
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
           <h1 className="text-xl font-semibold">AI Workforce</h1>
           <p className="text-sm text-muted-foreground">
             {agents.filter((a: any) => a.status === 'ACTIVE').length} active
@@ -89,30 +89,33 @@ export function AgentsPage() {
             )}
           </p>
         </div>
-        <div className="flex gap-2">
+        {/* Actions — icon-only on mobile, full labels on sm+ */}
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             onClick={handleResetWorkforce}
             disabled={resetting}
-            title="Deactivate duplicates and regenerate your workforce from industry templates"
-            className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-md text-sm hover:bg-accent transition-colors text-muted-foreground"
+            title="Reset Workforce"
+            className="flex items-center gap-1.5 border border-border px-2.5 py-2 rounded-md text-sm hover:bg-accent transition-colors text-muted-foreground"
           >
             {resetting ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            Reset Workforce
+            <span className="hidden sm:inline">Reset Workforce</span>
           </button>
           <Link href="/agents/marketplace"
-            className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-md text-sm hover:bg-accent transition-colors">
-            <Zap className="w-4 h-4" /> Marketplace
+            className="flex items-center gap-1.5 border border-border px-2.5 py-2 rounded-md text-sm hover:bg-accent transition-colors">
+            <Zap className="w-4 h-4" />
+            <span className="hidden sm:inline">Marketplace</span>
           </Link>
           <Link href="/agents/create"
-            className="flex items-center gap-1.5 bg-primary text-primary-foreground px-3 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors">
-            <Plus className="w-4 h-4" /> Add Agent
+            className="flex items-center gap-1.5 bg-primary text-primary-foreground px-2.5 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors">
+            <Plus className="w-4 h-4" />
+            <span className="hidden sm:inline">Add Agent</span>
           </Link>
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1 max-w-sm">
+      {/* Filters — stacked on mobile, inline on sm+ */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+        <div className="relative flex-1 sm:max-w-sm">
           <Search className="absolute left-2.5 top-2.5 w-4 h-4 text-muted-foreground" />
           <input
             value={search}
@@ -121,7 +124,7 @@ export function AgentsPage() {
             className="w-full pl-8 pr-3 py-2 text-sm border border-border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
-        <div className="flex rounded-md border border-border overflow-hidden">
+        <div className="flex rounded-md border border-border overflow-hidden self-start sm:self-auto">
           {(['ACTIVE', 'ALL', 'INACTIVE'] as const).map((s) => (
             <button
               key={s}
@@ -136,7 +139,7 @@ export function AgentsPage() {
 
       {/* List */}
       {isLoading ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
           {[...Array(8)].map((_, i) => (
             <div key={i} className="rounded-xl border border-border bg-card overflow-hidden animate-pulse">
               <div className="aspect-[3/4] bg-muted" />
@@ -153,7 +156,7 @@ export function AgentsPage() {
           <Link href="/agents/create" className="mt-3 inline-block text-sm text-primary hover:underline">Create one</Link>
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 xs:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
           {filtered.map((agent: any) => (
             <div
               key={agent.id}

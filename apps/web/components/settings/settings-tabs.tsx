@@ -38,8 +38,27 @@ export function SettingsTabs() {
   }, [])
 
   return (
-    <div className="flex gap-6">
-      <div className="w-52 shrink-0">
+    <div className="flex flex-col sm:flex-row gap-4 sm:gap-6">
+      {/* Mobile: horizontal scrollable tab bar */}
+      <div className="sm:hidden flex gap-1 overflow-x-auto scrollbar-hide border-b border-border pb-0 -mb-px">
+        {TABS.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            onClick={() => setActive(id)}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 whitespace-nowrap shrink-0 transition-colors -mb-px ${
+              active === id
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Icon className="w-3.5 h-3.5 shrink-0" />
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Desktop: vertical sidebar */}
+      <div className="hidden sm:block w-52 shrink-0">
         <nav className="space-y-1">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
@@ -189,7 +208,7 @@ function EmailSettings() {
           </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="text-sm font-medium">SMTP Host</label>
             <input
@@ -229,7 +248,7 @@ function EmailSettings() {
           </button>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="text-sm font-medium">Username / Email</label>
             <input
@@ -260,7 +279,7 @@ function EmailSettings() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="text-sm font-medium">From Name</label>
             <input
@@ -303,7 +322,7 @@ function EmailSettings() {
             Send a test email to verify your SMTP config works.
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-2">
           <input
             value={testEmail}
             onChange={(e) => setTestEmail(e.target.value)}
@@ -313,7 +332,7 @@ function EmailSettings() {
           <button
             onClick={handleTest}
             disabled={testing}
-            className="px-4 py-2 bg-secondary hover:bg-secondary/80 text-secondary-foreground rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+            className="px-4 py-2 bg-secondary hover:bg-secondary/80 text-secondary-foreground rounded-md text-sm font-medium transition-colors disabled:opacity-50 shrink-0"
           >
             {testing ? 'Testing...' : 'Send Test Email'}
           </button>
@@ -548,23 +567,25 @@ function WidgetSettings() {
           <div className="space-y-2">
             <label className="text-sm font-medium">Direct Chat Link</label>
             <p className="text-xs text-muted-foreground">Share this URL directly with customers — no website needed.</p>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               <input
                 readOnly
                 value={previewUrl}
-                className="flex-1 rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground select-all focus:outline-none"
+                className="flex-1 rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground select-all focus:outline-none min-w-0"
                 onFocus={e => e.target.select()}
               />
-              <button
-                onClick={() => { navigator.clipboard.writeText(previewUrl); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
-                className="shrink-0 px-3 py-2 bg-primary text-primary-foreground text-sm rounded-md hover:bg-primary/90 transition-colors"
-              >
-                {copied ? '✓ Copied!' : 'Copy'}
-              </button>
-              <a href={previewUrl} target="_blank" rel="noreferrer"
-                className="shrink-0 px-3 py-2 border border-border rounded-md text-sm hover:bg-accent transition-colors">
-                Open ↗
-              </a>
+              <div className="flex gap-2 shrink-0">
+                <button
+                  onClick={() => { navigator.clipboard.writeText(previewUrl); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
+                  className="flex-1 sm:flex-none px-3 py-2 bg-primary text-primary-foreground text-sm rounded-md hover:bg-primary/90 transition-colors"
+                >
+                  {copied ? '✓ Copied!' : 'Copy'}
+                </button>
+                <a href={previewUrl} target="_blank" rel="noreferrer"
+                  className="flex-1 sm:flex-none text-center px-3 py-2 border border-border rounded-md text-sm hover:bg-accent transition-colors">
+                  Open ↗
+                </a>
+              </div>
             </div>
           </div>
         )}
@@ -582,7 +603,7 @@ function WidgetSettings() {
             className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
-        <div className="flex gap-4">
+        <div className="flex flex-col sm:flex-row gap-4">
           <div className="flex-1">
             <label className="text-sm font-medium">Input Placeholder</label>
             <input
@@ -591,7 +612,7 @@ function WidgetSettings() {
               className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
-          <div>
+          <div className="shrink-0">
             <label className="text-sm font-medium">Primary Color</label>
             <div className="flex items-center gap-2 mt-1">
               <input

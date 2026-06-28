@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Plug, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, Eye, EyeOff, Pencil } from 'lucide-react'
+import { Plug, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, Eye, EyeOff, Pencil, X } from 'lucide-react'
 
 const CRM_PROVIDERS = [
   { id: 'STORMBUDDI', label: 'StormBuddi', description: 'StormBuddi roofing CRM', needsUrl: false, docsUrl: 'https://app.stormbuddi.com' },
@@ -114,15 +114,23 @@ export function CRMConnections() {
 
       {/* Add / Edit Modal */}
       {modalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="w-full max-w-lg bg-card rounded-xl border border-border p-6 space-y-5">
-            <h2 className="font-semibold text-lg">
-              {isEditing ? 'Edit CRM Connection' : 'Connect a CRM'}
-            </h2>
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+          <div className="w-full max-w-lg bg-card rounded-t-2xl sm:rounded-xl border border-border p-5 sm:p-6 space-y-4 sm:space-y-5 max-h-[90dvh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold text-lg">
+                {isEditing ? 'Edit CRM Connection' : 'Connect a CRM'}
+              </h2>
+              <button
+                onClick={closeModal}
+                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
             {/* Provider picker - only when adding */}
             {!isEditing && (
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {CRM_PROVIDERS.map((p) => (
                   <button
                     key={p.id}
@@ -219,10 +227,10 @@ export function CRMConnections() {
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-1">
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-1">
               <button
                 onClick={closeModal}
-                className="px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
+                className="px-4 py-2.5 sm:py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors text-center"
               >
                 Cancel
               </button>
@@ -234,7 +242,7 @@ export function CRMConnections() {
                   createMutation.isPending ||
                   updateMutation.isPending
                 }
-                className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                className="flex items-center justify-center gap-2 bg-primary text-primary-foreground px-4 py-2.5 sm:py-2 rounded-md text-sm hover:bg-primary/90 disabled:opacity-50 transition-colors"
               >
                 {createMutation.isPending || updateMutation.isPending ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -321,22 +329,23 @@ export function CRMConnections() {
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
                     <button
                       onClick={() => testConnection(conn.id)}
-                      className="text-xs border border-border px-3 py-1.5 rounded-md hover:bg-accent transition-colors"
+                      className="text-xs border border-border px-2.5 py-1.5 rounded-md hover:bg-accent transition-colors"
                     >
                       Test
                     </button>
                     <button
                       onClick={() => openEdit(conn)}
-                      className="text-xs border border-border px-3 py-1.5 rounded-md hover:bg-accent transition-colors flex items-center gap-1"
+                      className="text-xs border border-border px-2.5 py-1.5 rounded-md hover:bg-accent transition-colors flex items-center gap-1"
                     >
-                      <Pencil className="w-3 h-3" /> Edit
+                      <Pencil className="w-3 h-3" />
+                      <span className="hidden sm:inline">Edit</span>
                     </button>
                     <button
                       onClick={() => toggleMutation.mutate({ id: conn.id, isActive: conn.isActive })}
-                      className="text-xs border border-border px-3 py-1.5 rounded-md hover:bg-accent transition-colors"
+                      className="text-xs border border-border px-2.5 py-1.5 rounded-md hover:bg-accent transition-colors"
                     >
                       {conn.isActive ? 'Disable' : 'Enable'}
                     </button>
@@ -374,7 +383,7 @@ export function CRMConnections() {
       {connections.length > 0 && (
         <div className="rounded-lg border border-border bg-muted/30 p-5 space-y-3">
           <p className="text-sm font-medium">How agents use your CRM</p>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {[
               { action: 'Log Notes', desc: 'After every conversation, agents auto-log a summary note' },
               { action: 'Update Records', desc: 'Agents update lead status, contact info, and deal stages' },

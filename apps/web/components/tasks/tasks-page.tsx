@@ -116,15 +116,15 @@ export function TasksPage() {
         </div>
       )}
 
-      {/* Filter tabs */}
-      <div className="flex gap-1 rounded-lg border border-border p-1 w-fit bg-muted/30">
+      {/* Filter tabs — scrollable on mobile */}
+      <div className="flex gap-1 rounded-lg border border-border p-1 bg-muted/30 overflow-x-auto scrollbar-hide">
         {['ALL', 'PENDING', 'IN_PROGRESS', 'PENDING_APPROVAL', 'COMPLETED'].map((s) => (
           <button
             key={s}
             onClick={() => setFilter(s)}
-            className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors ${filter === s ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+            className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors whitespace-nowrap shrink-0 ${filter === s ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
           >
-            {s === 'ALL' ? 'All' : s.replace('_', ' ')}
+            {s === 'ALL' ? 'All' : s === 'IN_PROGRESS' ? 'In Progress' : s === 'PENDING_APPROVAL' ? 'Approval' : s === 'COMPLETED' ? 'Done' : 'Pending'}
           </button>
         ))}
       </div>
@@ -152,52 +152,54 @@ export function TasksPage() {
             const s = STATUS_CONFIG[task.status] ?? STATUS_CONFIG.PENDING
             const Icon = s.icon
             return (
-              <div key={task.id} className="flex items-center gap-3 p-4">
-                <Icon className={`w-4 h-4 shrink-0 ${s.color}`} />
+              <div key={task.id} className="flex items-start gap-3 p-3 sm:p-4">
+                <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${s.color}`} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{task.title}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5 truncate">{task.description}</p>
+                  {task.description && (
+                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{task.description}</p>
+                  )}
+                  {/* Meta row */}
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                    {task.priority && (
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${PRIORITY_COLORS[task.priority] ?? PRIORITY_COLORS.MEDIUM}`}>
+                        {task.priority}
+                      </span>
+                    )}
+                    {task.agent?.name && (
+                      <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">{task.agent.name}</span>
+                    )}
+                    {task.pushedToCRM ? (
+                      <span className="flex items-center gap-1 text-xs text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full font-medium">
+                        <CheckCircle className="w-3 h-3" />
+                        Synced
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => pushCRMMutation.mutate(task.id)}
+                        disabled={pushCRMMutation.isPending && pushCRMMutation.variables === task.id}
+                        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors px-2 py-0.5 rounded-full hover:bg-primary/10 disabled:opacity-50 border border-border"
+                        title="Push to CRM"
+                      >
+                        {pushCRMMutation.isPending && pushCRMMutation.variables === task.id
+                          ? <Loader2 className="w-3 h-3 animate-spin" />
+                          : <Upload className="w-3 h-3" />}
+                        <span className="hidden sm:inline">Push to CRM</span>
+                        <span className="sm:hidden">CRM</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {task.priority && (
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${PRIORITY_COLORS[task.priority] ?? PRIORITY_COLORS.MEDIUM}`}>
-                      {task.priority}
-                    </span>
-                  )}
-                  {task.agent?.name && (
-                    <span className="text-xs text-muted-foreground">{task.agent.name}</span>
-                  )}
-                  {/* CRM sync status */}
-                  {task.pushedToCRM ? (
-                    <span className="flex items-center gap-1 text-xs text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full font-medium">
-                      <CheckCircle className="w-3 h-3" />
-                      Synced
-                      {task.crmProvider && <span className="opacity-70">· {task.crmProvider}</span>}
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => pushCRMMutation.mutate(task.id)}
-                      disabled={pushCRMMutation.isPending && pushCRMMutation.variables === task.id}
-                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors px-2 py-1 rounded hover:bg-primary/10 disabled:opacity-50"
-                      title="Push this task to CRM"
-                    >
-                      {pushCRMMutation.isPending && pushCRMMutation.variables === task.id ? (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      ) : (
-                        <Upload className="w-3 h-3" />
-                      )}
-                      Push to CRM
-                    </button>
-                  )}
-                  {task.status !== 'COMPLETED' && (
-                    <button
-                      onClick={() => completeMutation.mutate(task.id)}
-                      className="text-xs text-muted-foreground hover:text-green-500 transition-colors px-2 py-1 rounded hover:bg-green-500/10"
-                    >
-                      Complete
-                    </button>
-                  )}
-                </div>
+                {/* Complete button */}
+                {task.status !== 'COMPLETED' && (
+                  <button
+                    onClick={() => completeMutation.mutate(task.id)}
+                    className="shrink-0 text-xs text-muted-foreground hover:text-green-500 transition-colors p-1.5 rounded-full hover:bg-green-500/10"
+                    title="Mark complete"
+                  >
+                    <CheckCircle className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             )
           })}

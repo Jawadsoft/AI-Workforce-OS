@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuthStore } from '@/stores/auth.store'
-import { Zap, Loader2 } from 'lucide-react'
+import { Zap, Loader2, Mail, Lock } from 'lucide-react'
 
 export function LoginForm() {
   const router = useRouter()
@@ -25,66 +25,137 @@ export function LoginForm() {
   }
 
   return (
-    <div className="space-y-8">
-      <div className="text-center space-y-2">
-        <div className="flex justify-center mb-4">
-          <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center">
-            <Zap className="w-5 h-5 text-primary-foreground" />
+    <div
+      className="rounded-3xl p-8 space-y-7"
+      style={{
+        background: 'rgba(255,255,255,0.07)',
+        backdropFilter: 'blur(24px)',
+        WebkitBackdropFilter: 'blur(24px)',
+        border: '1px solid rgba(255,255,255,0.12)',
+        boxShadow: '0 8px 60px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.08)',
+      }}
+    >
+      {/* Logo */}
+      <div className="flex flex-col items-center gap-4 text-center">
+        <div className="relative">
+          <div className="absolute inset-0 rounded-full bg-white/10 blur-md scale-125" />
+          <div
+            className="relative w-14 h-14 rounded-full flex items-center justify-center"
+            style={{
+              background: 'linear-gradient(135deg, #4b5563 0%, #6b7280 100%)',
+              border: '1px solid rgba(255,255,255,0.25)',
+              boxShadow: '0 0 24px rgba(255,255,255,0.15)',
+            }}
+          >
+            <Zap className="w-6 h-6 text-white" />
           </div>
         </div>
-        <h1 className="text-2xl font-semibold tracking-tight">Welcome back</h1>
-        <p className="text-muted-foreground text-sm">Sign in to your AI Workforce OS</p>
+
+        <div>
+          <h1 className="text-2xl font-bold text-white tracking-tight">
+            Unlock the power of AI
+          </h1>
+          <p className="text-gray-300 text-sm mt-1">
+            Sign in to your AI Workforce OS
+          </p>
+        </div>
       </div>
 
+      {/* Form */}
       <form onSubmit={handleSubmit} className="space-y-4">
         {error && (
-          <div className="rounded-md bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
+          <div className="rounded-xl bg-red-500/15 border border-red-400/30 px-4 py-3 text-sm text-red-300">
             {error}
           </div>
         )}
 
-        <div className="space-y-2">
-          <label className="text-sm font-medium">Email</label>
+        {/* Email */}
+        <div className="relative">
+          <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@company.com"
+            placeholder="Email address"
             required
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
+            className="w-full pl-10 pr-4 py-3 rounded-xl text-sm text-white placeholder:text-gray-500 focus:outline-none transition-all"
+            style={{
+              background: 'rgba(255,255,255,0.07)',
+              border: '1px solid rgba(255,255,255,0.12)',
+            }}
+            onFocus={e => {
+              e.currentTarget.style.border = '1px solid rgba(255,255,255,0.35)'
+              e.currentTarget.style.background = 'rgba(255,255,255,0.10)'
+            }}
+            onBlur={e => {
+              e.currentTarget.style.border = '1px solid rgba(255,255,255,0.12)'
+              e.currentTarget.style.background = 'rgba(255,255,255,0.07)'
+            }}
           />
         </div>
 
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <label className="text-sm font-medium">Password</label>
-            <Link href="/forgot-password" className="text-xs text-muted-foreground hover:text-foreground">
+        {/* Password */}
+        <div>
+          <div className="relative">
+            <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password"
+              required
+              className="w-full pl-10 pr-4 py-3 rounded-xl text-sm text-white placeholder:text-gray-500 focus:outline-none transition-all"
+              style={{
+                background: 'rgba(255,255,255,0.07)',
+                border: '1px solid rgba(255,255,255,0.12)',
+              }}
+              onFocus={e => {
+                e.currentTarget.style.border = '1px solid rgba(255,255,255,0.35)'
+                e.currentTarget.style.background = 'rgba(255,255,255,0.10)'
+              }}
+              onBlur={e => {
+                e.currentTarget.style.border = '1px solid rgba(255,255,255,0.12)'
+                e.currentTarget.style.background = 'rgba(255,255,255,0.07)'
+              }}
+            />
+          </div>
+          <div className="flex justify-end mt-1.5">
+            <Link href="/forgot-password" className="text-xs text-gray-400 hover:text-white transition-colors">
               Forgot password?
             </Link>
           </div>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Min. 8 characters"
-            required
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
-          />
         </div>
 
+        {/* Submit */}
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground rounded-md py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{
+            background: 'linear-gradient(135deg, #374151 0%, #1f2937 100%)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+          }}
+          onMouseEnter={e => {
+            if (!isLoading) {
+              e.currentTarget.style.background = 'linear-gradient(135deg, #4b5563 0%, #374151 100%)'
+              e.currentTarget.style.boxShadow = '0 4px 30px rgba(255,255,255,0.1)'
+            }
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = 'linear-gradient(135deg, #374151 0%, #1f2937 100%)'
+            e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.4)'
+          }}
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-          {isLoading ? 'Signing in...' : 'Sign in'}
+          {isLoading ? 'Signing in...' : 'LOGIN'}
         </button>
       </form>
 
-      <p className="text-center text-sm text-muted-foreground">
+      {/* Footer */}
+      <p className="text-center text-sm text-gray-400">
         No account?{' '}
-        <Link href="/register" className="text-foreground font-medium hover:underline">
+        <Link href="/register" className="text-white font-medium hover:underline transition-colors">
           Create one
         </Link>
       </p>

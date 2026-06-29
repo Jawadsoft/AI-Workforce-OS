@@ -44,7 +44,8 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        'shrink-0 flex flex-col py-5 gap-4 border-r border-border/60 bg-background transition-all duration-300',
+        'shrink-0 flex flex-col py-5 gap-4 transition-all duration-300',
+        'bg-card/80 backdrop-blur-xl border-r border-border/60',
         isCollapsed ? 'w-[72px] items-center' : 'w-60 px-4',
       )}
     >

@@ -232,12 +232,46 @@ Rules:
       }
     }
 
-    // Check for tenant's custom template first, fall back to built-in
+    // Resolve template: 1) tenant's saved default → 2) auto-generate & save → 3) built-in fallback
     let html: string
-    const customTemplate = await this.docTemplates.findDefault(tenantId, input.type)
-    if (customTemplate) {
-      this.logger.log(`Using custom template "${customTemplate.name}" for type=${input.type}`)
-      html = this.docTemplates.renderTemplate(customTemplate.htmlBody, { ...docData, companyName: company })
+    let resolvedTemplate = await this.docTemplates.findDefault(tenantId, input.type)
+
+    if (!resolvedTemplate && TEMPLATES[input.type]) {
+      // Auto-generate a professional template the first time this doc type is used
+      try {
+        const tenantFull = await this.prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { industry: true, settings: true },
+        })
+        const industry = (tenantFull?.industry ?? 'general').toLowerCase().replace(/_/g, ' ')
+        const brandColor = (tenantFull?.settings as any)?.brain?.primaryColor ?? '#2563eb'
+
+        this.logger.log(`Auto-generating professional template for type=${input.type} industry=${industry}`)
+        const generated = await this.docTemplates.generateProfessionalTemplate(
+          input.type,
+          industry,
+          'modern',
+          brandColor,
+          'formal',
+          'print',
+        )
+
+        resolvedTemplate = await this.docTemplates.create(tenantId, {
+          name: generated.suggestedName,
+          type: input.type,
+          description: `Auto-generated ${input.type} template for ${company}`,
+          htmlBody: generated.htmlBody,
+          isDefault: true,
+        })
+        this.logger.log(`Saved new professional template "${resolvedTemplate.name}" (id=${resolvedTemplate.id})`)
+      } catch (err: any) {
+        this.logger.warn(`Professional template auto-generation failed: ${err.message} — using built-in fallback`)
+      }
+    }
+
+    if (resolvedTemplate) {
+      this.logger.log(`Using template "${resolvedTemplate.name}" for type=${input.type}`)
+      html = this.docTemplates.renderTemplate(resolvedTemplate.htmlBody, { ...docData, companyName: company })
     } else {
       const templateFn = TEMPLATES[input.type]
       html = templateFn

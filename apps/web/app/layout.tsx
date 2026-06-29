@@ -25,7 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           showSpinner={false}
           shadow="0 0 10px hsl(217 28% 58% / 0.4)"
         />
-        <ThemeProvider attribute="class" defaultTheme="light" forcedTheme="light" enableSystem={false}>
+        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
           <QueryProvider>
             {children}
             <Toaster richColors position="top-right" />

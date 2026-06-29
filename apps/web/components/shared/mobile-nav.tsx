@@ -23,9 +23,9 @@ export function MobileNav() {
   const pathname = usePathname()
 
   return (
-    <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-background/95 backdrop-blur-sm border-t border-border/60">
+    <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-card/90 backdrop-blur-xl border-t border-border/60">
       {/* Gap between chat input and nav */}
-      <div className="h-3 bg-muted/40" />
+      <div className="h-3 bg-muted/30" />
       <div className="flex items-center justify-around overflow-x-auto scrollbar-hide px-1">
         {MOBILE_NAV.map(({ label, href, icon: Icon }) => {
           const isActive = pathname === href || pathname.startsWith(href + '/')
@@ -46,7 +46,6 @@ export function MobileNav() {
           )
         })}
       </div>
-      {/* Bottom safe area + extra breathing room */}
       <div className="h-[max(env(safe-area-inset-bottom,0px),8px)]" />
     </nav>
   )

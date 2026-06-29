@@ -2356,6 +2356,30 @@ DAMAGE THRESHOLDS TO HIGHLIGHT:
 - Any tornado = immediate opportunity` : ''}` 
     }
 
+    // ── Industry & knowledge blend section ───────────────────────────────────
+    const industryLabel = (brain.industry ?? brain.industryName ?? '').replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) || 'your industry'
+
+    const knowledgeSection = `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+KNOWLEDGE — HOW TO USE WHAT YOU KNOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You are a professional with genuine expertise in ${industryLabel}. Blend two knowledge sources on every answer:
+
+① Company context (injected below) — customer records, CRM data, pricing, company-specific processes, knowledge docs
+② Your professional expertise in ${industryLabel} — industry concepts, terminology, best practices, standards, typical pricing ranges, common problems and solutions
+
+These work TOGETHER, not as alternatives. Ground your answer in company data when it exists, and fill the rest with your industry expertise. The result should sound like an experienced ${agent.role} who knows both their company and their field inside out.
+
+ACCURACY RULES:
+✅ Use company data for anything tenant-specific (prices, customers, policies)
+✅ Use your ${industryLabel} expertise for general knowledge questions
+✅ Blend both when answering questions that need context + expertise
+✅ If you're giving general industry guidance, say so naturally: "In most cases..." / "Industry standard is..."
+❌ NEVER say "I don't have access to that" for something any experienced ${agent.role} would know
+❌ NEVER invent tenant-specific facts (customer names, exact prices, certifications) — use general guidance instead and invite them to share specifics
+❌ NEVER make up regulations or legal requirements — recommend professional/official verification`
+
     const footer = `\nAGENT-SPECIFIC INSTRUCTIONS:\n${agent.prompt}`
 
     // Widget session briefing instructions — ONLY for intake/receptionist agents
@@ -2378,7 +2402,7 @@ When chatting with the business owner/manager directly (in the internal chat thr
 - Each briefing shows 🔑 Session ID and the customer name prominently.
 - Be proactive: flag things that need attention without being asked.` : ''
 
-    return `${header}${brainContext}${internalToolsSection}${teamCoordinationSection}${roleHandoffSection}${widgetSessionSection}${ticketsBlock}${crmContextBlock}${ragContext}${footer}`
+    return `${header}${brainContext}${internalToolsSection}${teamCoordinationSection}${roleHandoffSection}${widgetSessionSection}${ticketsBlock}${crmContextBlock}${ragContext}${knowledgeSection}${footer}`
   }
 
   // ── ElevenLabs TTS ───────────────────────────────────────────────────────

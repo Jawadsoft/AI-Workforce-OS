@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import axios from 'axios'
+import { Shield, Mail, Lock, Loader2 } from 'lucide-react'
 
 function getApiUrl() {
   if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL
@@ -26,7 +27,6 @@ export default function SuperAdminLoginPage() {
     try {
       const { data } = await axios.post(`${getApiUrl()}/auth/login`, { email, password })
       const token = data.access_token
-      // Decode to check role
       const payload = JSON.parse(atob(token.split('.')[1]))
       if (payload.role !== 'SUPER_ADMIN') {
         setError('Access denied: not a super admin account')
@@ -42,56 +42,123 @@ export default function SuperAdminLoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-950">
-      <div className="w-full max-w-md bg-gray-900 rounded-2xl p-8 border border-gray-800 shadow-2xl">
-        <div className="mb-8 text-center">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-indigo-600 mb-4">
-            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-            </svg>
-          </div>
-          <h1 className="text-2xl font-bold text-white">Super Admin</h1>
-          <p className="text-gray-400 mt-1 text-sm">Platform administration portal</p>
-        </div>
-
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-              placeholder="admin@platform.com"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-              placeholder="••••••••"
-              required
-            />
-          </div>
-
-          {error && (
-            <div className="bg-red-900/30 border border-red-800 rounded-lg px-4 py-2.5 text-red-300 text-sm">
-              {error}
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        <div
+          className="rounded-3xl p-8 space-y-7"
+          style={{
+            background: 'rgba(255,255,255,0.05)',
+            backdropFilter: 'blur(24px)',
+            WebkitBackdropFilter: 'blur(24px)',
+            border: '1px solid rgba(255,255,255,0.10)',
+            boxShadow: '0 8px 60px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.07)',
+          }}
+        >
+          {/* Logo */}
+          <div className="flex flex-col items-center gap-4 text-center">
+            <div className="relative">
+              <div className="absolute inset-0 rounded-full bg-white/10 blur-md scale-125" />
+              <div
+                className="relative w-14 h-14 rounded-full flex items-center justify-center"
+                style={{
+                  background: 'linear-gradient(135deg, #374151 0%, #1f2937 100%)',
+                  border: '1px solid rgba(255,255,255,0.20)',
+                  boxShadow: '0 0 24px rgba(255,255,255,0.10)',
+                }}
+              >
+                <Shield className="w-6 h-6 text-white" />
+              </div>
             </div>
-          )}
+            <div>
+              <h1 className="text-2xl font-bold text-white tracking-tight">Super Admin</h1>
+              <p className="text-gray-400 text-sm mt-1">Platform administration portal</p>
+            </div>
+          </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold py-2.5 rounded-lg transition-colors"
-          >
-            {loading ? 'Signing in...' : 'Sign In'}
-          </button>
-        </form>
+          {/* Form */}
+          <form onSubmit={handleLogin} className="space-y-4">
+            {error && (
+              <div className="rounded-xl bg-red-500/15 border border-red-400/30 px-4 py-3 text-sm text-red-300">
+                {error}
+              </div>
+            )}
+
+            {/* Email */}
+            <div className="relative">
+              <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="admin@platform.com"
+                required
+                className="w-full pl-10 pr-4 py-3 rounded-xl text-sm text-white placeholder:text-gray-500 focus:outline-none transition-all"
+                style={{
+                  background: 'rgba(255,255,255,0.06)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                }}
+                onFocus={e => {
+                  e.currentTarget.style.border = '1px solid rgba(255,255,255,0.30)'
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.09)'
+                }}
+                onBlur={e => {
+                  e.currentTarget.style.border = '1px solid rgba(255,255,255,0.10)'
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
+                }}
+              />
+            </div>
+
+            {/* Password */}
+            <div className="relative">
+              <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              <input
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="••••••••"
+                required
+                className="w-full pl-10 pr-4 py-3 rounded-xl text-sm text-white placeholder:text-gray-500 focus:outline-none transition-all"
+                style={{
+                  background: 'rgba(255,255,255,0.06)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                }}
+                onFocus={e => {
+                  e.currentTarget.style.border = '1px solid rgba(255,255,255,0.30)'
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.09)'
+                }}
+                onBlur={e => {
+                  e.currentTarget.style.border = '1px solid rgba(255,255,255,0.10)'
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
+                }}
+              />
+            </div>
+
+            {/* Submit */}
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{
+                background: 'linear-gradient(135deg, #374151 0%, #1f2937 100%)',
+                border: '1px solid rgba(255,255,255,0.15)',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+              }}
+              onMouseEnter={e => {
+                if (!loading) {
+                  e.currentTarget.style.background = 'linear-gradient(135deg, #4b5563 0%, #374151 100%)'
+                  e.currentTarget.style.boxShadow = '0 4px 30px rgba(255,255,255,0.08)'
+                }
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = 'linear-gradient(135deg, #374151 0%, #1f2937 100%)'
+                e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.4)'
+              }}
+            >
+              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+              {loading ? 'Signing in...' : 'SIGN IN'}
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   )

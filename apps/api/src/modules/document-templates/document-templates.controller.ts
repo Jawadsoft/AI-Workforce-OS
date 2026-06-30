@@ -49,8 +49,8 @@ export class DocumentTemplatesController {
 
   @Get('placeholders')
   @ApiOperation({ summary: 'Get available {{placeholder}} variables by type' })
-  getPlaceholders() {
-    return this.service.getPlaceholders()
+  getPlaceholders(@CurrentTenant() tenantId: string) {
+    return this.service.getPlaceholders(tenantId)
   }
 
   @Get(':id')

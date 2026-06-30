@@ -17,6 +17,7 @@ const TYPE_LABELS: Record<string, string> = {
   inspection: 'Inspection Report',
   sow: 'Statement of Work',
   invoice: 'Invoice',
+  supplement: 'Supplement Request',
   email: 'Email Template',
   custom: 'Custom',
 }
@@ -26,6 +27,7 @@ const TYPE_COLORS: Record<string, string> = {
   inspection: 'bg-purple-100 text-purple-700',
   sow: 'bg-orange-100 text-orange-700',
   invoice: 'bg-green-100 text-green-700',
+  supplement: 'bg-amber-100 text-amber-700',
   email: 'bg-pink-100 text-pink-700',
   custom: 'bg-gray-100 text-gray-700',
 }
@@ -351,8 +353,9 @@ export function TemplateManager() {
         htmlBody: res.data.htmlBody,
       }))
       toast.success('File converted successfully — review and save')
-    } catch {
-      toast.error('Conversion failed. Try a different file.')
+    } catch (err: any) {
+      const msg = err?.response?.data?.message
+      toast.error(typeof msg === 'string' ? msg : 'Conversion failed. Try a different file.')
     } finally {
       setConverting(false)
     }

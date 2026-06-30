@@ -119,7 +119,7 @@ const CRM_TOOL_DEFINITIONS = [
     parameters: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['estimate', 'inspection', 'sow', 'invoice'], description: 'Document type: estimate=quote/proposal, inspection=inspection report, sow=statement of work, invoice=payment invoice' },
+        type: { type: 'string', enum: ['estimate', 'inspection', 'sow', 'invoice', 'supplement'], description: 'Document type: estimate=quote/proposal, inspection=inspection report, sow=statement of work, invoice=payment invoice, supplement=insurance supplement request' },
         title: { type: 'string', description: 'Document title e.g. "Roof Estimate - John Smith"' },
         prompt: { type: 'string', description: 'Describe what to include: customer name, address, items, scope of work, amounts, etc.' },
       },
@@ -2439,60 +2439,69 @@ When a user uploads or references a loss report, adjuster report, inspection rep
 TRIGGER KEYWORDS: "loss report", "adjuster report", "supplement", "scope of work", "estimate", "claim", "coverage", "damage report", "xactimate", "RCV", "ACV", "depreciation"
 Also trigger automatically if a document marker "--- ATTACHED DOCUMENT ---" is present.
 
-SUPPLEMENT ANALYSIS — OUTPUT FORMAT (always use this exact 7-section structure):
+SUPPLEMENT ANALYSIS — OUTPUT FORMAT:
+Use clean markdown only. No emojis, no horizontal separators, and no dense tables unless the user asks.
 
----
-## 📋 SUPPLEMENT ANALYSIS REPORT
-**Prepared by:** ${agent.name} | **Date:** [today's date] | **Carrier / Policy:** [extract from document or note if not found]
+# Supplement Analysis Report
 
----
+**Prepared By:** ${agent.name}
+**Date:** [today's date]
+**Carrier:** [extract carrier]
+**Policy Number:** [extract policy number or N/A]
 
-### 1. CLAIM SUMMARY
-- Property address, claim number, date of loss (extract from document)
-- Type of damage (hail, wind, water, fire, etc.)
-- Carrier and adjuster name if present
-- Current claim status / scope summary
+## 1. Claim Summary
 
-### 2. APPROVED SCOPE
-List line items that were included and approved in the adjuster's report.
-Format: ✅ [Item] — $[Amount] (if amounts present)
+* **Property Address:** [extract from document]
+* **Claim Number:** [extract from document]
+* **Date of Loss:** [extract from document]
+* **Cause of Loss:** [hail/wind/water/fire/etc.]
+* **Carrier / Adjuster:** [carrier / adjuster]
+* **Claim Status:** [estimate status / payment status]
 
-### 3. MISSING ITEMS
-Line items that should be included based on industry standards but are absent from the adjuster's report.
-Format: ⚠️ [Item] — Reason it should be included
+## 2. Approved Scope
+
+* [Item] — **$[Amount] RCV**
+* [Item] — **$[Amount] RCV**
+
+## 3. Missing Items
+
+* [Missing item] — [short reason]
+* [Missing item] — [short reason]
 Common missing items to check for: code upgrades (drip edge, ice & water shield, starter strip, ridge cap), permit fees, O&P (overhead & profit), tear-off layers, decking replacement, satellite dish removal/reset, gutters/downspouts, flashing, skylights, HVAC units, chimney work, soft metals
 
-### 4. UNDERPAID ITEMS
-Items that ARE in the scope but appear to be under-valued, under-measured, or applied incorrect rates.
-Format: ❌ [Item] — Approved: $X | Recommended: $Y | Reason
+## 4. Underpaid Items
 
-### 5. DOCUMENTATION NEEDED
-What the contractor or homeowner still needs to provide to support the supplement:
-- Photos of specific damage areas
-- Measurements or diagrams
-- Manufacturer data / code compliance docs
-- Contractor invoice / signed contract
-- Any other supporting evidence
+* [Item]
 
-### 6. RECOMMENDED ADDITIONAL LINE ITEMS
-Specific supplement line items to request with estimated values.
-Format: 💰 [Line Item] — Est. Value: $[range] — Justification: [why it should be covered]
+  * Approved: **$[amount]**
+  * Recommended: **$[amount]**
+  * Reason: [short reason]
 
-### 7. CONTRACTOR NOTES / ACTION PLAN
-Summary of next steps:
-- Who contacts the adjuster
-- Re-inspection needed? (yes/no + why)
-- Priority items to fight for
-- Timeline recommendation
+## 5. Documentation Needed
 
----
-**Supplement Total Estimate:** $[total of recommended additional line items]
-**Confidence Level:** [High / Medium / Low — based on document completeness]
+* [Photo/document needed]
+* [Photo/document needed]
 
----
+## 6. Recommended Additional Line Items
+
+* [Line item] — **Estimated Value: $[amount]** — [brief justification]
+
+## 7. Contractor Notes / Action Plan
+
+1. [Step]
+2. [Step]
+3. [Step]
+
+## Supplement Summary
+
+* **Estimated Supplement Value:** **$[total]**
+* **Confidence Level:** **High / Medium / Low**
 
 AFTER THE ANALYSIS:
 - Offer to generate a formal Supplement Request document → call generate_document with type "supplement"
+- When the user agrees to generate it, call generate_document immediately with type "supplement" and title "Supplement Request - [customer/insured name]".
+- The generate_document prompt MUST include the full supplement analysis details from your previous answer: claim summary, approved scope, missing items, underpaid items, documentation needed, recommended line items, action plan, estimated supplement total, and confidence level.
+- Do NOT generate an empty or generic SOW. The document must be a supplement request using the analyzed claim data.
 - Offer to draft an adjuster dispute letter if items are clearly underpaid
 - Ask if a re-inspection should be scheduled
 

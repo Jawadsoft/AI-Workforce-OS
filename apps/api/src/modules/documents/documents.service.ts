@@ -55,6 +55,8 @@ function wrapHTML(title: string, body: string, company = 'Your Company'): string
 </html>`
 }
 
+const asArray = (value: any) => Array.isArray(value) ? value : value ? [value] : []
+
 const TEMPLATES: Record<string, (data: any, company: string) => string> = {
   estimate: (data, company) => wrapHTML('ESTIMATE / PROPOSAL', `
     <div class="info-grid">
@@ -130,6 +132,54 @@ const TEMPLATES: Record<string, (data: any, company: string) => string> = {
     <h2>Payment Instructions</h2>
     <p>${data.paymentInstructions ?? 'Please make payment via bank transfer or check. Include invoice number as reference.'}</p>
   `, company),
+
+  supplement: (data, company) => wrapHTML('SUPPLEMENT REQUEST', `
+    <div class="info-grid">
+      <div class="info-block"><div class="info-label">Prepared By</div><div class="info-value">${data.preparedBy ?? company}</div></div>
+      <div class="info-block"><div class="info-label">Carrier</div><div class="info-value">${data.carrier ?? 'N/A'}</div></div>
+      <div class="info-block"><div class="info-label">Policy Number</div><div class="info-value">${data.policyNumber ?? 'N/A'}</div></div>
+      <div class="info-block"><div class="info-label">Claim Number</div><div class="info-value">${data.claimNumber ?? 'N/A'}</div></div>
+      <div class="info-block"><div class="info-label">Insured / Customer</div><div class="info-value">${data.customerName ?? 'N/A'}</div></div>
+      <div class="info-block"><div class="info-label">Property Address</div><div class="info-value">${data.propertyAddress ?? data.address ?? 'N/A'}</div></div>
+      <div class="info-block"><div class="info-label">Date of Loss</div><div class="info-value">${data.dateOfLoss ?? 'N/A'}</div></div>
+      <div class="info-block"><div class="info-label">Cause of Loss</div><div class="info-value">${data.causeOfLoss ?? 'N/A'}</div></div>
+    </div>
+
+    <h2>1. Claim Summary</h2>
+    <p>${data.claimSummary ?? 'Claim summary not provided.'}</p>
+
+    <h2>2. Approved Scope</h2>
+    <table>
+      <tr><th>Approved Item</th><th>Amount</th></tr>
+      ${asArray(data.approvedScope).map((item: any) => `<tr><td>${item.description ?? item.item ?? item}</td><td>${item.amount ? `$${Number(item.amount).toFixed(2)}` : 'N/A'}</td></tr>`).join('')}
+    </table>
+
+    <h2>3. Missing Items</h2>
+    ${asArray(data.missingItems).map((item: any) => `<p>• ${item.description ?? item.item ?? item}${item.reason ? ` — ${item.reason}` : ''}</p>`).join('') || '<p>No missing items listed.</p>'}
+
+    <h2>4. Underpaid Items</h2>
+    <table>
+      <tr><th>Item</th><th>Approved</th><th>Recommended</th><th>Reason</th></tr>
+      ${asArray(data.underpaidItems).map((item: any) => `<tr><td>${item.description ?? item.item ?? ''}</td><td>${item.approvedAmount ? `$${Number(item.approvedAmount).toFixed(2)}` : 'N/A'}</td><td>${item.recommendedAmount ? `$${Number(item.recommendedAmount).toFixed(2)}` : 'N/A'}</td><td>${item.reason ?? ''}</td></tr>`).join('')}
+    </table>
+
+    <h2>5. Documentation Needed</h2>
+    ${asArray(data.documentationNeeded).map((item: string) => `<p>• ${item}</p>`).join('') || '<p>No additional documentation listed.</p>'}
+
+    <h2>6. Recommended Additional Line Items</h2>
+    <table>
+      <tr><th>Line Item</th><th>Estimated Value</th><th>Justification</th></tr>
+      ${asArray(data.recommendedLineItems).map((item: any) => `<tr><td>${item.description ?? item.item ?? ''}</td><td>${item.estimatedValue ? `$${Number(item.estimatedValue).toFixed(2)}` : 'N/A'}</td><td>${item.justification ?? ''}</td></tr>`).join('')}
+      <tr class="total-row"><td>Total Estimated Supplement</td><td colspan="2">$${Number(data.supplementTotal ?? 0).toFixed(2)}</td></tr>
+    </table>
+
+    <h2>7. Contractor Notes / Action Plan</h2>
+    ${asArray(data.actionPlan ?? data.contractorNotes).map((item: string, idx: number) => `<p>${idx + 1}. ${item}</p>`).join('') || '<p>No action plan provided.</p>'}
+
+    <h2>Supplement Summary</h2>
+    <p><strong>Estimated Supplement Value:</strong> $${Number(data.supplementTotal ?? 0).toFixed(2)}</p>
+    <p><strong>Confidence Level:</strong> ${data.confidenceLevel ?? 'Medium'}</p>
+  `, company),
 }
 
 @Injectable()
@@ -155,7 +205,7 @@ export class DocumentsService {
   }
 
   async generate(tenantId: string, agentId: string | undefined, input: {
-    type: string   // 'estimate' | 'inspection' | 'sow' | 'invoice' | 'custom'
+    type: string   // 'estimate' | 'inspection' | 'sow' | 'invoice' | 'supplement' | 'custom'
     title: string
     data?: Record<string, any>
     prompt?: string  // if set, use AI to fill the template data
@@ -209,6 +259,27 @@ export class DocumentsService {
   "total": number,
   "paymentInstructions": "string (optional)"
 }`,
+        supplement: `{
+  "preparedBy": "string",
+  "customerName": "string",
+  "propertyAddress": "string",
+  "carrier": "string",
+  "policyNumber": "string",
+  "claimNumber": "string",
+  "dateOfLoss": "string",
+  "causeOfLoss": "string",
+  "adjuster": "string",
+  "claimStatus": "string",
+  "claimSummary": "string",
+  "approvedScope": [{ "description": "string", "amount": number }],
+  "missingItems": [{ "description": "string", "reason": "string" }],
+  "underpaidItems": [{ "description": "string", "approvedAmount": number, "recommendedAmount": number, "reason": "string" }],
+  "documentationNeeded": ["string"],
+  "recommendedLineItems": [{ "description": "string", "estimatedValue": number, "justification": "string" }],
+  "actionPlan": ["string"],
+  "supplementTotal": number,
+  "confidenceLevel": "High|Medium|Low"
+}`,
       }
 
       const schemaHint = SCHEMA_HINTS[input.type] ?? '{}'
@@ -219,6 +290,7 @@ ${schemaHint}
 Rules:
 - Use ONLY the field names shown above — do not add or rename fields
 - Calculate "total" as the sum of all line items (qty * unitPrice or qty * rate)
+- For supplement documents, calculate "supplementTotal" as the sum of recommendedLineItems estimatedValue plus any underpaid deltas when applicable
 - If a value is not mentioned, use a sensible default or empty string
 - Respond with ONLY the JSON object, no explanation, no markdown`
 
@@ -236,7 +308,7 @@ Rules:
     let html: string
     let resolvedTemplate = await this.docTemplates.findDefault(tenantId, input.type)
 
-    if (!resolvedTemplate && TEMPLATES[input.type]) {
+    if (!resolvedTemplate && TEMPLATES[input.type] && input.type !== 'supplement') {
       // Auto-generate a professional template the first time this doc type is used
       try {
         const tenantFull = await this.prisma.tenant.findUnique({

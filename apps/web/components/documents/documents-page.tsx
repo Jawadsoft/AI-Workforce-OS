@@ -16,6 +16,7 @@ const TYPE_COLORS: Record<string, string> = {
   inspection: 'bg-orange-100 text-orange-700',
   sow: 'bg-purple-100 text-purple-700',
   invoice: 'bg-green-100 text-green-700',
+  supplement: 'bg-amber-100 text-amber-700',
   custom: 'bg-gray-100 text-gray-700',
 }
 

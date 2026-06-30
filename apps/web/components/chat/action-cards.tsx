@@ -219,6 +219,7 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   inspection: 'Inspection Report',
   sow: 'Statement of Work',
   invoice: 'Invoice',
+  supplement: 'Supplement Request',
 }
 
 function DocumentCard({ card }: { card: ActionCard }) {

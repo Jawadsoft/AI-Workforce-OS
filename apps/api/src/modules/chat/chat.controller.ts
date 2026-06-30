@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, Res, HttpCode, UseInterceptors, UploadedFile } from '@nestjs/common'
+import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, Res, HttpCode, UseInterceptors, UploadedFile, Logger } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { IsString, IsOptional } from 'class-validator'
@@ -31,6 +31,8 @@ class TtsDto {
 @UseGuards(JwtAuthGuard)
 @Controller('chat')
 export class ChatController {
+  private readonly logger = new Logger(ChatController.name)
+
   constructor(
     private readonly service: ChatService,
     private readonly cloudinary: CloudinaryService,
@@ -115,15 +117,46 @@ export class ChatController {
     const send = (data: object) => { res.write(`data: ${JSON.stringify(data)}\n\n`) }
 
     try {
-      let attachments: { url: string; name: string; mimeType: string }[] | undefined
+      let attachments: { url: string; name: string; mimeType: string; extractedText?: string }[] | undefined
       if (file) {
-        const url = await this.cloudinary.upload(
-          tenantId, 'chat-attachments', `${Date.now()}-${file.originalname}`,
-          file.buffer, file.mimetype,
-          file.mimetype.startsWith('image/') ? 'image' : 'raw',
-        )
-        attachments = [{ url, name: file.originalname, mimeType: file.mimetype }]
-        // Emit attachment metadata so frontend can render it immediately
+        const docTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'application/msword', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'text/csv', 'text/plain']
+        const isDoc = docTypes.includes(file.mimetype)
+
+        // Pre-extract text from buffer immediately (while we still have it in memory)
+        // This avoids needing to re-fetch from Cloudinary URL later
+        let extractedText: string | undefined
+        if (isDoc) {
+          try {
+            if (file.mimetype === 'application/pdf') {
+              // Use internal pdf-parse path to bypass the v1.1.4 test-file loading bug
+              const pdfParse = require('pdf-parse/lib/pdf-parse.js') as (buf: Buffer, opts?: any) => Promise<{ text: string }>
+              const result = await pdfParse(file.buffer, { max: 0 })
+              if (result?.text?.trim()) extractedText = result.text.slice(0, 15000)
+            } else if (file.mimetype === 'text/plain' || file.mimetype === 'text/csv') {
+              extractedText = file.buffer.toString('utf-8').slice(0, 15000)
+            }
+            // For docx/xlsx — service handles these fine via mammoth/xlsx since no test-file bug
+          } catch (err: any) {
+            this.logger.warn(`Pre-extraction failed for ${file.originalname}: ${err.message}`)
+          }
+        }
+
+        // Upload to Cloudinary for persistent storage (non-blocking on failure)
+        let url = ''
+        try {
+          url = await this.cloudinary.upload(
+            tenantId, 'chat-attachments', `${Date.now()}-${file.originalname}`,
+            file.buffer, file.mimetype,
+            file.mimetype.startsWith('image/') ? 'image' : 'raw',
+          )
+        } catch (err: any) {
+          this.logger.warn(`Cloudinary upload failed for ${file.originalname}: ${err.message} — using local fallback`)
+          url = `local://${file.originalname}`
+        }
+
+        attachments = [{ url, name: file.originalname, mimeType: file.mimetype, extractedText }]
         send({ attachment: { url, name: file.originalname, mimeType: file.mimetype } })
       }
       await this.service.streamMessage(tenantId, id, content ?? '', send, attachments)

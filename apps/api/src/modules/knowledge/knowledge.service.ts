@@ -186,15 +186,25 @@ export class KnowledgeService {
 
   private async extractPDF(buffer: Buffer): Promise<string> {
     try {
-      const pdfParse = await import('pdf-parse').then(m => (m as any).default ?? m) as any
-      const result = await pdfParse(buffer)
+      // Import directly from the lib file to bypass pdf-parse v1.1.4's broken test-file loading
+      // which causes "stream must have data" errors when the test fixture is missing
+      const pdfParse = require('pdf-parse/lib/pdf-parse.js') as (buf: Buffer, opts?: any) => Promise<{ text: string }>
+      const result = await pdfParse(buffer, { max: 0 })
       return result.text
     } catch (err: any) {
-      this.logger.warn(`pdf-parse not available (${err.message}), extracting raw text`)
-      // Fallback: extract readable strings from PDF bytes
-      const raw = buffer.toString('latin1')
-      const matches = raw.match(/\(([^\)]{3,})\)/g) ?? []
-      return matches.map(m => m.slice(1, -1)).join(' ')
+      this.logger.warn(`pdf-parse failed (${err.message}), trying default import`)
+      try {
+        // Second attempt — standard import
+        const pdfParse = await import('pdf-parse').then(m => (m as any).default ?? m) as any
+        const result = await pdfParse(buffer)
+        return result.text
+      } catch (err2: any) {
+        this.logger.warn(`pdf-parse unavailable (${err2.message}), extracting raw text`)
+        // Last resort: extract readable strings from raw PDF bytes
+        const raw = buffer.toString('latin1')
+        const matches = raw.match(/\(([^\)]{3,})\)/g) ?? []
+        return matches.map(m => m.slice(1, -1)).join(' ')
+      }
     }
   }
 

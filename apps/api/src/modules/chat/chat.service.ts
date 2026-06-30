@@ -1626,7 +1626,7 @@ export class ChatService {
     conversationId: string,
     content: string,
     emit: (data: object) => void,
-    attachments?: { url: string; name: string; mimeType: string }[],
+    attachments?: { url: string; name: string; mimeType: string; extractedText?: string }[],
   ) {
     const conv = await this.prisma.conversation.findFirst({
       where: { id: conversationId, tenantId },
@@ -1700,28 +1700,66 @@ export class ChatService {
     const combinedRag = ragContext + memoryContext
 
     // ── Attachment context ─────────────────────────────────────────
-    // Extract text from uploaded documents, inject as context prefix
+    // Smart document memory:
+    //   1. On upload → extract text once, save to conversation metadata
+    //   2. On every subsequent message → load saved text from metadata (no re-download)
+    //   3. This makes documents "sticky" for the entire conversation (like ChatGPT)
     let attachmentContextBlock = ''
     let visionImages: { url: string; name: string }[] = []
+    const convMeta = (conv.metadata as any) ?? {}
+
     if (attachments && attachments.length > 0) {
       const docTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'application/msword', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'text/csv', 'text/plain']
       const imageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
+      const savedDocs: { name: string; text: string }[] = convMeta.documentContext ?? []
+
       for (const att of attachments) {
         if (imageTypes.some(t => att.mimeType.startsWith('image/'))) {
           visionImages.push({ url: att.url, name: att.name })
         } else if (docTypes.includes(att.mimeType)) {
           try {
-            const fileBuffer = await fetch(att.url).then((r) => r.arrayBuffer()).then((b) => Buffer.from(b))
-            const text = await this.knowledge.extractTextFromBuffer(fileBuffer, att.mimeType, att.name)
-            if (text.trim()) {
-              attachmentContextBlock += `\n\n--- ATTACHED DOCUMENT: ${att.name} ---\n${text.slice(0, 6000)}\n--- END DOCUMENT ---`
+            // Check if we already extracted this document in a previous message
+            const existing = savedDocs.find(d => d.name === att.name)
+            let text: string
+            if (existing) {
+              // Reuse previously saved extracted text — no re-fetch needed
+              text = existing.text
+            } else if ((att as any).extractedText) {
+              // Use text pre-extracted in the controller (from the in-memory buffer)
+              text = (att as any).extractedText
+            } else {
+              // Fallback: fetch from URL and extract (only if URL is a real remote URL)
+              if (!att.url.startsWith('local://')) {
+                const fileBuffer = await fetch(att.url).then((r) => r.arrayBuffer()).then((b) => Buffer.from(b))
+                text = await this.knowledge.extractTextFromBuffer(fileBuffer, att.mimeType, att.name)
+              } else {
+                text = ''
+              }
+            }
+            if (text?.trim()) {
+              // Save to conversation metadata so future messages don't need to re-fetch
+              if (!existing) {
+                savedDocs.push({ name: att.name, text: text.slice(0, 15000) })
+                await this.prisma.conversation.update({
+                  where: { id: conversationId },
+                  data: { metadata: { ...convMeta, documentContext: savedDocs } },
+                })
+              }
+              attachmentContextBlock += `\n\n--- ATTACHED DOCUMENT: ${att.name} ---\n${text.slice(0, 15000)}\n--- END DOCUMENT ---`
             }
           } catch (err: any) {
             this.logger.warn(`Failed to extract text from attachment ${att.name}: ${err.message}`)
           }
+        }
+      }
+    } else if (convMeta.documentContext?.length > 0) {
+      // No new attachment this message — but inject previously saved documents from this conversation
+      for (const doc of convMeta.documentContext as { name: string; text: string }[]) {
+        if (doc.text?.trim()) {
+          attachmentContextBlock += `\n\n--- ATTACHED DOCUMENT: ${doc.name} ---\n${doc.text}\n--- END DOCUMENT ---`
         }
       }
     }
@@ -1827,6 +1865,11 @@ export class ChatService {
     const company = brain.companyName || settings.tenantName || 'the company'
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
 
+    // ── Industry flags (needed early — used in header and role sections) ──────
+    const industry = (brain.industry || settings.industry || 'general').toLowerCase().replace(/_/g, ' ')
+    const isRoofing = industry.includes('roof')
+    const isInsuranceIndustry = industry.includes('insurance') || industry.includes('claim') || industry.includes('restoration') || industry.includes('roof') || industry.includes('storm') || industry.includes('remediation')
+
     // ── Derive personality from role ─────────────────────────────────────────
     const roleLC = (agent.role ?? '').toLowerCase()
     const firstName = (agent.name ?? '').split(' ')[0]
@@ -1919,7 +1962,21 @@ WHAT MAKES YOU SOUND HUMAN (follow these always):
 
 ❌ NEVER: sound like a FAQ page, repeat the same opener, use corporate filler like "Certainly!" or "Of course I'd be happy to assist you with that today!"
 ❌ NEVER: give a wall of unbroken text — use white space, short paragraphs, or bullets
-❌ NEVER: say "As an AI..." — you are ${agent.name}, full stop`
+❌ NEVER: say "As an AI..." — you are ${agent.name}, full stop
+
+ATTACHED DOCUMENTS — CRITICAL:
+When a user uploads a file (PDF, Word, Excel, CSV), its full extracted text is injected into this conversation under the marker "--- ATTACHED DOCUMENT: filename ---".
+✅ You CAN and MUST read, analyze, and summarize attached documents
+✅ Treat the document content as if you are reading the actual file
+✅ Extract specific data, numbers, dates, and findings from the document
+✅ Answer questions based on the document content directly
+❌ NEVER say "I cannot read files" or "I don't have access to the document" — the content is right here in your context
+❌ NEVER ask the user to paste the content manually if a document marker is present
+${isInsuranceIndustry ? `
+INSURANCE DOCUMENT DETECTION:
+If the attached document appears to be a loss report, adjuster report, scope of work, Xactimate estimate, or any insurance/damage-related document → DO NOT give a generic summary.
+Automatically apply the SUPPLEMENT ANALYSIS workflow defined in your role instructions.
+You are an insurance specialist — treat every uploaded claim document as a supplement opportunity.` : ''}`
 
     // ── Role classification — purely keyword-based, no hierarchy ────────
     const isIntakeAgentRole = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
@@ -1946,8 +2003,6 @@ WHAT MAKES YOU SOUND HUMAN (follow these always):
     const inspectorRole    = inspectorAgent?.role   ?? 'field inspector'
 
     // ── Dynamic industry/service lookups (from tenant brain settings) ─
-    const industry = (brain.industry || settings.industry || 'general').toLowerCase().replace(/_/g, ' ')
-    const isRoofing = industry.includes('roof')
     const serviceDetails: any[] = brain.serviceDetails ?? []
     const serviceNames: string[] = serviceDetails.map((s: any) => s.name).filter(Boolean)
     const allServices = serviceNames.length ? serviceNames : (brain.services ?? [])
@@ -2244,11 +2299,12 @@ WHEN OUT OF SCOPE:
 Call suggest_transfer with a natural message like:
 "That's more ${insuranceName}'s territory — want me to loop them in?"`
 
-    } else if (roleLC.includes('insurance')) {
+    } else if (roleLC.includes('insurance') || roleLC.includes('claims') || roleLC.includes('supplement') || roleLC.includes('adjuster')) {
       roleHandoffSection = `
 
 YOUR ROLE — INSURANCE SPECIALIST:
-You handle insurance claims, coverage explanations, and claim documentation for ${company}.
+You handle insurance claims, supplements, coverage analysis, and claim documentation for ${company}.
+You are an expert at reading adjuster reports, loss reports, and scope of work documents — and identifying what was missed, underpaid, or improperly scoped.
 
 CRITICAL — LEAD WITH ANSWERS:
 Use your KNOWLEDGE BASE to answer insurance questions immediately with real terms and process steps.
@@ -2258,10 +2314,76 @@ Example:
 ❌ "It depends on your specific policy."
 ✅ "Based on our knowledge base, here's how claims typically work for ${industry} — [explain the process with real steps]. I can walk you through filing right now."
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LOSS REPORT / SUPPLEMENT ANALYSIS — CORE WORKFLOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When a user uploads or references a loss report, adjuster report, inspection report, scope of work, or any insurance/damage document — DO NOT give a generic summary. Instead, perform a professional supplement analysis using the structure below.
+
+TRIGGER KEYWORDS: "loss report", "adjuster report", "supplement", "scope of work", "estimate", "claim", "coverage", "damage report", "xactimate", "RCV", "ACV", "depreciation"
+Also trigger automatically if a document marker "--- ATTACHED DOCUMENT ---" is present.
+
+SUPPLEMENT ANALYSIS — OUTPUT FORMAT (always use this exact 7-section structure):
+
+---
+## 📋 SUPPLEMENT ANALYSIS REPORT
+**Prepared by:** ${agent.name} | **Date:** [today's date] | **Carrier / Policy:** [extract from document or note if not found]
+
+---
+
+### 1. CLAIM SUMMARY
+- Property address, claim number, date of loss (extract from document)
+- Type of damage (hail, wind, water, fire, etc.)
+- Carrier and adjuster name if present
+- Current claim status / scope summary
+
+### 2. APPROVED SCOPE
+List line items that were included and approved in the adjuster's report.
+Format: ✅ [Item] — $[Amount] (if amounts present)
+
+### 3. MISSING ITEMS
+Line items that should be included based on industry standards but are absent from the adjuster's report.
+Format: ⚠️ [Item] — Reason it should be included
+Common missing items to check for: code upgrades (drip edge, ice & water shield, starter strip, ridge cap), permit fees, O&P (overhead & profit), tear-off layers, decking replacement, satellite dish removal/reset, gutters/downspouts, flashing, skylights, HVAC units, chimney work, soft metals
+
+### 4. UNDERPAID ITEMS
+Items that ARE in the scope but appear to be under-valued, under-measured, or applied incorrect rates.
+Format: ❌ [Item] — Approved: $X | Recommended: $Y | Reason
+
+### 5. DOCUMENTATION NEEDED
+What the contractor or homeowner still needs to provide to support the supplement:
+- Photos of specific damage areas
+- Measurements or diagrams
+- Manufacturer data / code compliance docs
+- Contractor invoice / signed contract
+- Any other supporting evidence
+
+### 6. RECOMMENDED ADDITIONAL LINE ITEMS
+Specific supplement line items to request with estimated values.
+Format: 💰 [Line Item] — Est. Value: $[range] — Justification: [why it should be covered]
+
+### 7. CONTRACTOR NOTES / ACTION PLAN
+Summary of next steps:
+- Who contacts the adjuster
+- Re-inspection needed? (yes/no + why)
+- Priority items to fight for
+- Timeline recommendation
+
+---
+**Supplement Total Estimate:** $[total of recommended additional line items]
+**Confidence Level:** [High / Medium / Low — based on document completeness]
+
+---
+
+AFTER THE ANALYSIS:
+- Offer to generate a formal Supplement Request document → call generate_document with type "supplement"
+- Offer to draft an adjuster dispute letter if items are clearly underpaid
+- Ask if a re-inspection should be scheduled
+
 IN SCOPE (handle yourself):
+- Full loss report / adjuster report analysis using the 7-section structure above
 - Explain coverage, deductibles, and claim processes — from your knowledge base
-- Guide through the full claim process step by step
-- Generate claim documentation → use generate_document directly when the owner asks for it
+- Guide through the full supplement and claims process step by step
+- Generate claim documentation, supplement requests → use generate_document directly
 
 OUT OF SCOPE (offer transfer using suggest_transfer):
 ${estimatorAgent ? `- Pricing or estimate questions → suggest_transfer("${estimatorRole}")` : '- Pricing or estimate questions → suggest_transfer to the relevant specialist'}

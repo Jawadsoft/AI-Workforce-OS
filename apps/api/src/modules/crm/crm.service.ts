@@ -69,9 +69,9 @@ export class CrmService {
     const conn = await this.findOne(tenantId, id)
     try {
       const connector = this.getConnector(conn)
-      // Try a lightweight probe
-      await connector.getCustomer('__test__').catch((e) => {
-        // 404 means the API is reachable — that's fine
+      // Use searchContacts with empty query — safe probe that never triggers ID validation errors
+      await connector.searchContacts('').catch((e) => {
+        // 404 or empty result means the API is reachable — that's fine
         if (e?.response?.status === 404) return
         throw e
       })

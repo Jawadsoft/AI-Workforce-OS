@@ -118,47 +118,60 @@ export class ChatController {
 
     try {
       let attachments: { url: string; name: string; mimeType: string; extractedText?: string }[] | undefined
+
       if (file) {
         const docTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
           'application/msword', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
           'text/csv', 'text/plain']
         const isDoc = docTypes.includes(file.mimetype)
+        const isImage = file.mimetype.startsWith('image/')
 
-        // Pre-extract text from buffer immediately (while we still have it in memory)
-        // This avoids needing to re-fetch from Cloudinary URL later
-        let extractedText: string | undefined
         if (isDoc) {
+          send({ attachment: { name: file.originalname, mimeType: file.mimetype, status: 'processing' } })
+          send({ status: 'Extracting file details...' })
+
+          let extractedText = ''
           try {
-            if (file.mimetype === 'application/pdf') {
-              // Use internal pdf-parse path to bypass the v1.1.4 test-file loading bug
-              const pdfParse = require('pdf-parse/lib/pdf-parse.js') as (buf: Buffer, opts?: any) => Promise<{ text: string }>
-              const result = await pdfParse(file.buffer, { max: 0 })
-              if (result?.text?.trim()) extractedText = result.text.slice(0, 15000)
-            } else if (file.mimetype === 'text/plain' || file.mimetype === 'text/csv') {
-              extractedText = file.buffer.toString('utf-8').slice(0, 15000)
-            }
-            // For docx/xlsx — service handles these fine via mammoth/xlsx since no test-file bug
+            extractedText = await this.service.extractAttachmentText(file.buffer, file.mimetype, file.originalname)
+            send({ status: 'Reading document content...' })
           } catch (err: any) {
-            this.logger.warn(`Pre-extraction failed for ${file.originalname}: ${err.message}`)
+            this.logger.warn(`Inline extraction failed for ${file.originalname}: ${err.message}`)
+            send({ status: 'Extraction is taking longer, processing in the background...' })
+            this.service.queuePdfExtraction(id, tenantId, file.originalname, file.buffer, file.mimetype)
+          }
+
+          // Fire-and-forget Cloudinary upload (for persistent file reference)
+          this.cloudinary.upload(
+            tenantId, 'chat-attachments', `${Date.now()}-${file.originalname}`,
+            file.buffer, file.mimetype, 'raw',
+          ).catch((err: any) => this.logger.warn(`Cloudinary upload failed: ${err.message}`))
+
+          attachments = [{
+            url: `local://${file.originalname}`,
+            name: file.originalname,
+            mimeType: file.mimetype,
+            extractedText: extractedText || '__processing__',
+          }]
+
+          if (extractedText) {
+            send({ status: 'Preparing response...' })
+          }
+
+        } else if (isImage) {
+          // Images: upload and pass URL for vision
+          let url = ''
+          try {
+            url = await this.cloudinary.upload(tenantId, 'chat-attachments', `${Date.now()}-${file.originalname}`, file.buffer, file.mimetype, 'image')
+          } catch (err: any) {
+            this.logger.warn(`Image upload failed: ${err.message}`)
+          }
+          if (url) {
+            attachments = [{ url, name: file.originalname, mimeType: file.mimetype }]
+            send({ attachment: { url, name: file.originalname, mimeType: file.mimetype } })
           }
         }
-
-        // Upload to Cloudinary for persistent storage (non-blocking on failure)
-        let url = ''
-        try {
-          url = await this.cloudinary.upload(
-            tenantId, 'chat-attachments', `${Date.now()}-${file.originalname}`,
-            file.buffer, file.mimetype,
-            file.mimetype.startsWith('image/') ? 'image' : 'raw',
-          )
-        } catch (err: any) {
-          this.logger.warn(`Cloudinary upload failed for ${file.originalname}: ${err.message} — using local fallback`)
-          url = `local://${file.originalname}`
-        }
-
-        attachments = [{ url, name: file.originalname, mimeType: file.mimetype, extractedText }]
-        send({ attachment: { url, name: file.originalname, mimeType: file.mimetype } })
       }
+
       await this.service.streamMessage(tenantId, id, content ?? '', send, attachments)
     } catch (err: any) {
       send({ error: err.message ?? 'Stream error' })

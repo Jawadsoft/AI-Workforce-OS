@@ -23,6 +23,7 @@ import { PrismaModule } from './common/prisma/prisma.module'
 import { CloudinaryModule } from './common/cloudinary/cloudinary.module'
 import { FeatureFlagsModule } from './common/feature-flags/feature-flags.module'
 import { QueueModule } from './queue/queue.module'
+import { PdfExtractionModule } from './queue/pdf-extraction.module'
 import { RealtimeModule } from './realtime/realtime.module'
 import { IntegrationsModule } from './modules/integrations/integrations.module'
 import { DocumentTemplatesModule } from './modules/document-templates/document-templates.module'
@@ -40,6 +41,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     CloudinaryModule,
     FeatureFlagsModule,
     QueueModule,
+    PdfExtractionModule,
     RealtimeModule,
     AIModule,
     AuthModule,

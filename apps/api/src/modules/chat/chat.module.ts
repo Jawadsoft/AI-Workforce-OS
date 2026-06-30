@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common'
+import { BullModule } from '@nestjs/bull'
 import { ChatService } from './chat.service'
 import { ChatController } from './chat.controller'
 import { AIModule } from '../../ai/ai.module'
@@ -11,12 +12,18 @@ import { StormModule } from '../storm/storm.module'
 import { MemoryModule } from '../memory/memory.module'
 import { SocialModule } from '../social/social.module'
 import { CloudinaryModule } from '../../common/cloudinary/cloudinary.module'
+import { RealtimeModule } from '../../realtime/realtime.module'
 
 // PublicChatModule is @Global() so PublicChatService is available everywhere
 // without importing the module here — importing it would create a circular
 // TypeScript file dependency and crash module scanning.
 @Module({
-  imports: [AIModule, CrmModule, BrainModule, KnowledgeModule, TasksModule, DocumentsModule, StormModule, MemoryModule, SocialModule, CloudinaryModule],
+  imports: [
+    BullModule.registerQueue({ name: 'knowledge-processing' }),
+    AIModule, CrmModule, BrainModule, KnowledgeModule, TasksModule,
+    DocumentsModule, StormModule, MemoryModule, SocialModule, CloudinaryModule,
+    RealtimeModule,
+  ],
   providers: [ChatService],
   controllers: [ChatController],
   exports: [ChatService],

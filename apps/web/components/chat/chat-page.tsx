@@ -9,6 +9,8 @@ import { CRMRecordCard } from './crm-record-card'
 import { ChatActionCard, type ActionCard } from './action-cards'
 import { resolveAvatarUrl } from '@/lib/utils'
 import { useFeatures, FEATURES } from '@/hooks/use-features'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1'
 
@@ -43,20 +45,36 @@ interface Message {
   streaming?: boolean
 }
 
-// ── Markdown-lite renderer ─────────────────────────────────────────
+// ── Markdown renderer ───────────────────────────────────────────────
 function renderMarkdown(text: string) {
-  const lines = text.split('\n')
-  return lines.map((line, i) => {
-    // Bold **text**
-    const parsed = line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    // Italic *text*
-    const parsed2 = parsed.replace(/\*(.*?)\*/g, '<em>$1</em>')
-    if (line.startsWith('---')) return <hr key={i} className="my-2 border-border" />
-    return (
-      <p key={i} className={line === '' ? 'h-2' : 'leading-relaxed'}
-        dangerouslySetInnerHTML={{ __html: parsed2 }} />
-    )
-  })
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        h1: ({ children }) => <h1 className="mb-2 mt-3 text-lg font-semibold leading-tight">{children}</h1>,
+        h2: ({ children }) => <h2 className="mb-2 mt-3 text-base font-semibold leading-tight">{children}</h2>,
+        h3: ({ children }) => <h3 className="mb-1.5 mt-2.5 text-sm font-semibold leading-tight">{children}</h3>,
+        p: ({ children }) => <p className="my-1 leading-relaxed">{children}</p>,
+        ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
+        ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
+        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+        strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+        em: ({ children }) => <em className="italic">{children}</em>,
+        hr: () => <hr className="my-3 border-border" />,
+        table: ({ children }) => (
+          <div className="my-3 overflow-x-auto rounded-lg border border-border">
+            <table className="w-full min-w-max border-collapse text-sm">{children}</table>
+          </div>
+        ),
+        th: ({ children }) => <th className="border-b border-border bg-muted/50 px-3 py-2 text-left font-semibold">{children}</th>,
+        td: ({ children }) => <td className="border-b border-border px-3 py-2 align-top">{children}</td>,
+        code: ({ children }) => <code className="rounded bg-muted px-1 py-0.5 text-xs">{children}</code>,
+        pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded-lg bg-muted p-3 text-xs">{children}</pre>,
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  )
 }
 
 // ── Briefing badge ─────────────────────────────────────────────────
@@ -233,6 +251,11 @@ export function ChatPage() {
             const payload = JSON.parse(line.slice(6))
             if (payload.typing) { setTypingAgent(payload.agentName ?? null) }
             if (payload.attachment) { setUploadedAttachment(payload.attachment as Attachment) }
+            if (payload.status && !accumulated) {
+              setStreamingMsg(payload.status)
+              setTypingAgent(null)
+              setCheckingWith(null)
+            }
             if (payload.token) {
               accumulated += payload.token
               setStreamingMsg(ttsEnabled ? null : accumulated)   // hide text while TTS streams
@@ -258,6 +281,12 @@ export function ChatPage() {
               } else {
                 await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] })
                 setUploadedAttachment(null)
+                if (file) {
+                  setTimeout(() => {
+                    refetchMessages()
+                    qc.invalidateQueries({ queryKey: ['messages', conversationId] })
+                  }, 2500)
+                }
               }
             }
             if (payload.error) { setStreamingMsg(`Error: ${payload.error}`); setCheckingWith(null); setTypingAgent(null) }

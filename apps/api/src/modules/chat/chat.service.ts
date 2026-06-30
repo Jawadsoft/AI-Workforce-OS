@@ -1,4 +1,6 @@
 import { Injectable, NotFoundException, Logger, InternalServerErrorException } from '@nestjs/common'
+import { InjectQueue } from '@nestjs/bull'
+import { Queue } from 'bull'
 import { Readable } from 'stream'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
@@ -13,6 +15,7 @@ import { DocumentsService } from '../documents/documents.service'
 import { StormService } from '../storm/storm.service'
 import { MemoryService } from '../memory/memory.service'
 import { SocialService } from '../social/social.service'
+import { RealtimeGateway } from '../../realtime/realtime.gateway'
 
 // Regex patterns to extract caller identity from first message
 const PHONE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/
@@ -321,7 +324,88 @@ export class ChatService {
     private readonly storm: StormService,
     private readonly memory: MemoryService,
     private readonly social: SocialService,
+    private readonly realtime: RealtimeGateway,
+    @InjectQueue('knowledge-processing') private readonly extractionQueue: Queue,
   ) {}
+
+  queuePdfExtraction(conversationId: string, tenantId: string, fileName: string, fileBuffer: Buffer, mimeType: string) {
+    // Do not block the chat stream on Redis/Bull. In local dev Redis may be down,
+    // so we race queueing against a short timeout and fall back to in-process extraction.
+    void Promise.race([
+      this.extractionQueue.add('extract-pdf', {
+        conversationId,
+        tenantId,
+        fileName,
+        fileBufferBase64: fileBuffer.toString('base64'),
+        mimeType,
+      }, { attempts: 2, backoff: 3000 }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Queue timeout')), 1000)),
+    ])
+      .then(() => this.logger.log(`[PDF] Queued extraction for ${fileName} in conversation ${conversationId}`))
+      .catch((err: any) => {
+        this.logger.warn(`[PDF] Queue unavailable for ${fileName}: ${err.message}. Falling back to local extraction.`)
+        void this.extractAndStoreDocument(conversationId, tenantId, fileName, fileBuffer, mimeType)
+      })
+  }
+
+  async extractAttachmentText(fileBuffer: Buffer, mimeType: string, fileName: string): Promise<string> {
+    const text = await this.knowledge.extractTextFromBuffer(fileBuffer, mimeType, fileName)
+    return text?.trim().slice(0, 15000) ?? ''
+  }
+
+  private async extractAndStoreDocument(conversationId: string, tenantId: string, fileName: string, fileBuffer: Buffer, mimeType: string) {
+    try {
+      const extractedText = await this.knowledge.extractTextFromBuffer(fileBuffer, mimeType, fileName)
+      const text = extractedText?.trim().slice(0, 15000)
+
+      if (!text) {
+        this.realtime.emitToTenant(tenantId, 'document-ready', {
+          conversationId,
+          fileName,
+          status: 'empty',
+          message: `No readable text found in ${fileName}`,
+        })
+        return
+      }
+
+      const conv = await this.prisma.conversation.findUnique({ where: { id: conversationId } })
+      if (!conv) return
+
+      const meta = (conv.metadata as any) ?? {}
+      const existingDocs: { name: string; text: string }[] = meta.documentContext ?? []
+      const alreadySaved = existingDocs.some(d => d.name === fileName)
+
+      if (!alreadySaved) {
+        existingDocs.push({ name: fileName, text })
+        await this.prisma.conversation.update({
+          where: { id: conversationId },
+          data: { metadata: { ...meta, documentContext: existingDocs } },
+        })
+      }
+
+      const readyMessage = `I've finished processing "${fileName}". The document is ready now — send "summarize it" or ask any specific question about it.`
+      await this.prisma.message.create({
+        data: { conversationId, role: 'ASSISTANT', content: readyMessage },
+      })
+
+      this.realtime.emitToTenant(tenantId, 'document-ready', {
+        conversationId,
+        fileName,
+        status: 'ready',
+        message: readyMessage,
+        preview: text.slice(0, 300),
+      })
+      this.logger.log(`[PDF] Local extraction complete for ${fileName} — ${text.length} chars saved`)
+    } catch (err: any) {
+      this.logger.error(`[PDF] Local extraction failed for ${fileName}: ${err.message}`)
+      this.realtime.emitToTenant(tenantId, 'document-ready', {
+        conversationId,
+        fileName,
+        status: 'error',
+        message: `Failed to process ${fileName}: ${err.message}`,
+      })
+    }
+  }
 
   async findAll(tenantId: string, agentId?: string) {
     return this.prisma.conversation.findMany({
@@ -1654,6 +1738,31 @@ export class ChatService {
       },
     })
 
+    const processingAttachments = attachments?.filter((att: any) => att.extractedText === '__processing__') ?? []
+    if (processingAttachments.length > 0) {
+      const fileList = processingAttachments.map(att => `"${att.name}"`).join(', ')
+      const reply = processingAttachments.length === 1
+        ? `I've received ${fileList} and I'm processing it now. Give me a moment while I extract the document text, then I can summarize or analyze it.`
+        : `I've received these documents: ${fileList}. I'm processing them now. Give me a moment while I extract the document text, then I can summarize or analyze them.`
+
+      for (const char of reply) {
+        emit({ token: char })
+        await new Promise(r => setTimeout(r, 0))
+      }
+
+      const aiMessage = await this.prisma.message.create({
+        data: { conversationId, role: 'ASSISTANT', content: reply },
+      })
+
+      await this.prisma.conversation.update({
+        where: { id: conversationId },
+        data: { updatedAt: new Date() },
+      })
+
+      emit({ done: true, messageId: aiMessage.id })
+      return
+    }
+
     // Get most recent 14 messages (desc + reverse = latest messages in chronological order)
     const historyRaw2 = await this.prisma.message.findMany({
       where: { conversationId },
@@ -1720,6 +1829,14 @@ export class ChatService {
         if (imageTypes.some(t => att.mimeType.startsWith('image/'))) {
           visionImages.push({ url: att.url, name: att.name })
         } else if (docTypes.includes(att.mimeType)) {
+          // ── Check if document is queued for async background extraction ──
+          if ((att as any).extractedText === '__processing__') {
+            // Document is being processed in the background queue — inject a processing notice
+            // so the agent responds naturally with "I'm analyzing your document..."
+            attachmentContextBlock += `\n\n--- DOCUMENT PROCESSING: ${att.name} ---\nThis document has been received and is currently being extracted in the background. Acknowledge receipt warmly and let the user know you will analyze it momentarily.\n--- END PROCESSING NOTICE ---`
+            continue
+          }
+
           try {
             // Check if we already extracted this document in a previous message
             const existing = savedDocs.find(d => d.name === att.name)
@@ -1732,7 +1849,7 @@ export class ChatService {
               text = (att as any).extractedText
             } else {
               // Fallback: fetch from URL and extract (only if URL is a real remote URL)
-              if (!att.url.startsWith('local://')) {
+              if (!att.url.startsWith('local://') && !att.url.startsWith('processing://')) {
                 const fileBuffer = await fetch(att.url).then((r) => r.arrayBuffer()).then((b) => Buffer.from(b))
                 text = await this.knowledge.extractTextFromBuffer(fileBuffer, att.mimeType, att.name)
               } else {

@@ -5,7 +5,7 @@ import { useTheme } from 'next-themes'
 import { useAuthStore } from '@/stores/auth.store'
 import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { resolveAvatarUrl } from '@/lib/utils'
 
@@ -19,7 +19,8 @@ type HeaderAgent = {
 
 export function Header() {
   const { user, fetchMe, logout, isAuthenticated } = useAuthStore()
-  const { theme, setTheme } = useTheme()
+  const { theme, resolvedTheme, setTheme } = useTheme()
+  const [mounted, setMounted] = useState(false)
   const router = useRouter()
   const { data: agents = [] } = useQuery<HeaderAgent[]>({
     queryKey: ['agents'],
@@ -29,6 +30,10 @@ export function Header() {
   useEffect(() => {
     if (!isAuthenticated) fetchMe()
   }, [isAuthenticated, fetchMe])
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   const handleLogout = () => {
     logout()
@@ -75,11 +80,13 @@ export function Header() {
       <div className="flex items-center gap-3">
         {/* Theme toggle */}
         <button
-          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          onClick={() => setTheme((resolvedTheme ?? theme) === 'dark' ? 'light' : 'dark')}
           className="relative p-2 rounded-md hover:bg-accent transition-colors"
-          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          title={mounted && (resolvedTheme ?? theme) === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
         >
-          {theme === 'dark'
+          {!mounted
+            ? <span className="block h-4 w-4" />
+            : (resolvedTheme ?? theme) === 'dark'
             ? <Sun className="w-4 h-4 text-muted-foreground" />
             : <Moon className="w-4 h-4 text-muted-foreground" />
           }

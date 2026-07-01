@@ -195,9 +195,9 @@ export class SocialController {
     const appId = this.config.get('FACEBOOK_APP_ID')
     const redirectBase = this.config.get('SOCIAL_OAUTH_REDIRECT_BASE')
     const redirectUri = encodeURIComponent(`${redirectBase}/social/oauth/facebook/callback`)
-    // Only request permissions that are enabled via Use Cases in the Facebook App Dashboard.
-    // pages_show_list is required as a dependency for pages_manage_posts.
-    const scope = 'public_profile,email,pages_show_list,pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish'
+    // Permissions required for Pages + Instagram publishing.
+    // business_management is needed to read Business Manager assets.
+    const scope = 'email,pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish,business_management'
     const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64')
     const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&response_type=code`
     return res.redirect(url)

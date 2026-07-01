@@ -88,7 +88,7 @@ interface TenantAgent { id: string; name: string; role: string; status: string }
 
 const emptyConfig = { industry: '', crmProvider: '', crmName: '', crmBaseUrl: '', crmApiKey: '' }
 
-const TABS = ['Overview', 'Approvals', 'Tenants', 'Marketplace']
+const TABS = ['Overview', 'Approvals', 'Tenants', 'Marketplace', 'Industry Knowledge']
 
 const ALL_FEATURE_FLAGS = [
   { key: 'widget',               label: 'Website Widget',           desc: 'Public chat widget embed' },
@@ -407,6 +407,7 @@ export default function SuperAdminDashboard() {
                 refresh={loadData}
               />
             )}
+            {tab === 'Industry Knowledge' && <IndustryKnowledgeTab api={api} glass={glass} />}
           </>
         )}
       </main>
@@ -1188,6 +1189,417 @@ function MarketplaceTab({ templates, onToggle, onDelete, showNew, setShowNew, ap
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+// ── Industry Knowledge Tab ─────────────────────────────────────────
+
+const INDUSTRY_OPTIONS = [
+  'ROOFING', 'HVAC', 'INSURANCE', 'CONSTRUCTION', 'CLEANING',
+  'REAL_ESTATE', 'LANDSCAPING', 'PEST_CONTROL', 'HEALTHCARE',
+  'PROPERTY_MANAGEMENT', 'HUMAN_RESOURCES', 'CAR_DEALERSHIP', 'OTHER',
+]
+
+const CATEGORY_OPTIONS = [
+  'general', 'claims', 'supplement', 'estimating', 'codes', 'sales',
+  'operations', 'inspection', 'pricing', 'playbook', 'analytics',
+]
+
+function IndustryKnowledgeTab({ api, glass }: { api: ReturnType<typeof useSAApi>; glass: any }) {
+  const [packs, setPacks] = useState<any[]>([])
+  const [selectedIndustry, setSelectedIndustry] = useState('ROOFING')
+  const [packDocs, setPackDocs] = useState<any[]>([])
+  const [packId, setPackId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [showAdd, setShowAdd] = useState(false)
+  const [inputMode, setInputMode] = useState<'file' | 'text'>('file')
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [form, setForm] = useState({ name: '', category: 'general', agentRoles: '', content: '' })
+  const [saving, setSaving] = useState(false)
+  const [viewingDoc, setViewingDoc] = useState<any | null>(null)
+  const [viewLoading, setViewLoading] = useState(false)
+
+  const loadPacks = async () => {
+    try {
+      const res = await api.get('/super-admin/industry-knowledge')
+      setPacks(res.data ?? [])
+    } catch {}
+  }
+
+  const loadDocs = async (industry: string) => {
+    setLoading(true)
+    try {
+      const res = await api.get(`/super-admin/industry-knowledge/${industry}/docs`)
+      setPackDocs(res.data?.documents ?? [])
+      setPackId(res.data?.id ?? null)
+    } catch {
+      setPackDocs([])
+      setPackId(null)
+    } finally { setLoading(false) }
+  }
+
+  useEffect(() => { loadPacks(); loadDocs(selectedIndustry) }, [])
+
+  const switchIndustry = (ind: string) => {
+    setSelectedIndustry(ind)
+    loadDocs(ind)
+  }
+
+  const ensurePack = async (): Promise<string | null> => {
+    if (packId) return packId
+    try {
+      const res = await api.post('/super-admin/industry-knowledge/pack', {
+        industry: selectedIndustry,
+        name: `${selectedIndustry} Knowledge Base`,
+      })
+      setPackId(res.data.id)
+      return res.data.id
+    } catch { return null }
+  }
+
+  const handleAdd = async () => {
+    if (inputMode === 'file' && !uploadFile) return
+    if (inputMode === 'text' && (!form.name.trim() || !form.content.trim())) return
+    setSaving(true)
+    try {
+      const id = await ensurePack()
+      if (!id) { alert('Could not create pack'); return }
+      const roles = form.agentRoles.split(',').map(r => r.trim()).filter(Boolean)
+
+      if (inputMode === 'file' && uploadFile) {
+        const fd = new FormData()
+        fd.append('file', uploadFile)
+        fd.append('packId', id)
+        if (form.name.trim()) fd.append('name', form.name)
+        fd.append('category', form.category)
+        if (roles.length) fd.append('agentRoles', roles.join(','))
+        await api.post('/super-admin/industry-knowledge/doc/upload', fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+      } else {
+        await api.post('/super-admin/industry-knowledge/doc', {
+          packId: id, name: form.name, category: form.category, agentRoles: roles, content: form.content,
+        })
+      }
+
+      setForm({ name: '', category: 'general', agentRoles: '', content: '' })
+      setUploadFile(null)
+      setShowAdd(false)
+      loadDocs(selectedIndustry)
+      loadPacks()
+    } catch (e: any) {
+      alert(e?.response?.data?.message ?? 'Failed to save')
+    } finally { setSaving(false) }
+  }
+
+  const handleView = async (docId: string) => {
+    setViewLoading(true)
+    setViewingDoc({ id: docId })
+    try {
+      const res = await api.get(`/super-admin/industry-knowledge/doc/${docId}`)
+      setViewingDoc(res.data)
+    } catch {
+      setViewingDoc(null)
+    } finally {
+      setViewLoading(false)
+    }
+  }
+
+  const handleDelete = async (docId: string) => {
+    if (!confirm('Delete this document?')) return
+    try {
+      await api.delete(`/super-admin/industry-knowledge/doc/${docId}`)
+      loadDocs(selectedIndustry)
+      loadPacks()
+    } catch {}
+  }
+
+  const handleReEmbed = async () => {
+    if (!confirm(`Re-embed all docs in ${selectedIndustry}? This may take a moment.`)) return
+    try {
+      await api.post(`/super-admin/industry-knowledge/${selectedIndustry}/embed-all`)
+      alert('Re-embedding started in background')
+    } catch {}
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-white">Industry Knowledge</h2>
+          <p className="text-sm text-gray-400 mt-1">Upload documents that all agents in an industry will use automatically</p>
+        </div>
+        <button
+          onClick={() => setShowAdd(true)}
+          style={{ background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', ...glass.card, border: 'none' }}
+          className="px-4 py-2 rounded-xl text-sm font-medium text-white hover:opacity-90 transition-opacity"
+        >
+          + Add Document
+        </button>
+      </div>
+
+      <div className="flex gap-6">
+        {/* Industry Sidebar */}
+        <div className="w-48 flex-shrink-0 space-y-1">
+          {INDUSTRY_OPTIONS.map(ind => {
+            const pack = packs.find(p => p.industry === ind)
+            return (
+              <button
+                key={ind}
+                onClick={() => switchIndustry(ind)}
+                className="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors"
+                style={selectedIndustry === ind
+                  ? { background: 'rgba(99,102,241,0.25)', color: '#a5b4fc', border: '1px solid rgba(99,102,241,0.4)' }
+                  : { background: 'rgba(255,255,255,0.03)', color: '#9ca3af', border: '1px solid transparent' }
+                }
+              >
+                <span className="truncate block">{ind.replace(/_/g, ' ')}</span>
+                {pack && <span className="text-xs opacity-60">{pack._count?.documents ?? 0} docs</span>}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Documents Panel */}
+        <div className="flex-1 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-300">{selectedIndustry.replace(/_/g, ' ')} — Documents</h3>
+            {packDocs.length > 0 && (
+              <button onClick={handleReEmbed} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
+                Re-embed All
+              </button>
+            )}
+          </div>
+
+          {loading && <div className="text-sm text-gray-400">Loading...</div>}
+
+          {!loading && packDocs.length === 0 && (
+            <div className="rounded-xl p-8 text-center text-sm text-gray-500" style={glass.card}>
+              No documents yet for {selectedIndustry.replace(/_/g, ' ')}. Add the first one.
+            </div>
+          )}
+
+          {packDocs.map((doc: any) => (
+            <div key={doc.id} className="rounded-xl p-4 flex items-start gap-3" style={glass.card}>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-white truncate">{doc.name}</p>
+                <div className="flex items-center gap-3 mt-1">
+                  <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(99,102,241,0.2)', color: '#a5b4fc' }}>
+                    {doc.category}
+                  </span>
+                  {doc.agentRoles?.length > 0 && (
+                    <span className="text-xs text-gray-400">{doc.agentRoles.join(', ')}</span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => handleView(doc.id)}
+                  className="text-xs px-2.5 py-1 rounded-lg transition-colors"
+                  style={{ background: 'rgba(99,102,241,0.15)', color: '#a5b4fc' }}
+                  title="View document content"
+                >
+                  View
+                </button>
+                <button onClick={() => handleDelete(doc.id)} className="text-xs text-red-400 hover:text-red-300 transition-colors">
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* View Document Modal */}
+      {viewingDoc && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="rounded-2xl p-6 w-full max-w-3xl max-h-[85vh] flex flex-col gap-4" style={glass.cardElevated}>
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <h3 className="text-lg font-semibold text-white truncate">
+                  {viewLoading ? 'Loading...' : (viewingDoc.name ?? 'Document')}
+                </h3>
+                {!viewLoading && viewingDoc.name && (
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(99,102,241,0.2)', color: '#a5b4fc' }}>
+                      {viewingDoc.category ?? 'general'}
+                    </span>
+                    {viewingDoc.agentRoles?.length > 0 && (
+                      <span className="text-xs text-gray-400">{viewingDoc.agentRoles.join(', ')}</span>
+                    )}
+                    {viewingDoc._count?.chunks != null && (
+                      <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(16,185,129,0.15)', color: '#6ee7b7' }}>
+                        {viewingDoc._count.chunks} chunks embedded
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+              <button onClick={() => setViewingDoc(null)} className="text-gray-400 hover:text-white text-xl leading-none flex-shrink-0 transition-colors">✕</button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto rounded-xl p-4 font-mono text-xs text-gray-200 leading-relaxed whitespace-pre-wrap"
+              style={{ background: 'rgba(0,0,0,0.35)', border: '1px solid rgba(255,255,255,0.07)', minHeight: '200px', maxHeight: '60vh' }}>
+              {viewLoading
+                ? <span className="text-gray-500 animate-pulse">Fetching content...</span>
+                : viewingDoc.content
+                  ? viewingDoc.content
+                  : <span className="text-gray-500">No content saved.</span>
+              }
+            </div>
+
+            {/* Footer */}
+            <div className="flex justify-between items-center text-xs text-gray-500">
+              <span>{!viewLoading && viewingDoc.content ? `${viewingDoc.content.length.toLocaleString()} characters` : ''}</span>
+              <button
+                onClick={() => {
+                  if (viewingDoc.content) {
+                    navigator.clipboard.writeText(viewingDoc.content)
+                  }
+                }}
+                disabled={!viewingDoc.content || viewLoading}
+                className="px-3 py-1.5 rounded-lg text-xs transition-colors disabled:opacity-40"
+                style={{ background: 'rgba(99,102,241,0.15)', color: '#a5b4fc' }}
+              >
+                Copy to clipboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Document Modal */}
+      {showAdd && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="rounded-2xl p-6 w-full max-w-2xl max-h-[85vh] flex flex-col gap-4 overflow-y-auto" style={glass.cardElevated}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">Add Document to {selectedIndustry.replace(/_/g, ' ')}</h3>
+              <button onClick={() => setShowAdd(false)} className="text-gray-400 hover:text-white text-xl">×</button>
+            </div>
+
+            <div className="space-y-3">
+              {/* Input mode toggle */}
+              <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.1)' }}>
+                {(['file', 'text'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    onClick={() => setInputMode(mode)}
+                    className="flex-1 py-2 text-sm font-medium transition-colors"
+                    style={inputMode === mode
+                      ? { background: 'rgba(99,102,241,0.3)', color: '#a5b4fc' }
+                      : { background: 'transparent', color: '#9ca3af' }
+                    }
+                  >
+                    {mode === 'file' ? '📎 Upload File (PDF / DOCX)' : '📝 Paste Text'}
+                  </button>
+                ))}
+              </div>
+
+              {/* File upload */}
+              {inputMode === 'file' && (
+                <div>
+                  <label className="text-xs text-gray-400 mb-1 block">File *</label>
+                  <label
+                    className="flex flex-col items-center justify-center w-full py-8 rounded-lg cursor-pointer transition-colors"
+                    style={{ border: '2px dashed rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.06)' }}
+                  >
+                    <span className="text-3xl mb-2">📄</span>
+                    {uploadFile
+                      ? <span className="text-sm text-indigo-300 font-medium">{uploadFile.name}</span>
+                      : <span className="text-sm text-gray-400">Click to select PDF, DOCX, or TXT</span>
+                    }
+                    <input
+                      type="file"
+                      accept=".pdf,.docx,.txt,.md"
+                      className="hidden"
+                      onChange={e => {
+                        const f = e.target.files?.[0]
+                        if (f) {
+                          setUploadFile(f)
+                          if (!form.name) setForm(prev => ({ ...prev, name: f.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ') }))
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Document Name {inputMode === 'text' ? '*' : '(optional — auto from filename)'}</label>
+                <input
+                  value={form.name}
+                  onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                  placeholder="e.g. 02 — Supplement Library"
+                  className="w-full px-3 py-2 rounded-lg text-sm text-white outline-none"
+                  style={glass.input}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gray-400 mb-1 block">Category</label>
+                  <select
+                    value={form.category}
+                    onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-lg text-sm text-white outline-none"
+                    style={glass.input}
+                  >
+                    {CATEGORY_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 mb-1 block">Agent Roles (comma-separated)</label>
+                  <input
+                    value={form.agentRoles}
+                    onChange={e => setForm(f => ({ ...f, agentRoles: e.target.value }))}
+                    placeholder="insurance specialist, estimator"
+                    className="w-full px-3 py-2 rounded-lg text-sm text-white outline-none"
+                    style={glass.input}
+                  />
+                </div>
+              </div>
+
+              {/* Paste text — only shown in text mode */}
+              {inputMode === 'text' && (
+                <div>
+                  <label className="text-xs text-gray-400 mb-1 block">Document Content *</label>
+                  <textarea
+                    value={form.content}
+                    onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
+                    placeholder="Paste the full text content of the document here..."
+                    rows={12}
+                    className="w-full px-3 py-2 rounded-lg text-sm text-white outline-none resize-none"
+                    style={glass.input}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">{form.content.length.toLocaleString()} characters</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={handleAdd}
+                disabled={saving || (inputMode === 'file' ? !uploadFile : (!form.name.trim() || !form.content.trim()))}
+                style={{ background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', opacity: saving ? 0.6 : 1 }}
+                className="flex-1 py-2.5 rounded-xl text-sm font-medium text-white transition-opacity"
+              >
+                {saving ? 'Uploading & Embedding...' : 'Save Document'}
+              </button>
+              <button
+                onClick={() => setShowAdd(false)}
+                className="px-6 py-2.5 rounded-xl text-sm font-medium text-gray-400 hover:text-white transition-colors"
+                style={glass.card}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

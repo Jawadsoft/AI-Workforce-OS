@@ -46,6 +46,12 @@ export class KnowledgeController {
     return this.service.unassignFromAgent(tenantId, id, agentId)
   }
 
+  @Get(':id/chunks')
+  @ApiOperation({ summary: 'Get extracted text chunks for a document' })
+  getChunks(@CurrentTenant() tenantId: string, @Param('id') id: string) {
+    return this.service.getChunks(tenantId, id)
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a document and its chunks' })
   remove(@CurrentTenant() tenantId: string, @Param('id') id: string) {

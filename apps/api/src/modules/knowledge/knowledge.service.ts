@@ -66,6 +66,15 @@ export class KnowledgeService {
     return this.prisma.knowledgeDocument.findFirst({ where: { id, tenantId } })
   }
 
+  async getChunks(tenantId: string, id: string) {
+    const doc = await this.prisma.knowledgeDocument.findFirst({
+      where: { id, tenantId },
+      select: { id: true, name: true, chunks: { select: { id: true, content: true, chunkIndex: true }, orderBy: { chunkIndex: 'asc' } } },
+    })
+    if (!doc) throw new Error('Document not found')
+    return { docName: doc.name, chunks: doc.chunks }
+  }
+
   // ── Upload & process ──────────────────────────────────────────────
 
   async upload(tenantId: string, file: { buffer: Buffer; originalname: string; mimetype: string; size: number }) {

@@ -1,14 +1,17 @@
 import {
   Controller, Get, Post, Patch, Delete,
-  Param, Body, UseGuards, Req,
+  Param, Body, UseGuards, Req, UploadedFile, UseInterceptors, BadRequestException,
 } from '@nestjs/common'
-import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes } from '@nestjs/swagger'
+import { FileInterceptor } from '@nestjs/platform-express'
 import { IsString, IsOptional, IsBoolean, IsArray, IsEmail } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { SuperAdminGuard } from '../../common/guards/super-admin.guard'
 import { SuperAdminService } from './super-admin.service'
 import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
 import { ALL_FEATURES } from '../../common/feature-flags/feature-flags.constants'
+import { IndustryKnowledgeService } from '../knowledge/industry-knowledge.service'
+import { KnowledgeService } from '../knowledge/knowledge.service'
 
 class CreateTemplateDto {
   @IsString() name: string
@@ -57,6 +60,20 @@ class BulkFeatureFlagDto {
   @IsBoolean() enabled: boolean
 }
 
+class UpsertPackDto {
+  @IsString() industry: string
+  @IsString() name: string
+  @IsOptional() @IsString() description?: string
+}
+
+class AddDocDto {
+  @IsString() packId: string
+  @IsString() name: string
+  @IsString() category: string
+  @IsArray() agentRoles: string[]
+  @IsString() content: string
+}
+
 // ── Protected routes (require SUPER_ADMIN role) ───────────────────
 
 @ApiTags('Super Admin')
@@ -67,6 +84,8 @@ export class SuperAdminController {
   constructor(
     private readonly service: SuperAdminService,
     private readonly featureFlags: FeatureFlagsService,
+    private readonly industryKnowledge: IndustryKnowledgeService,
+    private readonly knowledge: KnowledgeService,
   ) {}
 
   @Get('stats')
@@ -189,6 +208,72 @@ export class SuperAdminController {
   @ApiOperation({ summary: 'Bulk enable or disable multiple features for a tenant' })
   bulkSetFeatures(@Param('id') id: string, @Body() dto: BulkFeatureFlagDto, @Req() req: any) {
     return this.featureFlags.setManyFeatures(id, dto.features, dto.enabled, req.user?.id)
+  }
+
+  // ── Industry Knowledge ───────────────────────────────────────────
+
+  @Get('industry-knowledge')
+  @ApiOperation({ summary: 'List all industry knowledge packs' })
+  listPacks() {
+    return this.industryKnowledge.findAllPacks()
+  }
+
+  @Get('industry-knowledge/:industry/docs')
+  @ApiOperation({ summary: 'Get all documents for an industry pack' })
+  getPackDocs(@Param('industry') industry: string) {
+    return this.industryKnowledge.findPackByIndustry(industry)
+  }
+
+  @Post('industry-knowledge/pack')
+  @ApiOperation({ summary: 'Create or update an industry knowledge pack' })
+  upsertPack(@Body() dto: UpsertPackDto) {
+    return this.industryKnowledge.upsertPack(dto.industry, dto.name, dto.description)
+  }
+
+  @Post('industry-knowledge/doc')
+  @ApiOperation({ summary: 'Add a document to an industry pack' })
+  addDoc(@Body() dto: AddDocDto) {
+    return this.industryKnowledge.addDocument(dto.packId, dto)
+  }
+
+  @Post('industry-knowledge/doc/upload')
+  @ApiOperation({ summary: 'Upload a PDF/DOCX file as an industry knowledge document' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
+  async uploadDoc(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: { packId: string; name?: string; category?: string; agentRoles?: string },
+  ) {
+    if (!file) throw new BadRequestException('No file uploaded')
+    const ext = '.' + file.originalname.split('.').pop()?.toLowerCase()
+    const text = await this.knowledge.extractTextFromBuffer(file.buffer, file.mimetype, file.originalname)
+    if (!text || text.trim().length < 50) throw new BadRequestException('Could not extract text from file. Use a text-based PDF or DOCX.')
+    const roles = body.agentRoles ? body.agentRoles.split(',').map(r => r.trim()).filter(Boolean) : []
+    const name = body.name || file.originalname.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ')
+    return this.industryKnowledge.addDocument(body.packId, {
+      name,
+      category: body.category ?? 'general',
+      agentRoles: roles,
+      content: text,
+    })
+  }
+
+  @Get('industry-knowledge/doc/:id')
+  @ApiOperation({ summary: 'Get a single industry knowledge document with full content' })
+  getDoc(@Param('id') id: string) {
+    return this.industryKnowledge.getDocument(id)
+  }
+
+  @Delete('industry-knowledge/doc/:id')
+  @ApiOperation({ summary: 'Delete an industry knowledge document' })
+  deleteDoc(@Param('id') id: string) {
+    return this.industryKnowledge.deleteDocument(id)
+  }
+
+  @Post('industry-knowledge/:industry/embed-all')
+  @ApiOperation({ summary: 'Re-embed all documents in an industry pack' })
+  embedAll(@Param('industry') industry: string) {
+    return this.industryKnowledge.embedAllInPack(industry)
   }
 }
 

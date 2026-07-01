@@ -108,6 +108,21 @@ export class IndustryKnowledgeService {
     this.logger.log(`[IndustryKnowledge] Doc ${docId} fully embedded`)
   }
 
+  async getDocument(docId: string) {
+    return this.prisma.industryKnowledgeDoc.findUnique({
+      where: { id: docId },
+      select: {
+        id: true, name: true, category: true, agentRoles: true, content: true, isActive: true,
+        _count: { select: { chunks: true } },
+      },
+    })
+  }
+
+  async deleteDocument(docId: string) {
+    await this.prisma.industryKnowledgeChunk.deleteMany({ where: { docId } })
+    return this.prisma.industryKnowledgeDoc.delete({ where: { id: docId } })
+  }
+
   // ── Embed all unembedded docs in a pack ───────────────────────────
 
   async embedAllInPack(industry: string) {

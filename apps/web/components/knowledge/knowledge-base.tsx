@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { FileText, Trash2, Link2, CheckCircle2, Clock, AlertCircle, ChevronDown, ChevronUp, Users } from 'lucide-react'
+import { FileText, Trash2, Link2, CheckCircle2, Clock, AlertCircle, ChevronDown, ChevronUp, Users, Eye, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { cn, resolveAvatarUrl } from '@/lib/utils'
@@ -22,9 +22,66 @@ const FILE_COLORS: Record<string, string> = {
   csv:  'text-green-600',
 }
 
+function ChunksModal({ docId, onClose }: { docId: string; onClose: () => void }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['knowledge-chunks', docId],
+    queryFn: () => api.get(`/knowledge/${docId}/chunks`).then(r => r.data),
+  })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-card border border-border rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-xl">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <div>
+            <h2 className="font-semibold text-sm">Document Chunks</h2>
+            {data?.docName && <p className="text-xs text-muted-foreground mt-0.5 truncate">{data.docName}</p>}
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-accent rounded-md transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 p-4 space-y-3">
+          {isLoading && (
+            <div className="space-y-3">
+              {[...Array(4)].map((_, i) => <div key={i} className="h-20 bg-muted rounded-lg animate-pulse" />)}
+            </div>
+          )}
+
+          {!isLoading && (!data?.chunks || data.chunks.length === 0) && (
+            <div className="text-center py-10 text-muted-foreground text-sm">No chunks found. Document may still be processing.</div>
+          )}
+
+          {data?.chunks?.map((chunk: any) => (
+            <div key={chunk.id} className="rounded-lg border border-border bg-muted/30 p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+                  Chunk {chunk.chunkIndex + 1}
+                </span>
+                <span className="text-[10px] text-muted-foreground">{chunk.content.length} chars</span>
+              </div>
+              <p className="text-xs text-foreground/80 leading-relaxed whitespace-pre-wrap">{chunk.content}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Footer */}
+        {data?.chunks?.length > 0 && (
+          <div className="px-5 py-3 border-t border-border">
+            <p className="text-xs text-muted-foreground">{data.chunks.length} chunks · agents search across all chunks when answering questions</p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function KnowledgeBase() {
   const qc = useQueryClient()
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [viewingChunks, setViewingChunks] = useState<string | null>(null)
 
   const { data: docs = [], isLoading } = useQuery({
     queryKey: ['knowledge'],
@@ -76,6 +133,8 @@ export function KnowledgeBase() {
   }
 
   return (
+    <>
+    {viewingChunks && <ChunksModal docId={viewingChunks} onClose={() => setViewingChunks(null)} />}
     <div className="space-y-3">
       {docs.map((doc: any) => {
         const status = STATUS_MAP[doc.status as keyof typeof STATUS_MAP] ?? STATUS_MAP.processing
@@ -105,6 +164,15 @@ export function KnowledgeBase() {
               </div>
 
               <div className="flex items-center gap-1 flex-shrink-0">
+                {doc.status === 'ready' && (
+                  <button
+                    onClick={() => setViewingChunks(doc.id)}
+                    className="p-1.5 hover:bg-accent rounded-md transition-colors text-muted-foreground"
+                    title="View extracted chunks"
+                  >
+                    <Eye className="w-4 h-4" />
+                  </button>
+                )}
                 <button
                   onClick={() => setExpanded(isOpen ? null : doc.id)}
                   className="p-1.5 hover:bg-accent rounded-md transition-colors text-muted-foreground"
@@ -166,5 +234,6 @@ export function KnowledgeBase() {
         )
       })}
     </div>
+    </>
   )
 }

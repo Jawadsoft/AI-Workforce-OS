@@ -210,9 +210,13 @@ export class DocumentsService {
     data?: Record<string, any>
     prompt?: string  // if set, use AI to fill the template data
   }) {
-    // Get company name
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } })
+    // Get company name and agent name
+    const [tenant, agent] = await Promise.all([
+      this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } }),
+      agentId ? this.prisma.agent.findUnique({ where: { id: agentId }, select: { name: true, role: true } }) : Promise.resolve(null),
+    ])
     const company = tenant?.name ?? 'Your Company'
+    const agentLabel = agent ? `${agent.name} — ${agent.role}` : company
 
     let docData = input.data ?? {}
 
@@ -260,39 +264,52 @@ export class DocumentsService {
   "paymentInstructions": "string (optional)"
 }`,
         supplement: `{
-  "preparedBy": "string",
-  "customerName": "string",
-  "propertyAddress": "string",
-  "carrier": "string",
-  "policyNumber": "string",
-  "claimNumber": "string",
-  "dateOfLoss": "string",
-  "causeOfLoss": "string",
-  "adjuster": "string",
-  "claimStatus": "string",
-  "claimSummary": "string",
-  "approvedScope": [{ "description": "string", "amount": number }],
-  "missingItems": [{ "description": "string", "reason": "string" }],
+  "preparedBy": "string — look for 'Prepared By' label, agent name, or specialist name",
+  "customerName": "string — look for 'Insured', 'Customer', or homeowner name",
+  "propertyAddress": "string — look for 'Property Address'",
+  "carrier": "string — look for 'Carrier' or insurance company name (e.g. USAA, State Farm, Allstate)",
+  "policyNumber": "string — look for 'Policy Number' or 'Policy #'",
+  "claimNumber": "string — look for 'Claim Number', 'Claim #', or 'Claim:'",
+  "dateOfLoss": "string — look for 'Date of Loss' or 'DOL'",
+  "causeOfLoss": "string — look for 'Cause of Loss', 'Peril', wind/hail/water/fire",
+  "adjuster": "string — look for 'Adjuster', 'Adjuster Name', or adjuster contact",
+  "claimStatus": "string — look for claim payment status",
+  "claimSummary": "string — write a 1-2 sentence summary of the claim based on the information provided",
+  "approvedScope": [{ "description": "string — item name/description", "amount": number — dollar amount }],
+  "missingItems": [{ "description": "string — missing item name", "reason": "string — why it should be included" }],
   "underpaidItems": [{ "description": "string", "approvedAmount": number, "recommendedAmount": number, "reason": "string" }],
-  "documentationNeeded": ["string"],
+  "documentationNeeded": ["string — each document or photo needed"],
   "recommendedLineItems": [{ "description": "string", "estimatedValue": number, "justification": "string" }],
-  "actionPlan": ["string"],
-  "supplementTotal": number,
+  "actionPlan": ["string — each action step as a plain string"],
+  "supplementTotal": number — sum of all recommendedLineItems estimatedValue values,
   "confidenceLevel": "High|Medium|Low"
 }`,
       }
 
       const schemaHint = SCHEMA_HINTS[input.type] ?? '{}'
-      const systemPrompt = `You are a document data extraction assistant for ${company}.
-Extract structured data from the user's request and return ONLY valid JSON matching this exact schema:
-${schemaHint}
 
-Rules:
+      const supplementExtra = input.type === 'supplement' ? `
+SUPPLEMENT EXTRACTION RULES — READ CAREFULLY:
+- "Prepared By" is the agent or specialist name. Look for "Prepared By:", "Kevin", or any "— Insurance Specialist" pattern.
+- "Policy Number" may appear as "Policy Number:", "Policy #:", or in parentheses after the carrier name.
+- "Date of Loss" may appear as "Date of Loss:", "DOL:", or a date following "loss on".
+- "Cause of Loss" may appear as "Cause of Loss:", "Peril:", or words like "wind", "hail", "storm".
+- "Claim Summary" — if not explicitly stated, write a 1-2 sentence summary based on the claim details present.
+- "Approved Scope" — extract EVERY line item or amount mentioned under "Approved Scope" section. Include dwelling RCV, garage, other structures, etc.
+- "approvedScope" entries MUST include all items with dollar amounts from the Approved Scope section.
+- For "recommendedLineItems", extract all items in "Recommended Additional Line Items" section with their dollar values.
+- "supplementTotal" = sum of all recommendedLineItems estimatedValue numbers.
+- Never leave a field as empty string if the information is present anywhere in the text.` : ''
+
+      const systemPrompt = `You are a document data extraction assistant for ${company}.
+Extract structured data from the provided text and return ONLY valid JSON matching this exact schema:
+${schemaHint}
+${supplementExtra}
+GENERAL RULES:
 - Use ONLY the field names shown above — do not add or rename fields
 - Calculate "total" as the sum of all line items (qty * unitPrice or qty * rate)
-- For supplement documents, calculate "supplementTotal" as the sum of recommendedLineItems estimatedValue plus any underpaid deltas when applicable
-- If a value is not mentioned, use a sensible default or empty string
-- Respond with ONLY the JSON object, no explanation, no markdown`
+- If a value is not mentioned, use a sensible default or empty string — never null
+- Respond with ONLY the JSON object, no explanation, no markdown, no code fences`
 
       try {
         const raw = await this.ai.chat(systemPrompt, [{ role: 'user', content: input.prompt }])
@@ -302,6 +319,11 @@ Rules:
       } catch (err: any) {
         this.logger.warn(`AI doc generation failed: ${err.message}`)
       }
+    }
+
+    // Always ensure preparedBy is set for supplement documents
+    if (input.type === 'supplement' && !docData.preparedBy) {
+      docData.preparedBy = agentLabel
     }
 
     // Resolve template: 1) tenant's saved default → 2) auto-generate & save → 3) built-in fallback

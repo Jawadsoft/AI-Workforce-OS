@@ -3,9 +3,11 @@ import { SuperAdminService } from './super-admin.service'
 import { SuperAdminController, SuperAdminBootstrapController } from './super-admin.controller'
 import { PrismaModule } from '../../common/prisma/prisma.module'
 import { FeatureFlagsModule } from '../../common/feature-flags/feature-flags.module'
+import { KnowledgeModule } from '../knowledge/knowledge.module'
+import { AIModule } from '../../ai/ai.module'
 
 @Module({
-  imports: [PrismaModule, FeatureFlagsModule],
+  imports: [PrismaModule, FeatureFlagsModule, AIModule, KnowledgeModule],
   providers: [SuperAdminService],
   controllers: [SuperAdminController, SuperAdminBootstrapController],
 })

@@ -122,9 +122,15 @@ export class SocialController {
   }
 
   @Post('posts/:id/approve')
-  @ApiOperation({ summary: 'Approve a pending post for scheduling/publishing' })
+  @ApiOperation({ summary: 'Approve a pending post — publishes now if no schedule, or queues for scheduled time' })
   approvePost(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.approvePost(tenantId, id)
+  }
+
+  @Post('posts/:id/publish')
+  @ApiOperation({ summary: 'Immediately publish a draft or approved post to its platform' })
+  publishNow(@CurrentTenant() tenantId: string, @Param('id') id: string) {
+    return this.service.publishNow(tenantId, id)
   }
 
   @Delete('posts/:id')

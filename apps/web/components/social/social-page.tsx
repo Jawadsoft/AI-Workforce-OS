@@ -133,7 +133,14 @@ export function SocialPage() {
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => api.post(`/social/posts/${id}/approve`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['social-posts'] }); toast.success('Post approved') },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['social-posts'] }); toast.success('Post approved & publishing…') },
+    onError: (e: any) => toast.error(e?.response?.data?.message ?? 'Approval failed'),
+  })
+
+  const publishNowMutation = useMutation({
+    mutationFn: (id: string) => api.post(`/social/posts/${id}/publish`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['social-posts'] }); toast.success('Post published!') },
+    onError: (e: any) => toast.error(e?.response?.data?.message ?? 'Publish failed — check account connection'),
   })
 
   const deleteMutation = useMutation({
@@ -289,6 +296,7 @@ export function SocialPage() {
                   key={post.id}
                   post={post}
                   onApprove={() => approveMutation.mutate(post.id)}
+                  onPublishNow={() => publishNowMutation.mutate(post.id)}
                   onDelete={() => { if (confirm('Delete this post?')) deleteMutation.mutate(post.id) }}
                   onEdit={() => setEditingPost({ ...post })}
                 />
@@ -301,6 +309,7 @@ export function SocialPage() {
                   key={post.id}
                   post={post}
                   onApprove={() => approveMutation.mutate(post.id)}
+                  onPublishNow={() => publishNowMutation.mutate(post.id)}
                   onDelete={() => { if (confirm('Delete this post?')) deleteMutation.mutate(post.id) }}
                   onEdit={() => setEditingPost({ ...post })}
                 />
@@ -718,9 +727,10 @@ export function SocialPage() {
   )
 }
 
-function PostCard({ post, onApprove, onDelete, onEdit }: {
+function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
   post: any
   onApprove: () => void
+  onPublishNow: () => void
   onDelete: () => void
   onEdit: () => void
 }) {
@@ -746,11 +756,19 @@ function PostCard({ post, onApprove, onDelete, onEdit }: {
             {new Date(post.scheduledAt).toLocaleString()}
           </p>
         )}
+        {post.errorMessage && (
+          <p className="text-xs text-red-400">{post.errorMessage}</p>
+        )}
       </div>
       <div className="flex flex-col gap-1 shrink-0">
         {post.status === 'pending_approval' && (
-          <button onClick={onApprove} className="p-1.5 rounded-lg hover:bg-green-500/10 text-green-400 transition-colors" title="Approve">
+          <button onClick={onApprove} className="p-1.5 rounded-lg hover:bg-green-500/10 text-green-400 transition-colors" title="Approve & Publish">
             <CheckCircle className="w-4 h-4" />
+          </button>
+        )}
+        {(post.status === 'draft' || post.status === 'failed') && (
+          <button onClick={onPublishNow} className="p-1.5 rounded-lg hover:bg-blue-500/10 text-blue-400 transition-colors" title="Publish Now">
+            <Send className="w-4 h-4" />
           </button>
         )}
         <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground transition-colors" title="Edit">
@@ -764,9 +782,10 @@ function PostCard({ post, onApprove, onDelete, onEdit }: {
   )
 }
 
-function GalleryCard({ post, onApprove, onDelete, onEdit }: {
+function GalleryCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
   post: any
   onApprove: () => void
+  onPublishNow: () => void
   onDelete: () => void
   onEdit: () => void
 }) {
@@ -793,6 +812,11 @@ function GalleryCard({ post, onApprove, onDelete, onEdit }: {
             {post.status === 'pending_approval' && (
               <button onClick={onApprove} className="flex-1 py-1 rounded-lg bg-green-500/80 hover:bg-green-500 text-white text-xs transition-colors">
                 Approve
+              </button>
+            )}
+            {(post.status === 'draft' || post.status === 'failed') && (
+              <button onClick={onPublishNow} className="flex-1 py-1 rounded-lg bg-blue-500/80 hover:bg-blue-500 text-white text-xs transition-colors">
+                Publish Now
               </button>
             )}
             <button onClick={onEdit} className="flex-1 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs transition-colors">

@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common'
+import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
@@ -399,6 +399,11 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     // Apply jitter to scheduled time to avoid bot-like exact timestamps
     const scheduledAt = data.scheduledAt ? this.addJitter(data.scheduledAt) : undefined
 
+    // Auto-link the connected social account for this platform (enables publishing later)
+    const connectedAccount = await this.prisma.socialAccount.findFirst({
+      where: { tenantId, platform: data.platform, isActive: true },
+    })
+
     return this.prisma.socialPost.create({
       data: {
         tenantId,
@@ -410,6 +415,7 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
         contentType: data.contentType ?? 'general',
         status,
         scheduledAt,
+        ...(connectedAccount && { socialAccountId: connectedAccount.id }),
         metadata: { contentHash: this.contentHash(data.content) } as any,
       },
     })
@@ -448,9 +454,51 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
   async approvePost(tenantId: string, postId: string) {
     const post = await this.prisma.socialPost.findFirst({ where: { id: postId, tenantId } })
     if (!post) throw new NotFoundException('Post not found')
+
+    if (post.scheduledAt) {
+      // Schedule for the given time
+      return this.prisma.socialPost.update({
+        where: { id: postId },
+        data: { status: 'scheduled' },
+      })
+    }
+
+    // No scheduled time — publish immediately
+    return this.publishNow(tenantId, postId)
+  }
+
+  async publishNow(tenantId: string, postId: string) {
+    const post = await this.prisma.socialPost.findFirst({
+      where: { id: postId, tenantId },
+      include: { socialAccount: true },
+    })
+    if (!post) throw new NotFoundException('Post not found')
+
+    // Find connected account for this platform if not already linked
+    let account = post.socialAccount
+    if (!account) {
+      account = await this.prisma.socialAccount.findFirst({
+        where: { tenantId, platform: post.platform, isActive: true },
+      }) as any
+    }
+
+    if (!account) {
+      throw new BadRequestException(
+        `No connected ${post.platform} account. Connect it in Social Media → Connections.`,
+      )
+    }
+
+    // Run safety check
+    const safety = await this.checkPublishSafety(tenantId, post.platform, post.content)
+    if (!safety.safe) {
+      throw new BadRequestException(`Safety check failed: ${safety.reason}`)
+    }
+
+    // Publish
+    await this.publishToPlatform({ ...post, socialAccount: account })
     return this.prisma.socialPost.update({
       where: { id: postId },
-      data: { status: post.scheduledAt ? 'scheduled' : 'draft' },
+      data: { status: 'published', publishedAt: new Date(), errorMessage: null },
     })
   }
 

@@ -128,15 +128,18 @@ export class ChatController {
 
         if (isDoc) {
           send({ attachment: { name: file.originalname, mimeType: file.mimetype, status: 'processing' } })
-          send({ status: 'Extracting file details...' })
+          send({ step: { label: `Reading ${file.originalname}`, status: 'active' } })
 
           let extractedText = ''
           try {
             extractedText = await this.service.extractAttachmentText(file.buffer, file.mimetype, file.originalname)
-            send({ status: 'Reading document content...' })
+            send({ step: { label: `Reading ${file.originalname}`, status: 'done' } })
+            send({ step: { label: 'Extracting document content', status: 'active' } })
+            send({ step: { label: 'Extracting document content', status: 'done' } })
           } catch (err: any) {
             this.logger.warn(`Inline extraction failed for ${file.originalname}: ${err.message}`)
-            send({ status: 'Extraction is taking longer, processing in the background...' })
+            send({ step: { label: `Reading ${file.originalname}`, status: 'done' } })
+            send({ step: { label: 'Processing in background...', status: 'active' } })
             this.service.queuePdfExtraction(id, tenantId, file.originalname, file.buffer, file.mimetype)
           }
 
@@ -154,7 +157,7 @@ export class ChatController {
           }]
 
           if (extractedText) {
-            send({ status: 'Preparing response...' })
+            send({ step: { label: 'Preparing AI analysis', status: 'active' } })
           }
 
         } else if (isImage) {

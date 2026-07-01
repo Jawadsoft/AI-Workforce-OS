@@ -72,14 +72,14 @@ const OUTPUT_FORMATS = [
 ]
 
 const ACCENT_PRESETS = [
-  { color: '#4f46e5', label: 'Indigo' },
-  { color: '#0ea5e9', label: 'Sky' },
+  { color: '#1e3a5f', label: 'Navy' },
+  { color: '#0f172a', label: 'Slate' },
   { color: '#10b981', label: 'Emerald' },
   { color: '#f59e0b', label: 'Amber' },
   { color: '#ef4444', label: 'Red' },
+  { color: '#0ea5e9', label: 'Sky' },
   { color: '#8b5cf6', label: 'Violet' },
-  { color: '#0f172a', label: 'Slate' },
-  { color: '#1e3a5f', label: 'Navy' },
+  { color: '#4f46e5', label: 'Indigo' },
 ]
 
 type Tab = 'list' | 'upload' | 'paste' | 'ai'
@@ -255,7 +255,7 @@ export function TemplateManager() {
     type: 'estimate',
     industry: 'ROOFING',
     style: 'modern',
-    accentColor: '#4f46e5',
+    accentColor: '#1e3a5f',
     tone: 'formal',
     outputFormat: 'print',
     customInstructions: '',

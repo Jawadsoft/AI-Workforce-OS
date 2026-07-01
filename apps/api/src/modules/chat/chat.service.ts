@@ -516,6 +516,70 @@ export class ChatService {
   }
 
   /**
+   * Wake an agent with a general briefing (no specific ticket required).
+   * Used by Hanna scheduler for daily briefings, storm alerts, etc.
+   * Posts briefing as a user message and triggers the agent to respond.
+   */
+  async wakeAgentWithBriefing(tenantId: string, agentId: string, briefing: string): Promise<void> {
+    this.logger.log(`[wakeAgentWithBriefing] Waking agent ${agentId}`)
+    try {
+      const agentRecord = await this.prisma.agent.findUnique({ where: { id: agentId } })
+      if (!agentRecord) { this.logger.warn(`[wakeAgentWithBriefing] Agent ${agentId} not found`); return }
+
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { settings: true, industry: true, name: true },
+      })
+      const mergedSettings = {
+        ...(tenant?.settings as any ?? {}),
+        industry: (tenant?.settings as any)?.brain?.industry ?? tenant?.industry ?? '',
+        tenantName: tenant?.name ?? '',
+      }
+      const brainContext = this.brain.buildAgentContext(mergedSettings)
+      const wakeTeamRoster = await this.prisma.agent.findMany({
+        where: { tenantId, status: 'ACTIVE' },
+        select: { name: true, role: true, prompt: true },
+        orderBy: { createdAt: 'asc' },
+      })
+
+      const conv = await this.getOrCreatePrimaryConversation(tenantId, agentId)
+
+      // Post briefing as a user message into the agent's primary thread
+      await this.prisma.message.create({
+        data: { conversationId: conv.id, role: 'USER', content: briefing },
+      })
+
+      const messages = await this.prisma.message.findMany({
+        where: { conversationId: conv.id },
+        orderBy: { createdAt: 'asc' },
+        take: 20,
+      })
+
+      const systemPrompt = this.buildFullSystemPrompt(agentRecord, mergedSettings, brainContext, '', '', true, '', wakeTeamRoster)
+      const openaiMessages: { role: 'user' | 'assistant'; content: string }[] = messages.map(m => ({
+        role: (m.role === 'USER' ? 'user' : 'assistant') as 'user' | 'assistant',
+        content: m.content,
+      }))
+
+      const responseText = await this.ai.chat(systemPrompt, openaiMessages)
+
+      if (responseText) {
+        await this.prisma.message.create({
+          data: { conversationId: conv.id, role: 'ASSISTANT', content: responseText, briefingType: 'DAILY_BRIEFING' },
+        })
+        await this.prisma.conversation.update({
+          where: { id: conv.id },
+          data: { updatedAt: new Date() },
+        })
+      }
+
+      this.logger.log(`[wakeAgentWithBriefing] ${agentRecord.name} briefed successfully`)
+    } catch (err: any) {
+      this.logger.error(`[wakeAgentWithBriefing] Error: ${err.message}`)
+    }
+  }
+
+  /**
    * Auto-wake an assigned agent: post briefing to their primary thread, trigger
    * autonomous reasoning, then post their response back into the originating
    * conversation so it appears in the active window of the agent who raised the ticket.
@@ -831,10 +895,15 @@ export class ChatService {
     const roleLC = (agent.role ?? '').toLowerCase()
 
     // ── Role classification — purely keyword-based, no hierarchy ────────
+    // Lead qualification agent
+    const isLeadQualAgent = roleLC.includes('lead qual') || roleLC.includes('qualification') || agent.name?.toLowerCase().includes('charlie')
+    // Executive assistant / project manager agent (Hanna)
+    const isExecAssistant = (roleLC.includes('executive assistant') || agent.name?.toLowerCase().includes('hanna')) && !isLeadQualAgent
     // Intake: customer-facing primary contact agents
-    const isIntakeAgent = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
+    const isIntakeAgent = !isLeadQualAgent && !isExecAssistant && (
+                          roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
                           roleLC.includes('executive') || roleLC.includes('assistant') || roleLC.includes('front desk') ||
-                          roleLC.includes('success manager') || roleLC.includes('client service')
+                          roleLC.includes('success manager') || roleLC.includes('client service'))
     // Ops: internal coordination / scheduling agents
     const isOpsAgent    = roleLC.includes('operations') || roleLC.includes('coordinator') || roleLC.includes('office manager') ||
                           roleLC.includes('admin manager') || roleLC.includes('project manager') || roleLC.includes('ops lead') ||
@@ -864,14 +933,20 @@ export class ChatService {
     const internalToolNames = isSpecialist
       // Called via handoff or auto-wake: update existing tickets only, no create_ticket
       ? ['reply_to_widget_session', 'contact_customer', 'generate_document', 'ask_user', ...specialistTicketTools, ...schedulingTools, ...socialTools]
-      : isIntakeAgent
-        // Intake agent: silent relay + explicit transfer when user requests it
-        ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...taskTools, ...socialTools]
-        : isStormAnalyst
-          // Storm analyst: gets storm data tool + standard specialist tools
-          ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', 'fetch_storm_data', ...ticketToolNames, ...taskTools, ...socialTools]
-          // Specialist agent (estimator, inspector, etc.): offer transfers, no silent relay
-          : ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...schedulingTools, ...taskTools, ...socialTools]
+      : isLeadQualAgent
+        // Lead qualification (Charlie): storm lookup + CRM search + routing
+        ? ['handoff_to_agent', 'suggest_transfer', 'ask_user', 'fetch_storm_data', 'crm_search_leads', ...ticketToolNames, ...taskTools]
+        : isExecAssistant
+          // Executive assistant (Hanna): full ticket management + contact + scheduling, no silent relay
+          ? ['request_approval', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...ticketToolNames, 'get_available_slots', ...taskTools]
+          : isIntakeAgent
+            // Intake agent: silent relay + explicit transfer when user requests it
+            ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...taskTools, ...socialTools]
+            : isStormAnalyst
+              // Storm analyst: gets storm data tool + standard specialist tools
+              ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', 'fetch_storm_data', ...ticketToolNames, ...taskTools, ...socialTools]
+              // Specialist agent (estimator, inspector, etc.): offer transfers, no silent relay
+              : ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...schedulingTools, ...taskTools, ...socialTools]
 
     const allowedTools = CRM_TOOL_DEFINITIONS.filter(t =>
       agent.tools?.includes(t.name) || agent.tools?.includes('crm_all') || internalToolNames.includes(t.name)
@@ -893,14 +968,18 @@ export class ChatService {
         // ── Document / PDF generation ──────────────────────
         if (toolName === 'generate_document') {
           try {
+            emit?.({ step: { label: `Generating ${params.title ?? params.type ?? 'document'}`, status: 'active' } })
             const doc = await this.documents.generate(tenantId, agent.id, {
               type: params.type,
               title: params.title,
               prompt: params.prompt,
             })
+            emit?.({ step: { label: `Generating ${params.title ?? params.type ?? 'document'}`, status: 'done' } })
+            emit?.({ step: { label: 'Saving document', status: 'done' } })
             emit?.({ action_card: { type: 'document', id: doc.id, title: doc.title, docType: doc.type, format: doc.format } })
             return `Document generated successfully: "${doc.title}" (${doc.format}). The download button has appeared in the chat.`
           } catch (err: any) {
+            emit?.({ step: { label: 'Document generation failed', status: 'error' } })
             return `Failed to generate document: ${err.message}`
           }
         }
@@ -992,6 +1071,14 @@ export class ChatService {
           } catch (err: any) {
             return `Failed to create approval: ${err.message}`
           }
+        }
+
+        // ── CRM search step indicator ──────────────────────
+        if (toolName === 'crm_search_leads' || toolName === 'crm_search_customers' || toolName === 'crm_search_jobs') {
+          emit?.({ step: { label: 'Searching CRM records', status: 'active' } })
+        }
+        if (toolName === 'fetch_storm_data') {
+          emit?.({ step: { label: 'Fetching NOAA storm data', status: 'active' } })
         }
 
         // ── Create activity ticket ─────────────────────────
@@ -1584,6 +1671,7 @@ export class ChatService {
               date: params.date,
               county: params.county,
             })
+            emit?.({ step: { label: 'Fetching NOAA storm data', status: 'done' } })
             if (reports.length === 0) {
               return 'No storm reports found matching those criteria. NOAA SPC may not have recorded events in that area/timeframe, or the data may not be available yet for very recent dates. Try broader filters (more days, no state filter) or check tomorrow after 7 AM UTC.'
             }
@@ -1920,8 +2008,14 @@ export class ChatService {
     // runWithToolDispatch falls back to plain ai.chat if no tools are configured.
     const streamSource = (conv.channel === 'WIDGET') ? 'WIDGET' : 'INTERNAL'
     let fullReply = ''
+    // Collect action cards emitted during tool dispatch so they can be persisted with the message
+    const collectedActionCards: any[] = []
+    const trackingEmit = (payload: any) => {
+      if (payload.action_card) collectedActionCards.push(payload.action_card)
+      emit(payload)
+    }
     try {
-      fullReply = await this.runWithToolDispatch(tenantId, conv.agent, systemPrompt, messages, undefined, emit, 0, undefined, conversationId, streamSource)
+      fullReply = await this.runWithToolDispatch(tenantId, conv.agent, systemPrompt, messages, undefined, trackingEmit, 0, undefined, conversationId, streamSource)
     } catch (err: any) {
       fullReply = `I encountered an issue fetching data: ${err?.message ?? 'Unknown error'}.`
     }
@@ -1931,9 +2025,14 @@ export class ChatService {
       await new Promise(r => setTimeout(r, 0))
     }
 
-    // Save assistant message
+    // Save assistant message — persist action cards in metadata so they survive page reload
     const aiMessage = await this.prisma.message.create({
-      data: { conversationId, role: 'ASSISTANT', content: fullReply },
+      data: {
+        conversationId,
+        role: 'ASSISTANT',
+        content: fullReply,
+        metadata: collectedActionCards.length ? { actionCards: collectedActionCards } : {},
+      },
     })
 
     await this.prisma.conversation.update({
@@ -2096,9 +2195,12 @@ Automatically apply the SUPPLEMENT ANALYSIS workflow defined in your role instru
 You are an insurance specialist — treat every uploaded claim document as a supplement opportunity.` : ''}`
 
     // ── Role classification — purely keyword-based, no hierarchy ────────
-    const isIntakeAgentRole = roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
+    const isLeadQualRole    = roleLC.includes('lead qual') || roleLC.includes('qualification') || agent.name?.toLowerCase().includes('charlie')
+    const isExecAssistRole  = (roleLC.includes('executive assistant') || agent.name?.toLowerCase().includes('hanna')) && !isLeadQualRole
+    const isIntakeAgentRole = !isLeadQualRole && !isExecAssistRole && (
+                              roleLC.includes('intake') || roleLC.includes('receptionist') || roleLC.includes('customer') ||
                               roleLC.includes('executive') || roleLC.includes('assistant') || roleLC.includes('front desk') ||
-                              roleLC.includes('success manager') || roleLC.includes('client service')
+                              roleLC.includes('success manager') || roleLC.includes('client service'))
     const isOpsAgentRole    = roleLC.includes('operations') || roleLC.includes('coordinator') || roleLC.includes('office manager') ||
                               roleLC.includes('admin manager') || roleLC.includes('project manager') || roleLC.includes('ops lead') ||
                               roleLC.includes('scheduling')
@@ -2112,12 +2214,17 @@ You are an insurance specialist — treat every uploaded claim document as a sup
     const opsAgent         = findColleague(['operations', 'coordinator', 'scheduling', 'ops', 'booking'])
     const insuranceAgent   = findColleague(['insurance', 'claims', 'adjuster'])
     const inspectorAgent   = findColleague(['field', 'inspector', 'inspection', 'site'])
+    const salesAgent       = findColleague(['sales'])
+    const leadQualAgent    = findColleague(['lead qual', 'qualification']) ?? teamRoster.find(m => m.name?.toLowerCase().includes('charlie'))
+    const hannaAgent       = findColleague(['executive assistant']) ?? teamRoster.find(m => m.name?.toLowerCase().includes('hanna'))
     const estimatorName    = estimatorAgent?.name   ?? 'our estimator'
     const opsName          = opsAgent?.name         ?? 'our operations team'
     const insuranceName    = insuranceAgent?.name   ?? 'our insurance specialist'
+    const salesName        = salesAgent?.name       ?? estimatorAgent?.name ?? 'our sales rep'
     const estimatorRole    = estimatorAgent?.role   ?? 'estimator'
     const insuranceRole    = insuranceAgent?.role   ?? 'insurance specialist'
     const inspectorRole    = inspectorAgent?.role   ?? 'field inspector'
+    const salesRole        = salesAgent?.role       ?? estimatorAgent?.role ?? 'sales assistant'
 
     // ── Dynamic industry/service lookups (from tenant brain settings) ─
     const serviceDetails: any[] = brain.serviceDetails ?? []
@@ -2302,7 +2409,122 @@ SPECIALIST MODE (when you receive [HANDOFF FROM ...]):
     // All colleague names, service terms, and pricing examples are derived
     // from the live team roster and tenant brain settings — never hardcoded.
     let roleHandoffSection = ''
-    if (isIntakeAgentRole) {
+    if (isLeadQualRole) {
+      roleHandoffSection = `
+
+YOUR ROLE — LEAD QUALIFICATION SPECIALIST:
+You are the first filter at ${company}. Every new lead passes through you before going anywhere else.
+Your job: score the lead, classify it, check weather history, and route it to the right person — all within seconds.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LEAD SCORING — ALWAYS OUTPUT A SCORE (0–100)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Calculate a **Lead Score (0–100)** for every new lead based on:
+
+| Factor | Points |
+|---|---|
+| Storm damage confirmed at address | +30 |
+| Insurance claim involved | +20 |
+| Hail ≥ 1.5" at property location | +20 |
+| Hail ≥ 1.0" at location | +10 |
+| Emergency / urgent request | +15 |
+| Commercial property | +10 |
+| Provided contact info (name + phone) | +10 |
+| Referred lead | +5 |
+
+Output format for every lead:
+**Lead Score: [X]/100** — [High / Medium / Low Priority]
+**Job Type:** [Insurance Claim / Retail Repair / Commercial / Emergency]
+**Recommended Route:** [${salesName} (sales) / ${insuranceName} (insurance)]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP-BY-STEP WORKFLOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. **Collect**: Get name, address/location, job type, and how they heard about ${company}
+2. **Storm check**: Call fetch_storm_data with the property's state/county to check recent hail and wind events
+3. **Score**: Apply the scoring table above
+4. **Classify**: Insurance Claim / Retail Repair / Commercial / Emergency
+5. **Route**:
+   - Insurance / storm damage → handoff_to_agent("${insuranceRole}") — Kevin handles claim analysis
+   - Retail / commercial / new sales → handoff_to_agent("${salesRole}") — ${salesName} handles the sale
+   - Scheduling or urgent → handoff_to_agent operations
+6. **Create ticket**: Always call create_ticket after routing with the lead score, job type, and storm data summary
+
+SCORING RULES:
+- Score 70–100 → HIGH PRIORITY — route immediately, note urgency in ticket
+- Score 40–69 → MEDIUM — route normally
+- Score 0–39 → LOW — route to sales for nurturing
+
+WHEN YOU DON'T HAVE THE ADDRESS:
+- Ask: "What's the property address or city/state so I can check if there was recent storm activity nearby?"
+- Once you have state/county → call fetch_storm_data immediately
+
+IN SCOPE (handle yourself):
+- Collecting lead info and running through the scoring workflow
+- Looking up storm history for an address
+- Creating tickets and routing to colleagues
+
+OUT OF SCOPE (handoff immediately):
+- Insurance claim analysis → ${insuranceName}
+- Estimates / pricing → ${estimatorName}
+- Scheduling inspections → operations`
+
+    } else if (isExecAssistRole) {
+      roleHandoffSection = `
+
+YOUR ROLE — EXECUTIVE ASSISTANT & PROJECT MANAGER:
+You are the operating system that keeps every job moving at ${company}.
+You monitor open work, chase missing documents, send reminders, and make sure nothing falls through the cracks.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CORE RESPONSIBILITIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. **Monitor open jobs** — call get_my_tickets and get_team_activity to see the full pipeline
+2. **Flag stale jobs** — any ticket with no update in 3+ days needs action
+3. **Chase missing documents** — supplements, photos, contractor invoices, signed contracts
+4. **Send reminders** — use contact_customer to follow up with homeowners and contact_customer to message staff
+5. **Daily task list** — when asked for a daily briefing, summarize: overdue items, upcoming deadlines, idle supplements
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DAILY BRIEFING FORMAT (when asked)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## Daily Operations Briefing — [Date]
+
+### 🔴 Overdue / Needs Immediate Action
+* [Job name] — [what's needed] — [days since last update]
+
+### 🟡 Pending — Awaiting Response
+* [Job name] — waiting for [document/approval/callback]
+
+### 🟢 On Track
+* [Job name] — [next step and due date]
+
+### 📋 Today's Priority Tasks
+1. [Action item]
+2. [Action item]
+
+SUPPLEMENT IDLE RULE:
+If a supplement ticket has had no update for more than 5 days → flag it as **⚠️ IDLE SUPPLEMENT** and recommend contacting the adjuster.
+
+WORKFLOW FOR EACH TASK:
+- First call get_team_activity to scan ALL open tickets
+- Identify overdue items (no update > 3 days)
+- Draft a concise action plan — specific names, specific next steps
+- When owner approves → use contact_customer to send follow-ups
+
+IN SCOPE (handle yourself):
+- Full pipeline monitoring and status reports
+- Sending follow-up messages to customers and staff
+- Creating internal tasks and reminders
+- Generating daily briefings and task lists
+- Scheduling and calendar coordination
+
+OUT OF SCOPE (suggest_transfer):
+- Insurance claim analysis → ${insuranceName}
+- Estimates → ${estimatorName}
+- New lead qualification → ${leadQualAgent?.name ?? 'lead qualification specialist'}`
+
+    } else if (isIntakeAgentRole) {
       roleHandoffSection = `
 
 YOUR ROLE — CUSTOMER INTAKE:
@@ -2497,6 +2719,24 @@ Common missing items to check for: code upgrades (drip edge, ice & water shield,
 * **Estimated Supplement Value:** **$[total]**
 * **Confidence Level:** **High / Medium / Low**
 
+---
+
+## Supplement Opportunity Score
+
+**Score: [X]/100** — [Excellent / Strong / Moderate / Weak]
+
+Score breakdown:
+* Missing items count × severity: [+X pts]
+* Underpaid gap ($[gap amount]): [+X pts]
+* Documentation quality: [+X pts]
+* Reinspection recommended: [Yes / No]
+
+Scoring guide:
+- 75–100: Excellent — file supplement immediately, high recovery potential
+- 50–74: Strong — worth pursuing, gather documentation
+- 25–49: Moderate — selective items worth disputing
+- 0–24: Weak — minimal opportunity, standard follow-up only
+
 AFTER THE ANALYSIS:
 - Offer to generate a formal Supplement Request document → call generate_document with type "supplement"
 - When the user agrees to generate it, call generate_document immediately with type "supplement" and title "Supplement Request - [customer/insured name]".
@@ -2533,13 +2773,53 @@ Example:
 ❌ "Can you give me the address and details first?"
 ✅ "For ${service1}, here's what I typically assess — [use knowledge base for ${industry} inspection checklist]. What's the address so I can check availability?"
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AI PHOTO REVIEW — WHEN IMAGES ARE UPLOADED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When the user uploads roof photos, perform a structured damage assessment using this checklist:
+
+**Hail Damage:**
+- [ ] Hail hits visible (circular bruising/dents on shingles) — note estimated size
+- [ ] Granule loss at impact points (dark circular spots)
+- [ ] Bruising on soft metals (vents, flashing, gutters, A/C fins)
+- [ ] Dents on ridge cap
+
+**Wind Damage:**
+- [ ] Lifted, creased, or displaced shingles
+- [ ] Missing shingles — count and note slopes affected
+- [ ] Torn tabs or raised edges
+- [ ] Exposed underlayment or decking
+
+**Structural Observations:**
+- [ ] Slopes affected (front / rear / left / right / all)
+- [ ] Approximate damaged area (squares)
+- [ ] Damaged accessories (pipe boots, vents, flashing, skylights)
+- [ ] Any visible decking damage or sagging
+
+**Documentation Quality:**
+- [ ] Photos clear and dated
+- [ ] All slopes photographed
+- [ ] Close-up shots of individual damage
+- ⚠️ Missing shots to request: [list what's needed]
+
+**Photo Review Output Format:**
+## Photo Inspection Summary
+**Damage Detected:** [Yes / No / Inconclusive]
+**Damage Type:** [Hail / Wind / Both / Other]
+**Slopes Affected:** [list]
+**Estimated Damage Area:** ~[X] squares
+**Key Findings:** [bullet list]
+**Additional Photos Needed:** [list specific shots or "None — documentation complete"]
+**Recommended Next Step:** [File insurance claim / Request adjuster inspection / Contractor estimate]
+
 DOCUMENT GENERATION:
 When asked for an inspection report → call generate_document directly once you have the address and job type.
 If address is missing, ask once — then generate immediately without a second confirmation step.
 
 IN SCOPE (handle yourself):
 - Scheduling and conducting site visits/inspections
-- Documenting findings and site conditions → use generate_document (with 3-step process)
+- Reviewing uploaded roof photos using the checklist above
+- Documenting findings and site conditions → use generate_document
 - Answering questions about the inspection process
 
 OUT OF SCOPE (offer transfer using suggest_transfer):
@@ -2601,7 +2881,33 @@ DAMAGE THRESHOLDS TO HIGHLIGHT:
 - Hail >= 1.0" = potential roof damage
 - Hail >= 1.5" = probable damage
 - Hail >= 2.0" = severe damage — high-priority outreach
-- Any tornado = immediate opportunity` : ''}` 
+- Any tornado = immediate opportunity` : ''}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TERRITORY ALERT — DAILY BRIEFING FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When asked for a daily storm briefing or territory alert, call fetch_storm_data for the past 2 days in the company's service area, then deliver this format:
+
+## ⛈️ Storm Territory Alert — [Date]
+**Service Area:** [state/region]
+
+### Yesterday's Events
+| County | Type | Size | Locations Hit |
+|---|---|---|---|
+| [county] | Hail | [size]" | [city] |
+
+### Impact Summary
+* **[X] hail events** in service area
+* **Largest hail:** [size]" in [county]
+* **Affected contacts in CRM:** [recommend running crm_search_leads]
+
+### Priority Action
+${isRoofing ? `* 🔴 HIGH: [counties with hail ≥ 1.5"] — recommend same-day outreach
+* 🟡 MEDIUM: [counties with hail 1.0–1.4"] — follow up within 48 hours` : `* Affected areas: [list] — recommend customer follow-up`}
+
+PROACTIVE ALERT TRIGGER:
+If you find ANY hail ≥ 1.5" in the service area → proactively say:
+"⚠️ Alert: [X] customers in [county] experienced [size]-inch hail yesterday. Want me to pull a list of contacts in that area for outreach?"` 
     }
 
     // ── Industry & knowledge blend section ───────────────────────────────────

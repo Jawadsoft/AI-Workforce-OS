@@ -198,7 +198,7 @@ CONVERSION RULES:
     type: string,
     industry: string,
     style: 'modern' | 'classic' | 'minimal' = 'modern',
-    accentColor = '#4f46e5',
+    accentColor = '#1e3a5f',
     tone: 'formal' | 'friendly' | 'urgent' = 'formal',
     outputFormat: 'print' | 'email' | 'web' = 'print',
     customInstructions = '',

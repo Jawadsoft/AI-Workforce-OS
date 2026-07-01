@@ -41,6 +41,7 @@ interface Message {
   content: string
   briefingType?: string | null
   attachments?: Attachment[]
+  metadata?: { actionCards?: ActionCard[] } | null
   createdAt: string
   streaming?: boolean
 }
@@ -102,18 +103,69 @@ export function ChatPage() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
-  const [sending, setSending] = useState(false)
-  const [streamingMsg, setStreamingMsg] = useState<string | null>(null)
-  const [pendingCards, setPendingCards] = useState<ActionCard[]>([])
   const [activeFilter, setActiveFilter] = useState<FilterTab>('chat')
   const [confirmClear, setConfirmClear] = useState(false)
-  const [checkingWith, setCheckingWith] = useState<string | null>(null)
-  const [typingAgent, setTypingAgent] = useState<string | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
+
+  // ── Per-conversation stream state ──────────────────────────────────
+  // Each agent conversation gets its own isolated streaming bucket so
+  // switching agents never pollutes another agent's in-progress response.
+  type StreamState = {
+    sending: boolean
+    streamingMsg: string | null
+    pendingCards: ActionCard[]
+    progressSteps: { label: string; status: 'active' | 'done' | 'error' }[]
+    checkingWith: string | null
+    typingAgent: string | null
+    uploadedAttachment: Attachment | null
+  }
+  const [convStreams, setConvStreams] = useState<Record<string, StreamState>>({})
+  const abortRefs = useRef<Record<string, AbortController>>({})
+
+  const getStream = (cid: string): StreamState => convStreams[cid] ?? {
+    sending: false, streamingMsg: null, pendingCards: [], progressSteps: [],
+    checkingWith: null, typingAgent: null, uploadedAttachment: null,
+  }
+  const patchStream = (cid: string, patch: Partial<StreamState>) =>
+    setConvStreams(prev => ({ ...prev, [cid]: { ...getStream(cid), ...prev[cid], ...patch } }))
+
+  // Active conversation's stream state (drives the UI)
+  const activeStream = conversationId ? getStream(conversationId) : {
+    sending: false, streamingMsg: null, pendingCards: [], progressSteps: [],
+    checkingWith: null, typingAgent: null, uploadedAttachment: null,
+  }
+
+  // Aliases for the rest of the component to keep existing code readable
+  const sending         = activeStream.sending
+  const streamingMsg    = activeStream.streamingMsg
+  const pendingCards    = activeStream.pendingCards
+  const progressSteps   = activeStream.progressSteps
+  const checkingWith    = activeStream.checkingWith
+  const typingAgent     = activeStream.typingAgent
+  const uploadedAttachment = activeStream.uploadedAttachment
+
+  // Legacy setters that forward to the active conversation's stream bucket
+  const setSending         = (v: boolean)                  => conversationId && patchStream(conversationId, { sending: v })
+  const setStreamingMsg    = (v: string | null)            => conversationId && patchStream(conversationId, { streamingMsg: v })
+  const setPendingCards    = (v: ActionCard[] | ((p: ActionCard[]) => ActionCard[])) => conversationId && setConvStreams(prev => {
+    const cur = prev[conversationId] ?? getStream(conversationId)
+    return { ...prev, [conversationId]: { ...cur, pendingCards: typeof v === 'function' ? v(cur.pendingCards) : v } }
+  })
+  const setProgressSteps   = (v: { label: string; status: 'active' | 'done' | 'error' }[] | ((p: { label: string; status: 'active' | 'done' | 'error' }[]) => { label: string; status: 'active' | 'done' | 'error' }[])) => conversationId && setConvStreams(prev => {
+    const cur = prev[conversationId] ?? getStream(conversationId)
+    return { ...prev, [conversationId]: { ...cur, progressSteps: typeof v === 'function' ? v(cur.progressSteps) : v } }
+  })
+  const setCheckingWith    = (v: string | null)            => conversationId && patchStream(conversationId, { checkingWith: v })
+  const setTypingAgent     = (v: string | null)            => conversationId && patchStream(conversationId, { typingAgent: v })
+  const setUploadedAttachment = (v: Attachment | null)     => conversationId && patchStream(conversationId, { uploadedAttachment: v })
+
+  // abortRef shim — per-conversation abort controllers
+  const abortRef = {
+    get current() { return conversationId ? abortRefs.current[conversationId] ?? null : null },
+    set current(v: AbortController | null) { if (conversationId) { if (v) abortRefs.current[conversationId] = v; else delete abortRefs.current[conversationId] } },
+  }
   const lastResponseRef = useRef<string>('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
-  const [uploadedAttachment, setUploadedAttachment] = useState<Attachment | null>(null)
   const { isEnabled } = useFeatures()
   const fileUploadsEnabled = isEnabled(FEATURES.FILE_UPLOADS)
   // When TTS is on, we hold the pending refetch until after audio finishes
@@ -197,23 +249,36 @@ export function ChatPage() {
     const file = fileOverride !== undefined ? fileOverride : pendingFile
     if (!text.trim() && !file) return
     if (!conversationId || sending) return
+
+    // Snapshot the conversation ID at call time so this handler always
+    // writes to the correct agent's stream bucket even if the user switches agents.
+    const convId = conversationId
+
+    // Helper: targeted patch that always writes to convId, not the active conversation
+    const patchConv = (patch: Partial<StreamState>) =>
+      setConvStreams(prev => {
+        const cur = prev[convId] ?? {
+          sending: false, streamingMsg: null, pendingCards: [], progressSteps: [],
+          checkingWith: null, typingAgent: null, uploadedAttachment: null,
+        }
+        return { ...prev, [convId]: { ...cur, ...patch } }
+      })
+
     setMessage('')
     setPendingFile(null)
-    setSending(true)
-    setStreamingMsg('')
-    setPendingCards([])
+    patchConv({ sending: true, streamingMsg: '', pendingCards: [] })
 
-    abortRef.current?.abort()
+    abortRefs.current[convId]?.abort()
     const controller = new AbortController()
-    abortRef.current = controller
+    abortRefs.current[convId] = controller
 
     const authToken = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null
 
     // Use POST multipart if there's a file, otherwise use GET stream
     const isMultipart = !!file
     const url = isMultipart
-      ? `${API_BASE}/chat/${conversationId}/stream`
-      : `${API_BASE}/chat/${conversationId}/stream?content=${encodeURIComponent(text)}`
+      ? `${API_BASE}/chat/${convId}/stream`
+      : `${API_BASE}/chat/${convId}/stream?content=${encodeURIComponent(text)}`
 
     let fetchInit: RequestInit
     if (isMultipart) {
@@ -249,63 +314,69 @@ export function ChatPage() {
           if (!line.startsWith('data: ')) continue
           try {
             const payload = JSON.parse(line.slice(6))
-            if (payload.typing) { setTypingAgent(payload.agentName ?? null) }
-            if (payload.attachment) { setUploadedAttachment(payload.attachment as Attachment) }
+            if (payload.typing) { patchConv({ typingAgent: payload.agentName ?? null }) }
+            if (payload.attachment) { patchConv({ uploadedAttachment: payload.attachment as Attachment }) }
+            if (payload.step) {
+              const s = payload.step as { label: string; status: 'active' | 'done' | 'error' }
+              setConvStreams(prev => {
+                const cur = prev[convId] ?? { sending: false, streamingMsg: null, pendingCards: [], progressSteps: [], checkingWith: null, typingAgent: null, uploadedAttachment: null }
+                const idx = cur.progressSteps.findIndex(p => p.label === s.label)
+                const next = idx >= 0
+                  ? cur.progressSteps.map((p, i) => i === idx ? s : p)
+                  : [...cur.progressSteps, s]
+                return { ...prev, [convId]: { ...cur, progressSteps: next } }
+              })
+            }
             if (payload.status && !accumulated) {
-              setStreamingMsg(payload.status)
-              setTypingAgent(null)
-              setCheckingWith(null)
+              patchConv({ typingAgent: null, checkingWith: null })
             }
             if (payload.token) {
               accumulated += payload.token
-              setStreamingMsg(ttsEnabled ? null : accumulated)   // hide text while TTS streams
-              setCheckingWith(null); setTypingAgent(null)
-              // Stream tokens into TTS pipeline — fires parallel ElevenLabs fetches per sentence
+              patchConv({ streamingMsg: ttsEnabled ? null : accumulated, checkingWith: null, typingAgent: null })
               if (ttsEnabled) addSpeechChunk(payload.token, selectedAgentNameRef.current, selectedAgentId ?? undefined)
             }
-            if (payload.checking) { setCheckingWith(payload.withName ?? 'team'); setTypingAgent(null) }
-            if (payload.action_card) setPendingCards(prev => [...prev, payload.action_card as ActionCard])
+            if (payload.checking) { patchConv({ checkingWith: payload.withName ?? 'team', typingAgent: null }) }
+            if (payload.action_card) {
+              setConvStreams(prev => {
+                const cur = prev[convId] ?? { sending: false, streamingMsg: null, pendingCards: [], progressSteps: [], checkingWith: null, typingAgent: null, uploadedAttachment: null }
+                return { ...prev, [convId]: { ...cur, pendingCards: [...cur.pendingCards, payload.action_card as ActionCard] } }
+              })
+            }
             if (payload.done) {
-              setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null)
-              setSending(false)
+              patchConv({ streamingMsg: null, checkingWith: null, typingAgent: null, sending: false, progressSteps: [] })
               if (accumulated && ttsEnabled) {
                 lastResponseRef.current = accumulated
                 setVoiceRevealPending(true)
                 flushSpeechBuffer(selectedAgentNameRef.current, selectedAgentId ?? undefined)
-                // refetch will be triggered by onQueueDrained callback
                 refetchAfterTtsRef.current = () => {
-                  refetchMessages()
-                  qc.invalidateQueries({ queryKey: ['messages', conversationId] })
-                  setUploadedAttachment(null)
+                  qc.invalidateQueries({ queryKey: ['messages', convId] })
+                  patchConv({ uploadedAttachment: null, pendingCards: [] })
                 }
               } else {
-                await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] })
-                setUploadedAttachment(null)
+                qc.invalidateQueries({ queryKey: ['messages', convId] })
+                patchConv({ uploadedAttachment: null, pendingCards: [] })
                 if (file) {
-                  setTimeout(() => {
-                    refetchMessages()
-                    qc.invalidateQueries({ queryKey: ['messages', conversationId] })
-                  }, 2500)
+                  setTimeout(() => qc.invalidateQueries({ queryKey: ['messages', convId] }), 2500)
                 }
               }
             }
-            if (payload.error) { setStreamingMsg(`Error: ${payload.error}`); setCheckingWith(null); setTypingAgent(null) }
+            if (payload.error) { patchConv({ streamingMsg: `Error: ${payload.error}`, checkingWith: null, typingAgent: null }) }
           } catch { /* partial */ }
         }
       }
     } catch (err: any) {
       if (err.name !== 'AbortError') {
-        setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null)
+        patchConv({ streamingMsg: null, checkingWith: null, typingAgent: null, sending: false })
         setVoiceRevealPending(false); refetchAfterTtsRef.current = null
         try {
-          await api.post(`/chat/${conversationId}/messages`, { content: text })
-          await refetchMessages()
+          await api.post(`/chat/${convId}/messages`, { content: text })
+          qc.invalidateQueries({ queryKey: ['messages', convId] })
         } catch { /* ignore */ }
       }
     } finally {
-      setSending(false)
+      patchConv({ sending: false })
     }
-  }, [conversationId, sending, refetchMessages, qc, addSpeechChunk, flushSpeechBuffer, ttsEnabled])
+  }, [conversationId, sending, qc, addSpeechChunk, flushSpeechBuffer, ttsEnabled])
 
   const handleSend = useCallback(() => {
     if (!message.trim() && !pendingFile) return
@@ -324,16 +395,21 @@ export function ChatPage() {
   // When user clicks a choice button in an ask_user card, auto-send it as a message
   const handleChoiceSelected = useCallback(async (choice: string) => {
     if (!conversationId || sending) return
-    setSending(true)
-    setStreamingMsg('')
-    setPendingCards([])
+    const convId = conversationId
+    const patchConv = (patch: Partial<StreamState>) =>
+      setConvStreams(prev => {
+        const cur = prev[convId] ?? { sending: false, streamingMsg: null, pendingCards: [], progressSteps: [], checkingWith: null, typingAgent: null, uploadedAttachment: null }
+        return { ...prev, [convId]: { ...cur, ...patch } }
+      })
 
-    abortRef.current?.abort()
+    patchConv({ sending: true, streamingMsg: '', pendingCards: [] })
+
+    abortRefs.current[convId]?.abort()
     const controller = new AbortController()
-    abortRef.current = controller
+    abortRefs.current[convId] = controller
 
     const authToken = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null
-    const url = `${API_BASE}/chat/${conversationId}/stream?content=${encodeURIComponent(choice)}`
+    const url = `${API_BASE}/chat/${convId}/stream?content=${encodeURIComponent(choice)}`
 
     try {
       const resp = await fetch(url, {
@@ -352,39 +428,55 @@ export function ChatPage() {
           if (!line.startsWith('data: ')) continue
           try {
             const payload = JSON.parse(line.slice(6))
-            if (payload.typing) { setTypingAgent(payload.agentName ?? null) }
+            if (payload.typing) { patchConv({ typingAgent: payload.agentName ?? null }) }
+            if (payload.step) {
+              const s = payload.step as { label: string; status: 'active' | 'done' | 'error' }
+              setConvStreams(prev => {
+                const cur = prev[convId] ?? { sending: false, streamingMsg: null, pendingCards: [], progressSteps: [], checkingWith: null, typingAgent: null, uploadedAttachment: null }
+                const idx = cur.progressSteps.findIndex(p => p.label === s.label)
+                const next = idx >= 0 ? cur.progressSteps.map((p, i) => i === idx ? s : p) : [...cur.progressSteps, s]
+                return { ...prev, [convId]: { ...cur, progressSteps: next } }
+              })
+            }
             if (payload.token) {
               accumulated += payload.token
-              setStreamingMsg(ttsEnabled ? null : accumulated)
-              setCheckingWith(null); setTypingAgent(null)
+              patchConv({ streamingMsg: ttsEnabled ? null : accumulated, checkingWith: null, typingAgent: null })
               if (ttsEnabled) addSpeechChunk(payload.token, selectedAgentNameRef.current, selectedAgentId ?? undefined)
             }
-            if (payload.checking) { setCheckingWith(payload.withName ?? 'team'); setTypingAgent(null) }
-            if (payload.action_card) setPendingCards(prev => [...prev, payload.action_card as ActionCard])
+            if (payload.checking) { patchConv({ checkingWith: payload.withName ?? 'team', typingAgent: null }) }
+            if (payload.action_card) {
+              setConvStreams(prev => {
+                const cur = prev[convId] ?? { sending: false, streamingMsg: null, pendingCards: [], progressSteps: [], checkingWith: null, typingAgent: null, uploadedAttachment: null }
+                return { ...prev, [convId]: { ...cur, pendingCards: [...cur.pendingCards, payload.action_card as ActionCard] } }
+              })
+            }
             if (payload.done) {
-              setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null)
-              setSending(false)
+              patchConv({ streamingMsg: null, checkingWith: null, typingAgent: null, sending: false, progressSteps: [] })
               if (accumulated && ttsEnabled) {
                 lastResponseRef.current = accumulated
                 setVoiceRevealPending(true)
                 flushSpeechBuffer(selectedAgentNameRef.current, selectedAgentId ?? undefined)
                 refetchAfterTtsRef.current = () => {
-                  refetchMessages()
-                  qc.invalidateQueries({ queryKey: ['messages', conversationId] })
+                  qc.invalidateQueries({ queryKey: ['messages', convId] })
+                  patchConv({ pendingCards: [] })
                 }
               } else {
-                await refetchMessages(); qc.invalidateQueries({ queryKey: ['messages', conversationId] })
+                qc.invalidateQueries({ queryKey: ['messages', convId] })
+                patchConv({ pendingCards: [] })
               }
             }
           } catch { /* partial */ }
         }
       }
     } catch (err: any) {
-      if (err.name !== 'AbortError') { setStreamingMsg(null); setCheckingWith(null); setTypingAgent(null); setVoiceRevealPending(false); refetchAfterTtsRef.current = null }
+      if (err.name !== 'AbortError') {
+        patchConv({ streamingMsg: null, checkingWith: null, typingAgent: null, sending: false })
+        setVoiceRevealPending(false); refetchAfterTtsRef.current = null
+      }
     } finally {
-      setSending(false)
+      patchConv({ sending: false })
     }
-  }, [conversationId, sending, refetchMessages, qc, addSpeechChunk, flushSpeechBuffer, ttsEnabled])
+  }, [conversationId, sending, qc, addSpeechChunk, flushSpeechBuffer, ttsEnabled])
 
   // When the user declines a transfer, nudge the agent to continue helping directly
   const handleDeclineTransfer = useCallback(() => {
@@ -437,6 +529,12 @@ export function ChatPage() {
           ) : (
             agents.map((agent: any) => {
               const isSelected = selectedAgentId === agent.id
+              // Check if this agent has an active background stream in any of their conversations
+              const agentStreaming = Object.values(convStreams).some(s => s.sending)
+                && !isSelected
+                && Object.entries(convStreams).some(([, s]) => s.sending)
+              // More precise: check if any convStream bucket that belongs to this agent is active
+              const hasBackgroundStream = !isSelected && Object.values(convStreams).some(s => s.sending)
               return (
                 <button
                   key={agent.id}
@@ -458,6 +556,10 @@ export function ChatPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-semibold truncate">{agent.name}</p>
+                      {/* Pulse dot when this agent is processing in background */}
+                      {!isSelected && convStreams[primaryQuery.data?.id ?? '']?.sending && selectedAgentId !== agent.id && (
+                        <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse shrink-0" title="Processing..." />
+                      )}
                     </div>
                     <p className="text-xs text-muted-foreground truncate mt-0.5">{agent.role}</p>
                   </div>
@@ -676,7 +778,7 @@ export function ChatPage() {
                                 className="max-w-xs rounded-xl object-cover border border-border cursor-pointer hover:opacity-90 transition-opacity"
                                 onClick={() => window.open(att.url, '_blank')}
                               />
-                            ) : (
+                            ) : att.url && !att.url.startsWith('local://') ? (
                               <a
                                 key={ai}
                                 href={att.url}
@@ -689,12 +791,36 @@ export function ChatPage() {
                                 <FileText className="w-3.5 h-3.5 shrink-0" />
                                 <span className="truncate max-w-[180px]">{att.name}</span>
                               </a>
+                            ) : (
+                              // local:// means the file was processed server-side (no public URL) — show as non-clickable badge
+                              <div
+                                key={ai}
+                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs border ${
+                                  isUser ? 'bg-primary/80 text-primary-foreground border-primary/50' : 'bg-muted border-border text-muted-foreground'
+                                }`}
+                              >
+                                <FileText className="w-3.5 h-3.5 shrink-0" />
+                                <span className="truncate max-w-[180px]">{att.name}</span>
+                                <span className="text-[10px] opacity-60 shrink-0">processed</span>
+                              </div>
                             )
                           ))}
                         </div>
                       )}
-                      {/* Message bubble */}
-                      {(msg.content || msg.streaming) && (
+                      {/* Persisted action cards (documents, tasks) from previous sessions */}
+                      {!isUser && msg.metadata?.actionCards?.map((card, ci) => (
+                        <div key={`${msg.id}-card-${ci}`} className="flex justify-start pl-0">
+                          <ChatActionCard
+                            card={card}
+                            onChoiceSelected={handleChoiceSelected}
+                            onTransfer={(agentId) => setSelectedAgentId(agentId)}
+                            onDeclineTransfer={handleDeclineTransfer}
+                          />
+                        </div>
+                      ))}
+
+                      {/* Message bubble — only render when there is actual content or streaming text */}
+                      {(msg.content?.length > 0 || (msg.streaming && streamingMsg !== null && streamingMsg !== '')) && (
                         <div className={`rounded-xl px-4 py-2.5 text-sm ${
                           isUser
                             ? 'bg-primary text-primary-foreground rounded-br-none'
@@ -704,7 +830,8 @@ export function ChatPage() {
                             ? <div className="space-y-0.5">{renderMarkdown(msg.content)}</div>
                             : <p className="whitespace-pre-wrap break-words">{msg.content}</p>
                           }
-                          {msg.streaming && (
+                          {/* Cursor only shown while actively streaming with content */}
+                          {msg.streaming && msg.content?.length > 0 && (
                             <span className="inline-block w-1.5 h-4 bg-current ml-0.5 animate-pulse rounded-sm align-text-bottom" />
                           )}
                           {!msg.streaming && (
@@ -761,8 +888,35 @@ export function ChatPage() {
                 </div>
               )}
 
-              {/* Typing indicator — shown during thinking delay and while waiting for first token */}
-              {sending && streamingMsg === '' && !checkingWith && (
+              {/* Progress steps bubble — shown while agent is executing tools (file read, doc gen, CRM search) */}
+              {sending && progressSteps.length > 0 && (
+                <div className="flex justify-start">
+                  <div className="rounded-xl rounded-bl-none px-4 py-3 space-y-1.5 max-w-xs"
+                    style={{ background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.15)' }}>
+                    {progressSteps.map((step, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        {step.status === 'active' && (
+                          <span className="w-3.5 h-3.5 shrink-0 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
+                        )}
+                        {step.status === 'done' && (
+                          <span className="w-3.5 h-3.5 shrink-0 text-emerald-500">✓</span>
+                        )}
+                        {step.status === 'error' && (
+                          <span className="w-3.5 h-3.5 shrink-0 text-red-400">✕</span>
+                        )}
+                        <span className={`text-xs ${
+                          step.status === 'active' ? 'text-indigo-400 font-medium' :
+                          step.status === 'done'   ? 'text-muted-foreground line-through' :
+                          'text-red-400'
+                        }`}>{step.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Typing indicator — shown only while waiting for first token, disappears once streaming starts */}
+              {sending && !checkingWith && progressSteps.length === 0 && (streamingMsg === '' || streamingMsg === null) && (
                 <div className="flex justify-start">
                   <div className="bg-muted rounded-xl px-4 py-3 flex items-center gap-2 text-muted-foreground text-sm rounded-bl-none">
                     <div className="flex items-center gap-1">

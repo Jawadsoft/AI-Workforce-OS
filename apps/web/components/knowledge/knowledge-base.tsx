@@ -112,6 +112,31 @@ export function KnowledgeBase() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['knowledge'] }); toast.success('Removed from agent') },
   })
 
+  const [assigningAll, setAssigningAll] = useState<string | null>(null)
+
+  const assignAll = async (docId: string, assignedAgents: string[]) => {
+    const unassigned = (agents as any[]).filter(a => !assignedAgents.includes(a.id))
+    if (!unassigned.length) { toast.success('Already assigned to all agents'); return }
+    setAssigningAll(docId)
+    try {
+      await Promise.all(unassigned.map(a => api.post(`/knowledge/${docId}/assign`, { agentId: a.id })))
+      qc.invalidateQueries({ queryKey: ['knowledge'] })
+      toast.success(`Assigned to all ${(agents as any[]).length} agents`)
+    } catch { toast.error('Some assignments failed') }
+    finally { setAssigningAll(null) }
+  }
+
+  const unassignAll = async (docId: string, assignedAgents: string[]) => {
+    if (!assignedAgents.length) { toast.success('No agents assigned'); return }
+    setAssigningAll(docId)
+    try {
+      await Promise.all(assignedAgents.map(id => api.delete(`/knowledge/${docId}/assign/${id}`)))
+      qc.invalidateQueries({ queryKey: ['knowledge'] })
+      toast.success('Removed from all agents')
+    } catch { toast.error('Some removals failed') }
+    finally { setAssigningAll(null) }
+  }
+
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -191,10 +216,33 @@ export function KnowledgeBase() {
 
             {/* Expanded: assign to agents */}
             {isOpen && (
-              <div className="border-t border-border px-4 pb-4 pt-3 space-y-2">
-                <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5" /> ASSIGN TO AGENTS
-                </p>
+              <div className="border-t border-border px-4 pb-4 pt-3 space-y-3">
+                {/* Header row with assign-all controls */}
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5" />
+                    ASSIGN TO AGENTS
+                    <span className="font-normal">({assignedAgents.length}/{(agents as any[]).length} assigned)</span>
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={assigningAll === doc.id || assignedAgents.length === (agents as any[]).length}
+                      onClick={() => assignAll(doc.id, assignedAgents)}
+                      className="text-xs px-2.5 py-1 rounded-md border border-primary/30 bg-primary/5 text-primary hover:bg-primary/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {assigningAll === doc.id ? 'Working…' : '+ Assign All'}
+                    </button>
+                    <button
+                      disabled={assigningAll === doc.id || assignedAgents.length === 0}
+                      onClick={() => unassignAll(doc.id, assignedAgents)}
+                      className="text-xs px-2.5 py-1 rounded-md border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Remove All
+                    </button>
+                  </div>
+                </div>
+
+                {/* Individual agent tiles */}
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {(agents as any[]).map((agent: any) => {
                     const isAssigned = assignedAgents.includes(agent.id)
@@ -222,11 +270,15 @@ export function KnowledgeBase() {
                     )
                   })}
                 </div>
-                {doc.status === 'ready' && (
-                  <p className="text-xs text-green-600 mt-1">✓ Agents will cite this document during conversations</p>
+
+                {doc.status === 'ready' && assignedAgents.length > 0 && (
+                  <p className="text-xs text-green-600">✓ Agents will cite this document during conversations</p>
+                )}
+                {doc.status === 'ready' && assignedAgents.length === 0 && (
+                  <p className="text-xs text-yellow-600">⚠ Not assigned to any agents yet — click "+ Assign All" or pick individual agents above</p>
                 )}
                 {doc.status === 'processing' && (
-                  <p className="text-xs text-yellow-600 mt-1">⏳ Still processing — assign now and it'll be available when ready</p>
+                  <p className="text-xs text-yellow-600">⏳ Still processing — assign now and it'll be available when ready</p>
                 )}
               </div>
             )}

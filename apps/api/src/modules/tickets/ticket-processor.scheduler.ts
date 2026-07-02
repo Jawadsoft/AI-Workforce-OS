@@ -34,52 +34,11 @@ export class TicketProcessorScheduler {
     private readonly chat: ChatService,
   ) {}
 
-  /**
-   * Auto-flip SCHEDULED tickets whose followUpAt has passed → back to OPEN so the
-   * processor picks them up next tick. Runs every minute alongside processOpenTickets.
-   */
-  @Cron('* * * * *')
-  async flipScheduledTickets() {
-    const now = new Date()
-    const tickets = await this.prisma.activityTicket.findMany({
-      where: {
-        status: 'SCHEDULED',
-        followUpAt: { lte: now },
-        assignedAgentId: { not: null },
-        tenant: { isActive: true },
-      },
-      select: { id: true, ticketNumber: true, activityLog: true },
-      take: 20,
-    })
-    for (const t of tickets) {
-      const log = (t.activityLog as any[]) ?? []
-      await this.prisma.activityTicket.update({
-        where: { id: t.id },
-        data: {
-          status: 'OPEN',
-          updatedAt: now,
-          activityLog: [
-            ...log,
-            {
-              agentName: 'System',
-              agentId: 'system',
-              action: 'AUTO_FLIPPED_TO_OPEN',
-              note: 'followUpAt reached — ticket re-opened for agent processing.',
-              timestamp: now.toISOString(),
-            },
-          ] as any,
-        },
-      })
-      this.logger.log(`[TicketProcessor] Ticket #${String(t.ticketNumber).padStart(4,'0')} auto-flipped SCHEDULED → OPEN (followUpAt reached)`)
-    }
-  }
-
   @Cron('* * * * *')
   async processOpenTickets() {
     const twoMinutesAgo    = new Date(Date.now() -  2 * 60 * 1000)
     const fourHoursAgo     = new Date(Date.now() -  4 * 60 * 60 * 1000)
     const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000)
-    const now              = new Date()
 
     // Two-tier fetch:
     // Tier 1 — OPEN tickets: never been woken (autoWakeAgent stamps IN_PROGRESS on first wake),
@@ -88,9 +47,6 @@ export class TicketProcessorScheduler {
     //          Once an agent has responded and said "I'll handle this on July 1", we must NOT
     //          re-wake them every 2 minutes. Only re-visit after 4 hours (or ESCALATED urgency).
     //          ESCALATED tickets still use 2-min cooldown so urgent issues are caught fast.
-    //
-    // SKIP statuses: AWAITING_CUSTOMER, AWAITING_AGENT, SCHEDULED (future), COMPLETED, CANCELLED
-    // SCHEDULED tickets where followUpAt > now are handled by flipScheduledTickets above.
     const [freshTickets, idleInProgress, idleEscalated] = await Promise.all([
       this.prisma.activityTicket.findMany({
         where: {
@@ -98,11 +54,6 @@ export class TicketProcessorScheduler {
           assignedAgentId: { not: null },
           tenant: { isActive: true },
           createdAt: { gte: fortyEightHoursAgo },
-          // Don't process tickets that are explicitly awaiting future dates
-          OR: [
-            { followUpAt: null },
-            { followUpAt: { lte: now } },
-          ],
         },
         include: {
           assignedAgent: { select: { id: true, name: true, role: true, tenantId: true } },
@@ -201,17 +152,14 @@ export class TicketProcessorScheduler {
           `• If NO in general — immediately call update_ticket with ticketId "${ticket.id.slice(-6)}" and set assignedAgentRole to the correct colleague's role. Do not attempt to action work outside your expertise.`,
           `• If YES — proceed with the instructions below.`,
           ``,
-        `INSTRUCTIONS (only if ticket is correctly assigned to you):`,
-        `1. Review this ticket and decide what action is needed.`,
-        `2. Call update_ticket with ticketId "${ticket.id.slice(-6)}" and set the correct status:`,
-        `   • Started / still working on it → IN_PROGRESS`,
-        `   • Sent email/message to customer, waiting for reply → AWAITING_CUSTOMER + set followUpAt to 3 days from now`,
-        `   • Inspection/visit booked for a FUTURE date → SCHEDULED + set followUpAt to that date (system will auto-reopen the ticket on that day)`,
-        `   • Waiting for a teammate to finish their part → AWAITING_AGENT + reassign via assignedAgentRole`,
-        `   • Fully resolved (booking confirmed, estimate sent, done) → COMPLETED`,
-        `3. If you need input from a colleague, reassign via update_ticket with assignedAgentRole.`,
-        `4. DO NOT create a new ticket — update this one (${ticket.id.slice(-6)}) only.`,
-        `5. DO NOT wake this ticket again on your own — the system scheduler will re-open it when followUpAt arrives or when the customer replies.`,
+          `INSTRUCTIONS (only if ticket is correctly assigned to you):`,
+          `1. Review this ticket and decide what action is needed.`,
+          `2. Call update_ticket with ticketId "${ticket.id.slice(-6)}" and set the correct status:`,
+          `   • Started / still working on it → IN_PROGRESS`,
+          `   • Fully resolved (booking confirmed, estimate sent, done) → COMPLETED`,
+          `3. If you need input from a colleague, reassign via update_ticket with assignedAgentRole.`,
+          `4. DO NOT create a new ticket — update this one (${ticket.id.slice(-6)}) only.`,
+          `5. DO NOT contact the customer directly.`,
         ].filter(Boolean).join('\n')
 
         this.logger.log(`[TicketProcessor] Waking ${ticket.assignedAgent.name} for ticket #${ticketNum}`)

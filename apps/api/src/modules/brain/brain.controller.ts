@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Param, UseGuards, BadRequestException } from '@nestjs/common'
+import { Controller, Get, Post, Patch, Body, Param, UseGuards } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { IsString, IsOptional, IsArray } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
@@ -67,13 +67,6 @@ export class BrainController {
   @ApiOperation({ summary: 'Directly edit any auto-extracted brain field (company name, services, description, etc.)' })
   updateScrapedData(@CurrentTenant() tenantId: string, @Body() dto: UpdateScrapedDataDto) {
     return this.service.updateScrapedData(tenantId, dto)
-  }
-
-  @Patch('playbook')
-  @ApiOperation({ summary: 'Save the operational playbook / workflow bible for autonomous agents' })
-  savePlaybook(@CurrentTenant() tenantId: string, @Body() body: Record<string, any>): Promise<any> {
-    if (!body || typeof body !== 'object') throw new BadRequestException('Invalid playbook data')
-    return this.service.savePlaybook(tenantId, body)
   }
 
   @Get('crm-guides')

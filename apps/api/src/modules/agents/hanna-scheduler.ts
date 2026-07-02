@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common'
 import { Cron } from '@nestjs/schedule'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { ChatService } from '../chat/chat.service'
-import { NotificationService } from '../notifications/notification.service'
 
 /**
  * Hanna Scheduler — wakes Hanna (Executive Assistant) agents daily.
@@ -23,7 +22,6 @@ export class HannaScheduler {
   constructor(
     private readonly prisma: PrismaService,
     private readonly chat: ChatService,
-    private readonly notifications: NotificationService,
   ) {}
 
   @Cron('0 8 * * *')
@@ -163,24 +161,6 @@ export class HannaScheduler {
         this.logger.log(`[HannaScheduler] Waking ${hanna.name} — ${staleTickets.length} stale, ${idleSupplements.length} idle supplements, ${overdueFollowUps.length} overdue`)
 
         await this.chat.wakeAgentWithBriefing(hanna.tenantId, hanna.id, briefing)
-
-        // Also email the business owner with a summary digest
-        const digestHtml = `
-          <h2>📋 Daily Operations Digest</h2>
-          <p>Your AI workforce has reviewed all open jobs. Here's a snapshot:</p>
-          <ul>
-            <li><strong>Stale jobs (3+ days idle):</strong> ${staleTickets.length}</li>
-            <li><strong>Idle supplements (5+ days):</strong> ${idleSupplements.length}</li>
-            <li><strong>Overdue follow-ups:</strong> ${overdueFollowUps.length}</li>
-          </ul>
-          ${staleTickets.length ? `<h3>🔴 Stale Jobs</h3><ul>${staleTickets.map(t => `<li>#${t.ticketNumber} — ${t.title} (${t.status}${t.contactRef ? ', ' + t.contactRef : ''})</li>`).join('')}</ul>` : ''}
-          ${overdueFollowUps.length ? `<h3>🟡 Overdue Follow-Ups</h3><ul>${overdueFollowUps.map(t => `<li>#${t.ticketNumber} — ${t.title} (due ${t.followUpAt ? new Date(t.followUpAt).toLocaleDateString('en-GB') : 'unknown'})</li>`).join('')}</ul>` : ''}
-          <p style="color:#666;font-size:12px;">This is an automated digest from your AI Workforce OS. Log in to take action.</p>
-        `
-        setImmediate(() => {
-          this.notifications.sendDailyDigest(hanna.tenantId, digestHtml)
-            .catch(e => this.logger.warn(`[HannaScheduler] Digest email failed: ${e.message}`))
-        })
       } catch (err: any) {
         this.logger.error(`[HannaScheduler] Error waking ${hanna.name}: ${err.message}`)
       }

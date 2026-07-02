@@ -18,15 +18,14 @@
     "audit:prompts:report": "node scripts/audit-agent-prompts.js --fix-report"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0",
     "prisma": "^5.14.0",
     "tsx": "^4.15.0",
-    "turbo": "^2.0.0",
-    "typescript": "^5.4.0"
+    "@types/node": "^20.0.0"
   },
   "dependencies": {
-    "@prisma/client": "^5.14.0",
-    "pg": "^8.22.0"
+    "@prisma/client": "^5.14.0"
   },
   "engines": {
     "node": ">=20.0.0",

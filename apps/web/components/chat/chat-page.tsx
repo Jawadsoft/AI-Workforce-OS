@@ -224,7 +224,7 @@ export function ChatPage() {
 
   const allMessages: Message[] = [
     ...dbMessages,
-    ...(streamingMsg !== null ? [{ id: '__stream__', role: 'ASSISTANT' as const, content: streamingMsg, createdAt: new Date().toISOString(), streaming: true }] : []),
+    ...(streamingMsg !== null ? [{ id: '__stream__', role: 'ASSISTANT' as const, content: streamingMsg, createdAt: '', streaming: true }] : []),
   ]
 
   const activeTab = FILTER_TABS.find(t => t.id === activeFilter) ?? FILTER_TABS[0]
@@ -511,9 +511,9 @@ export function ChatPage() {
         ${mobileChatOpen ? 'hidden sm:flex' : 'flex'}
       `}>
         {/* List header */}
-        <div className="px-4 py-4 border-b border-border bg-muted/20">
-          <p className="text-base font-semibold">Agents</p>
-          <p className="text-xs text-muted-foreground mt-0.5">{agents.length} active</p>
+        <div className="px-4 py-2.5 border-b border-border bg-muted/20">
+          <p className="text-sm font-semibold">Agents</p>
+          <p className="text-xs text-muted-foreground">{agents.length} active</p>
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -539,7 +539,7 @@ export function ChatPage() {
                 <button
                   key={agent.id}
                   onClick={() => handleSelectAgent(agent.id)}
-                  className={`w-full flex items-center gap-3 px-4 py-3.5 text-left transition-colors border-b border-border/40 ${
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors border-b border-border/40 ${
                     isSelected ? 'bg-primary/8 border-l-[3px] border-l-primary' : 'hover:bg-accent/60 active:bg-accent'
                   }`}
                 >
@@ -584,7 +584,7 @@ export function ChatPage() {
           <div className={`flex-1 flex flex-col min-w-0 bg-card ${mobileChatOpen ? 'flex' : 'hidden sm:flex'}`}>
             {/* Chat header */}
             <div className="border-b border-border bg-card/95 backdrop-blur-sm">
-              <div className="px-3 sm:px-4 py-3 flex items-center gap-3">
+              <div className="px-3 sm:px-4 py-2 flex items-center gap-3">
                 {/* Back button — mobile only */}
                 <button
                   onClick={() => setMobileChatOpen(false)}
@@ -639,7 +639,7 @@ export function ChatPage() {
               </div>
 
               {/* Filter tabs */}
-              <div className="flex items-center gap-0.5 px-3 pb-0 overflow-x-auto">
+              <div className="flex items-center gap-0.5 px-2 pb-0 overflow-x-auto">
                 {FILTER_TABS.map(tab => {
                   const count = tabCounts[tab.id] ?? 0
                   const isActive = activeFilter === tab.id
@@ -650,7 +650,7 @@ export function ChatPage() {
                       key={tab.id}
                       onClick={() => !tab.comingSoon && setActiveFilter(tab.id)}
                       title={tab.comingSoon ? 'Coming soon' : undefined}
-                      className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
+                      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
                         tab.comingSoon
                           ? 'border-transparent text-muted-foreground/50 cursor-default'
                           : isActive
@@ -676,7 +676,7 @@ export function ChatPage() {
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2 sm:space-y-3 bg-muted/5">
+            <div className="flex-1 overflow-y-auto p-2 sm:p-3 space-y-1.5 sm:space-y-2 bg-muted/5">
               {messages.length === 0 && !streamingMsg && (
                 <div className="text-center py-16">
                   <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary mx-auto mb-4">
@@ -725,8 +725,8 @@ export function ChatPage() {
                           ) : (
                             <Zap className="w-3 h-3 text-muted-foreground" />
                           )}
-                          <span className="text-[10px] text-muted-foreground">
-                            {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          <span className="text-[10px] text-muted-foreground" suppressHydrationWarning>
+                            {msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                           </span>
                         </div>
                         <div className="bg-muted/60 border border-border rounded-xl rounded-tl-none px-4 py-3 text-sm text-foreground space-y-1">
@@ -835,8 +835,8 @@ export function ChatPage() {
                             <span className="inline-block w-1.5 h-4 bg-current ml-0.5 animate-pulse rounded-sm align-text-bottom" />
                           )}
                           {!msg.streaming && (
-                            <p className={`text-xs mt-1 ${isUser ? 'text-primary-foreground/60' : 'text-muted-foreground'}`}>
-                              {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            <p className={`text-xs mt-1 ${isUser ? 'text-primary-foreground/60' : 'text-muted-foreground'}`} suppressHydrationWarning>
+                              {msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                             </p>
                           )}
                         </div>
@@ -968,7 +968,7 @@ export function ChatPage() {
             </div>
 
             {/* Input bar */}
-            <div className="border-t border-border bg-card px-3 pt-2 pb-3 sm:px-4 sm:py-3">
+            <div className="border-t border-border bg-card px-2 pt-1.5 pb-2 sm:px-3 sm:py-2">
               {/* Interim STT transcript */}
               {interimText && (
                 <div className="mb-1.5 text-xs text-muted-foreground italic animate-pulse flex items-center gap-1.5">
@@ -1029,7 +1029,7 @@ export function ChatPage() {
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(message, pendingFile) } }}
                   placeholder={isListening ? 'Listening…' : pendingFile ? 'Add a message…' : `Message ${selectedAgent?.name ?? 'agent'}…`}
                   disabled={sending}
-                  className="flex-1 min-w-0 rounded-full border border-border bg-muted/50 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:bg-background transition-colors disabled:opacity-50"
+                  className="flex-1 min-w-0 rounded-full border border-border bg-muted/50 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:bg-background transition-colors disabled:opacity-50"
                 />
 
                 {/* Right actions */}

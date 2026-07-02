@@ -89,17 +89,17 @@ export class SocialController {
 
   @Get('posts')
   @ApiOperation({ summary: 'List social posts' })
-  getPosts(
+  async getPosts(
     @CurrentTenant() tenantId: string,
     @Query('status') status?: string,
     @Query('platform') platform?: string,
-  ) {
+  ): Promise<any[]> {
     return this.service.getPosts(tenantId, { status, platform })
   }
 
   @Post('posts')
   @ApiOperation({ summary: 'Save a social post (draft or scheduled)' })
-  createPost(@CurrentTenant() tenantId: string, @Body() dto: CreatePostDto) {
+  async createPost(@CurrentTenant() tenantId: string, @Body() dto: CreatePostDto): Promise<Record<string, any>> {
     return this.service.createPost(tenantId, {
       ...dto,
       scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
@@ -108,13 +108,13 @@ export class SocialController {
 
   @Get('posts/:id')
   @ApiOperation({ summary: 'Get a single post' })
-  getPost(@CurrentTenant() tenantId: string, @Param('id') id: string) {
+  async getPost(@CurrentTenant() tenantId: string, @Param('id') id: string): Promise<Record<string, any>> {
     return this.service.getPost(tenantId, id)
   }
 
   @Patch('posts/:id')
   @ApiOperation({ summary: 'Update post content, image, or schedule' })
-  updatePost(@CurrentTenant() tenantId: string, @Param('id') id: string, @Body() dto: UpdatePostDto) {
+  async updatePost(@CurrentTenant() tenantId: string, @Param('id') id: string, @Body() dto: UpdatePostDto): Promise<Record<string, any>> {
     return this.service.updatePost(tenantId, id, {
       ...dto,
       scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
@@ -123,13 +123,13 @@ export class SocialController {
 
   @Post('posts/:id/approve')
   @ApiOperation({ summary: 'Approve a pending post — publishes now if no schedule, or queues for scheduled time' })
-  approvePost(@CurrentTenant() tenantId: string, @Param('id') id: string) {
+  async approvePost(@CurrentTenant() tenantId: string, @Param('id') id: string): Promise<Record<string, any>> {
     return this.service.approvePost(tenantId, id)
   }
 
   @Post('posts/:id/publish')
   @ApiOperation({ summary: 'Immediately publish a draft or approved post to its platform' })
-  publishNow(@CurrentTenant() tenantId: string, @Param('id') id: string) {
+  async publishNow(@CurrentTenant() tenantId: string, @Param('id') id: string): Promise<Record<string, any>> {
     return this.service.publishNow(tenantId, id)
   }
 
@@ -143,7 +143,7 @@ export class SocialController {
 
   @Post('review-to-post')
   @ApiOperation({ summary: 'Turn a customer review into social media posts' })
-  reviewToPost(@CurrentTenant() tenantId: string, @Body() body: any) {
+  async reviewToPost(@CurrentTenant() tenantId: string, @Body() body: any): Promise<any[]> {
     return this.service.reviewToPost(tenantId, {
       reviewText: body.reviewText,
       reviewerName: body.reviewerName,
@@ -156,7 +156,7 @@ export class SocialController {
 
   @Post('repurpose')
   @ApiOperation({ summary: 'Repurpose existing content into platform-specific posts' })
-  repurpose(@CurrentTenant() tenantId: string, @Body() body: any) {
+  async repurpose(@CurrentTenant() tenantId: string, @Body() body: any): Promise<any[]> {
     return this.service.repurposeContent(tenantId, {
       sourceContent: body.sourceContent,
       sourceType: body.sourceType ?? 'text',
@@ -203,7 +203,7 @@ export class SocialController {
     const redirectUri = encodeURIComponent(`${redirectBase}/social/oauth/facebook/callback`)
     // Permissions required for Pages + Instagram publishing.
     // business_management is needed to read Business Manager assets.
-    const scope = 'public_profile,email,pages_show_list,pages_read_engagement'
+    const scope = 'public_profile,email,pages_show_list,pages_read_engagement,pages_manage_posts'
     const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64')
     const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&response_type=code`
     return res.redirect(url)

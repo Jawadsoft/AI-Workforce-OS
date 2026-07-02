@@ -7,11 +7,12 @@ import {
   CheckCircle, Clock, AlertCircle, Upload, Loader2,
   ThumbsUp, ThumbsDown, ClipboardList, ShieldCheck,
   ChevronDown, ChevronUp, ExternalLink, FileText, Download,
-  ArrowRight, MessageCircleQuestion,
+  ArrowRight, MessageCircleQuestion, Send, Facebook, Instagram,
+  Linkedin, Twitter, Edit2,
 } from 'lucide-react'
 
 export interface ActionCard {
-  type: 'task' | 'approval' | 'document' | 'handoff' | 'ask_user' | 'transfer'
+  type: 'task' | 'approval' | 'document' | 'handoff' | 'ask_user' | 'transfer' | 'social_post'
   id?: string
   title?: string
   description?: string
@@ -32,6 +33,11 @@ export interface ActionCard {
   // transfer fields
   agentId?: string
   agentDisplayName?: string
+  // social_post fields
+  platform?: string
+  content?: string
+  imageUrl?: string | null
+  contentType?: string
 }
 
 const PRIORITY_STYLES: Record<string, string> = {
@@ -409,6 +415,90 @@ function TransferCard({ card, onTransfer, onDeclineTransfer }: { card: ActionCar
   )
 }
 
+// ── Social Post Action Card ───────────────────────────────────────
+
+const PLATFORM_ICONS: Record<string, React.ReactNode> = {
+  facebook:  <Facebook className="w-4 h-4 text-blue-500" />,
+  instagram: <Instagram className="w-4 h-4 text-pink-500" />,
+  linkedin:  <Linkedin className="w-4 h-4 text-blue-400" />,
+  x:         <Twitter className="w-4 h-4 text-gray-400" />,
+}
+
+function SocialPostCard({ card }: { card: ActionCard }) {
+  const qc = useQueryClient()
+  const [expanded, setExpanded] = useState(false)
+  const publishMutation = useMutation({
+    mutationFn: () => api.post(`/social/posts/${card.id}/publish`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['social-posts'] })
+    },
+  })
+
+  const content = card.content ?? ''
+  const truncated = content.length > 160 && !expanded
+
+  return (
+    <div className="rounded-xl border border-border bg-card overflow-hidden text-sm w-full">
+      {/* Header — platform icon + action buttons */}
+      <div className="flex items-center gap-2 px-3 pt-3 pb-2">
+        <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
+          {card.platform ? PLATFORM_ICONS[card.platform] : <Send className="w-4 h-4 text-muted-foreground" />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold capitalize">{card.platform ?? 'Social'}</p>
+          {card.contentType && (
+            <p className="text-xs text-muted-foreground capitalize">{card.contentType}</p>
+          )}
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <a href="/social" title="Edit in Social Media"
+            className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground transition-colors">
+            <Edit2 className="w-3.5 h-3.5" />
+          </a>
+          {publishMutation.isSuccess ? (
+            <span className="flex items-center gap-1 text-xs text-green-400 px-2">
+              <CheckCircle className="w-3.5 h-3.5" /> Published!
+            </span>
+          ) : (
+            <button
+              onClick={() => publishMutation.mutate()}
+              disabled={publishMutation.isPending}
+              className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-foreground text-background hover:opacity-90 transition-opacity disabled:opacity-50"
+            >
+              {publishMutation.isPending
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <Send className="w-3.5 h-3.5" />}
+              Publish
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Post text */}
+      <div className="px-3 pb-3">
+        <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
+          {truncated ? content.slice(0, 160) : content}
+          {truncated && (
+            <>
+              {'... '}
+              <button onClick={() => setExpanded(true)} className="text-blue-400 hover:underline text-xs">more</button>
+            </>
+          )}
+        </p>
+      </div>
+
+      {/* Full-width image at bottom — edge to edge, locked to 16:9 */}
+      {card.imageUrl && (
+        <div className="w-full aspect-video overflow-hidden">
+          <img src={card.imageUrl} alt="post image" className="w-full h-full object-cover" />
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main export ───────────────────────────────────────────────────
 
 export function ChatActionCard({
@@ -428,5 +518,6 @@ export function ChatActionCard({
   if (card.type === 'handoff') return <HandoffCard card={card} />
   if (card.type === 'ask_user') return <AskUserCard card={card} onChoiceSelected={onChoiceSelected} />
   if (card.type === 'transfer') return <TransferCard card={card} onTransfer={onTransfer} onDeclineTransfer={onDeclineTransfer} />
+  if (card.type === 'social_post') return <SocialPostCard card={card} />
   return null
 }

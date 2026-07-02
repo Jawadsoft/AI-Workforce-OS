@@ -12,14 +12,19 @@ export function LoginForm() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [isRedirecting, setIsRedirecting] = useState(false)
+
+  const busy = isLoading || isRedirecting
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     try {
       await login(email, password)
+      setIsRedirecting(true)
       router.push('/dashboard')
     } catch (err: any) {
+      setIsRedirecting(false)
       setError(err?.response?.data?.message ?? 'Invalid email or password')
     }
   }
@@ -129,7 +134,7 @@ export function LoginForm() {
         {/* Submit */}
         <button
           type="submit"
-          disabled={isLoading}
+          disabled={busy}
           className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           style={{
             background: 'linear-gradient(135deg, #374151 0%, #1f2937 100%)',
@@ -137,7 +142,7 @@ export function LoginForm() {
             boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
           }}
           onMouseEnter={e => {
-            if (!isLoading) {
+            if (!busy) {
               e.currentTarget.style.background = 'linear-gradient(135deg, #4b5563 0%, #374151 100%)'
               e.currentTarget.style.boxShadow = '0 4px 30px rgba(255,255,255,0.1)'
             }
@@ -147,8 +152,8 @@ export function LoginForm() {
             e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.4)'
           }}
         >
-          {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-          {isLoading ? 'Signing in...' : 'LOGIN'}
+          {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+          {isRedirecting ? 'Loading workspace...' : busy ? 'Signing in...' : 'LOGIN'}
         </button>
       </form>
 

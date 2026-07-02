@@ -194,13 +194,7 @@ Only return the JSON object, nothing else.`
     brainContext: string,
     contentType: string,
   ): Promise<{ url: string | null; prompt: string | null }> {
-    // Try Unsplash first for team/story content (real photos look more authentic)
-    if (contentType === 'team' || contentType === 'story') {
-      const unsplashUrl = await this.searchUnsplash(brief)
-      if (unsplashUrl) return { url: unsplashUrl, prompt: null }
-    }
-
-    // Try DALL-E 3 only if the model appears available (skip on known plan errors)
+    // Always try gpt-image-1 first for all content types
     const dalleEnabled = this.config.get<string>('DALLE_ENABLED') !== 'false'
     if (dalleEnabled) {
       try {
@@ -211,9 +205,9 @@ Only return the JSON object, nothing else.`
           size: '1024x1024',
           quality: 'medium',
           n: 1,
-        })
+        } as any)
         const item = response.data?.[0] as any
-        // gpt-image-1 returns base64 (b64_json), not a URL
+        // gpt-image-1 returns base64 (b64_json)
         const b64 = item?.b64_json
         const directUrl = item?.url
         if (b64) {
@@ -222,6 +216,7 @@ Only return the JSON object, nothing else.`
           const cloudinaryUrl = await this.cloudinary.upload(
             'social-media', 'generated', filename, imageBuffer, 'image/png', 'image',
           )
+          this.logger.log(`gpt-image-1 SUCCESS — uploaded to Cloudinary: ${cloudinaryUrl}`)
           return { url: cloudinaryUrl, prompt: imagePrompt }
         } else if (directUrl) {
           const imageBuffer = await fetch(directUrl).then((r) => r.arrayBuffer()).then((b) => Buffer.from(b))
@@ -230,12 +225,14 @@ Only return the JSON object, nothing else.`
             'social-media', 'generated', filename, imageBuffer, 'image/png', 'image',
           )
           return { url: cloudinaryUrl, prompt: imagePrompt }
+        } else {
+          this.logger.warn(`gpt-image-1 returned no image data. item=${JSON.stringify(item)}, keys=${Object.keys(response.data?.[0] ?? {}).join(',')}`)
         }
       } catch (err: any) {
         const status = err?.status ?? err?.response?.status ?? ''
         const msg = String(err?.message ?? err)
         const code = err?.code ?? err?.error?.code ?? ''
-        this.logger.warn(`DALL-E 3 failed [${status}] code=${code}: ${msg}. Using Unsplash fallback.`)
+        this.logger.error(`gpt-image-1 failed [${status}] code=${code}: ${msg}. Falling back to Unsplash.`)
       }
     }
 

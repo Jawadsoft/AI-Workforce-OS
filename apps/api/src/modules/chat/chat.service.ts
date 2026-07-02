@@ -407,7 +407,7 @@ export class ChatService {
     }
   }
 
-  async findAll(tenantId: string, agentId?: string) {
+  async findAll(tenantId: string, agentId?: string): Promise<any[]> {
     return this.prisma.conversation.findMany({
       where: { tenantId, ...(agentId ? { agentId } : {}) },
       include: { agent: { select: { id: true, name: true, role: true, avatar: true } } },
@@ -416,7 +416,7 @@ export class ChatService {
     })
   }
 
-  async findOne(tenantId: string, id: string) {
+  async findOne(tenantId: string, id: string): Promise<any> {
     const conv = await this.prisma.conversation.findFirst({
       where: { id, tenantId },
       include: { agent: true },
@@ -425,7 +425,7 @@ export class ChatService {
     return conv
   }
 
-  async create(tenantId: string, userId: string, data: { agentId: string; channel: string; title?: string; callerPhone?: string; callerEmail?: string }) {
+  async create(tenantId: string, userId: string, data: { agentId: string; channel: string; title?: string; callerPhone?: string; callerEmail?: string }): Promise<any> {
     return this.prisma.conversation.create({
       data: {
         tenantId,
@@ -443,7 +443,7 @@ export class ChatService {
     })
   }
 
-  async getMessages(tenantId: string, conversationId: string) {
+  async getMessages(tenantId: string, conversationId: string): Promise<any[]> {
     const conv = await this.prisma.conversation.findFirst({ where: { id: conversationId, tenantId } })
     if (!conv) throw new NotFoundException('Conversation not found')
     return this.prisma.message.findMany({
@@ -470,7 +470,7 @@ export class ChatService {
   // One conversation per tenant+agent that never gets deleted.
   // Rachel posts proactive briefings here when she handles events.
 
-  async getOrCreatePrimaryConversation(tenantId: string, agentId: string, userId?: string) {
+  async getOrCreatePrimaryConversation(tenantId: string, agentId: string, userId?: string): Promise<any> {
     const existing = await this.prisma.conversation.findFirst({
       where: { tenantId, agentId, isPrimary: true },
       include: { agent: { select: { id: true, name: true, role: true, avatar: true } } },
@@ -730,7 +730,7 @@ export class ChatService {
     await this.postBriefing(tenantId, tier1Agent.id, content, 'email_briefing')
   }
 
-  async sendMessage(tenantId: string, conversationId: string, content: string) {
+  async sendMessage(tenantId: string, conversationId: string, content: string): Promise<any> {
     const conv = await this.prisma.conversation.findFirst({
       where: { id: conversationId, tenantId },
       include: { agent: true },
@@ -1703,6 +1703,7 @@ export class ChatService {
         // ── Social media tool ──────────────────────────────
         if (toolName === 'post_to_social') {
           try {
+            emit?.({ step: { label: 'Generating social media posts', status: 'active' } })
             const drafts = await this.social.generatePosts({
               tenantId,
               agentId: agent.id,
@@ -1724,11 +1725,29 @@ export class ChatService {
                 }),
               ),
             )
+            emit?.({ step: { label: 'Generating social media posts', status: 'done' } })
+
+            // Emit an action card for each post so full content shows in chat
+            for (const p of saved) {
+              emit?.({
+                action_card: {
+                  type: 'social_post',
+                  id: p.id,
+                  title: `${p.platform.charAt(0).toUpperCase() + p.platform.slice(1)} Post`,
+                  platform: p.platform,
+                  content: p.content,
+                  imageUrl: p.imageUrl ?? null,
+                  status: p.status,
+                  contentType: p.contentType,
+                },
+              })
+            }
+
             const lines = saved.map((p: any) => {
               const platformLabel = p.platform.charAt(0).toUpperCase() + p.platform.slice(1)
-              return `**${platformLabel}** (queued for approval):\n"${p.content}"\n${p.imageUrl ? `📸 Image: ${p.imageUrl}` : ''}`
+              return `**${platformLabel}**: "${p.content}"${p.imageUrl ? `\n📸 Image ready` : ''}`
             })
-            return `Here are the generated social media posts — they've been sent to the approval queue:\n\n${lines.join('\n\n')}\n\nYou can review, edit, approve or schedule them in the **Social Media** section of the dashboard.`
+            return `Generated ${saved.length} social media post${saved.length > 1 ? 's' : ''} and added to the approval queue:\n\n${lines.join('\n\n')}\n\nReview and publish them in the **Social Media** section.`
           } catch (err: any) {
             if (err.message?.includes('not enabled')) return `Social media feature is not enabled for your account. Contact your administrator.`
             return `Error creating social posts: ${err.message}`

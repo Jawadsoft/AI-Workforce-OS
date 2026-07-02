@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
+import { resolve } from 'path'
 import { ThrottlerModule } from '@nestjs/throttler'
 import { AuthModule } from './modules/auth/auth.module'
 import { TenantsModule } from './modules/tenants/tenants.module'
@@ -35,7 +36,15 @@ import { ScheduleModule } from '@nestjs/schedule'
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      // Look for .env in apps/api first, then the monorepo root (two levels up)
+      envFilePath: [
+        resolve(__dirname, '../../../.env'),   // monorepo root (dist runs from apps/api/dist)
+        resolve(__dirname, '../../../../.env'), // one more level for safety
+        '.env',                                 // fallback: CWD
+      ],
+    }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
     ScheduleModule.forRoot(),
     PrismaModule,

@@ -575,7 +575,7 @@ export function SocialPage() {
                       <div key={i} className="flex items-center gap-2 text-xs">
                         {PLATFORM_ICONS[p.platform]}
                         <span className="flex-1 truncate text-muted-foreground">{p.content.slice(0, 60)}…</span>
-                        <span className="text-muted-foreground shrink-0">{p.publishedAt ? new Date(p.publishedAt).toLocaleDateString() : ''}</span>
+                        <span className="text-muted-foreground shrink-0" suppressHydrationWarning>{p.publishedAt ? new Date(p.publishedAt).toLocaleDateString() : ''}</span>
                       </div>
                     ))}
                   </div>
@@ -670,7 +670,7 @@ export function SocialPage() {
                     <div className="flex items-center gap-2 text-xs text-muted-foreground mt-2 pl-1">
                       <CheckCircle className="w-3.5 h-3.5 text-green-400" />
                       <span className="text-green-400 font-medium">{acc.accountName}</span>
-                      {acc.expiresAt && <span>· Expires {new Date(acc.expiresAt).toLocaleDateString()}</span>}
+                      {acc.expiresAt && <span suppressHydrationWarning>· Expires {new Date(acc.expiresAt).toLocaleDateString()}</span>}
                     </div>
                   )}
                 </div>
@@ -737,7 +737,7 @@ function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
   return (
     <div className="rounded-xl border border-border bg-card p-3 sm:p-4 flex gap-3">
       {post.imageUrl && (
-        <img src={post.imageUrl} alt="" className="w-14 h-14 sm:w-20 sm:h-20 rounded-lg object-cover shrink-0" />
+        <img src={post.imageUrl} alt="" className="w-24 h-24 sm:w-32 sm:h-32 rounded-lg object-cover shrink-0 self-start" />
       )}
       <div className="flex-1 min-w-0 space-y-1.5">
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -751,7 +751,7 @@ function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
         </div>
         <p className="text-sm line-clamp-2">{post.content}</p>
         {post.scheduledAt && (
-          <p className="text-xs text-muted-foreground flex items-center gap-1">
+          <p className="text-xs text-muted-foreground flex items-center gap-1" suppressHydrationWarning>
             <Clock className="w-3 h-3" />
             {new Date(post.scheduledAt).toLocaleString()}
           </p>

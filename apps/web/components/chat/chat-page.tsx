@@ -502,11 +502,11 @@ export function ChatPage() {
   }
 
   return (
-    <div className="flex h-full border border-border sm:rounded-lg overflow-hidden bg-card">
+    <div className="flex flex-1 min-h-0 border border-border sm:rounded-lg overflow-hidden bg-card">
 
       {/* ── Agent list (left panel on desktop / full screen on mobile) ── */}
       <div className={`
-        flex-col shrink-0 bg-card border-r border-border
+        flex-col shrink-0 bg-card border-r border-border overflow-hidden
         w-full sm:w-72 sm:flex
         ${mobileChatOpen ? 'hidden sm:flex' : 'flex'}
       `}>
@@ -581,7 +581,7 @@ export function ChatPage() {
             </div>
           </div>
         ) : (
-          <div className={`flex-1 flex flex-col min-w-0 bg-card ${mobileChatOpen ? 'flex' : 'hidden sm:flex'}`}>
+          <div className={`flex-1 flex flex-col min-w-0 bg-card overflow-hidden ${mobileChatOpen ? 'flex' : 'hidden sm:flex'}`}>
             {/* Chat header */}
             <div className="border-b border-border bg-card/95 backdrop-blur-sm">
               <div className="px-3 sm:px-4 py-2 flex items-center gap-3">

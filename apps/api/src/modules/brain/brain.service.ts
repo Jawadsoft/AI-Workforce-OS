@@ -262,6 +262,32 @@ export class BrainService {
     return { success: true, brain: updatedBrain }
   }
 
+  // ── Operational Playbook ──────────────────────────────────────────
+
+  async savePlaybook(tenantId: string, playbook: Record<string, any>) {
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } })
+    const existingSettings = (tenant?.settings as any) ?? {}
+    const existingBrain = existingSettings.brain ?? {}
+
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: {
+          ...existingSettings,
+          brain: {
+            ...existingBrain,
+            operationalPlaybook: {
+              ...playbook,
+              updatedAt: new Date().toISOString(),
+            },
+          },
+        },
+      },
+    })
+
+    return { success: true }
+  }
+
   // ── CRM guide helpers ─────────────────────────────────────────────
 
   getCrmGuide(provider: string) {
@@ -407,6 +433,43 @@ export class BrainService {
     if (mc.forbiddenTopics) hardRules.push(`NEVER discuss: ${mc.forbiddenTopics}`)
     if (mc.escalationContacts) hardRules.push(`For escalations: ${mc.escalationContacts}`)
     if (hardRules.length) sections.push(`HARD RULES (always follow these):\n${hardRules.map(r => `  ⚠ ${r}`).join('\n')}`)
+
+    // ── Operational Playbook (tenant-configured workflow bible) ──
+    const playbook = brain.operationalPlaybook
+    if (playbook) {
+      const pb: string[] = []
+
+      if (playbook.pipelineStages?.length) {
+        pb.push('PIPELINE STAGES:')
+        playbook.pipelineStages.forEach((stage: any, i: number) => {
+          pb.push(`  ${i + 1}. ${stage.name}`)
+          if (stage.ownerRole)     pb.push(`     Owner: ${stage.ownerRole}`)
+          if (stage.trigger)       pb.push(`     Starts when: ${stage.trigger}`)
+          if (stage.completion)    pb.push(`     Done when: ${stage.completion}`)
+          if (stage.handoffTo)     pb.push(`     Hands off to: ${stage.handoffTo}`)
+          if (stage.sla)           pb.push(`     SLA: ${stage.sla}`)
+        })
+      }
+
+      if (playbook.rolesAndResponsibilities?.length) {
+        pb.push('\nROLES & RESPONSIBILITIES:')
+        playbook.rolesAndResponsibilities.forEach((r: any) => {
+          pb.push(`  ${r.role}: ${r.responsibilities}`)
+        })
+      }
+
+      if (playbook.escalationRules) {
+        pb.push(`\nESCALATION RULES:\n  ${playbook.escalationRules}`)
+      }
+
+      if (playbook.businessRules) {
+        pb.push(`\nBUSINESS RULES:\n  ${playbook.businessRules}`)
+      }
+
+      if (pb.length) {
+        sections.push(`OPERATIONAL PLAYBOOK — YOUR WORKFLOW BIBLE:\n${pb.join('\n')}`)
+      }
+    }
 
     if (sections.length === 0) return ''
 

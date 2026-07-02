@@ -1,11 +1,11 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '@/lib/api'
 import {
-  Ticket, Plus, RefreshCw, Clock, AlertCircle, CheckCircle2,
+  Ticket, Plus, RefreshCw, Clock, AlertCircle,
   User, ChevronDown, ChevronUp, MessageSquare, Globe, Briefcase,
-  ArrowRight, X,
+  ArrowRight, X, LayoutList, CheckCircle2,
 } from 'lucide-react'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -54,9 +54,18 @@ interface ActivityTicket {
   thread?: ThreadMessage[]
 }
 
+interface PlaybookStage {
+  name: string
+  ownerRole: string
+  trigger: string
+  completion: string
+  handoffTo: string | null
+  sla: string
+}
+
 type TicketStatus = 'OPEN' | 'IN_PROGRESS' | 'AWAITING_CUSTOMER' | 'AWAITING_AGENT' | 'SCHEDULED' | 'COMPLETED' | 'ESCALATED' | 'CANCELLED'
 type Priority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT'
-type Tab = 'internal' | 'widget'
+type Tab = 'internal' | 'widget' | 'pipeline'
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -106,6 +115,8 @@ export default function TicketsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [playbookStages, setPlaybookStages] = useState<PlaybookStage[]>([])
+  const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const [createForm, setCreateForm] = useState({
     title: '', description: '', type: 'GENERAL', priority: 'MEDIUM',
@@ -121,7 +132,9 @@ export default function TicketsPage() {
     setLoading(true)
     try {
       const params = new URLSearchParams()
-      params.set('source', tab === 'internal' ? 'INTERNAL' : 'WIDGET')
+      if (tab !== 'pipeline') {
+        params.set('source', tab === 'internal' ? 'INTERNAL' : 'WIDGET')
+      }
       if (filterStatus) params.set('status', filterStatus)
       if (filterAgent) params.set('assignedAgentId', filterAgent)
       const [ticketsRes, agentsRes] = await Promise.all([
@@ -130,11 +143,29 @@ export default function TicketsPage() {
       ])
       setTickets(ticketsRes.data)
       setAgents(agentsRes.data)
-      setExpandedId(null)
+      if (tab !== 'pipeline') setExpandedId(null)
     } finally {
       setLoading(false)
     }
   }, [tab, filterStatus, filterAgent])
+
+  // Load playbook stages once
+  useEffect(() => {
+    api.get('/brain/profile').then(r => {
+      const stages = r.data?.settings?.brain?.operationalPlaybook?.pipelineStages ?? []
+      setPlaybookStages(stages)
+    }).catch(() => {})
+  }, [])
+
+  // Auto-refresh every 30s when on pipeline tab
+  useEffect(() => {
+    if (tab === 'pipeline') {
+      autoRefreshRef.current = setInterval(() => load(), 30_000)
+    } else {
+      if (autoRefreshRef.current) clearInterval(autoRefreshRef.current)
+    }
+    return () => { if (autoRefreshRef.current) clearInterval(autoRefreshRef.current) }
+  }, [tab, load])
 
   useEffect(() => { load() }, [load])
 
@@ -203,6 +234,7 @@ export default function TicketsPage() {
   const widgetCount = tickets.filter(t => t.source === 'WIDGET' && !['COMPLETED', 'CANCELLED'].includes(t.status)).length
   const activeTickets = tickets.filter(t => !['COMPLETED', 'CANCELLED'].includes(t.status))
   const closedTickets = tickets.filter(t => ['COMPLETED', 'CANCELLED'].includes(t.status))
+  const pipelineActiveCount = tickets.filter(t => !['COMPLETED', 'CANCELLED'].includes(t.status)).length
 
   return (
     <div className="space-y-6">
@@ -214,10 +246,16 @@ export default function TicketsPage() {
             Tickets
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Track jobs, customer enquiries, and team activity
+            Track jobs, customer enquiries, and agent pipeline activity
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {tab === 'pipeline' && (
+            <span className="text-xs text-muted-foreground flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border">
+              <RefreshCw className="w-3 h-3" />
+              Auto-refreshes every 30s
+            </span>
+          )}
           <button onClick={load} className="w-9 h-9 flex items-center justify-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
             <RefreshCw className="w-4 h-4" />
           </button>
@@ -235,6 +273,22 @@ export default function TicketsPage() {
 
       {/* Tab switcher */}
       <div className="flex gap-1 bg-muted/40 rounded-xl p-1 w-fit">
+        <button
+          onClick={() => setTab('pipeline')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            tab === 'pipeline'
+              ? 'bg-background shadow-sm text-foreground'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <LayoutList className="w-4 h-4" />
+          Pipeline Monitor
+          {pipelineActiveCount > 0 && (
+            <span className="bg-primary text-primary-foreground text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+              {pipelineActiveCount}
+            </span>
+          )}
+        </button>
         <button
           onClick={() => setTab('internal')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -271,45 +325,51 @@ export default function TicketsPage() {
 
       {/* Tab description */}
       <p className="text-xs text-muted-foreground -mt-3">
-        {tab === 'internal'
+        {tab === 'pipeline'
+          ? 'Live view of all jobs grouped by your operational playbook stages — updates every 30 seconds'
+          : tab === 'internal'
           ? 'Jobs and tasks created by your AI agents during internal staff conversations'
           : 'Customer enquiries received via the website chat widget'}
       </p>
 
-      {/* Stats bar */}
-      <div className="grid grid-cols-4 gap-3">
-        {[
-          { label: 'Open', count: tickets.filter(t => t.status === 'OPEN').length, color: 'text-blue-400' },
-          { label: 'In Progress', count: tickets.filter(t => t.status === 'IN_PROGRESS').length, color: 'text-indigo-400' },
-          { label: 'Awaiting', count: tickets.filter(t => ['AWAITING_CUSTOMER', 'AWAITING_AGENT'].includes(t.status)).length, color: 'text-amber-400' },
-          { label: 'Scheduled', count: tickets.filter(t => t.status === 'SCHEDULED').length, color: 'text-purple-400' },
-        ].map(s => (
-          <div key={s.label} className="bg-card border border-border rounded-xl p-4">
-            <p className="text-xs text-muted-foreground">{s.label}</p>
-            <p className={`text-2xl font-bold mt-0.5 ${s.color}`}>{s.count}</p>
-          </div>
-        ))}
-      </div>
+      {/* Stats bar — hidden on pipeline tab */}
+      {tab !== 'pipeline' && (
+        <div className="grid grid-cols-4 gap-3">
+          {[
+            { label: 'Open', count: tickets.filter(t => t.status === 'OPEN').length, color: 'text-blue-400' },
+            { label: 'In Progress', count: tickets.filter(t => t.status === 'IN_PROGRESS').length, color: 'text-indigo-400' },
+            { label: 'Awaiting', count: tickets.filter(t => ['AWAITING_CUSTOMER', 'AWAITING_AGENT'].includes(t.status)).length, color: 'text-amber-400' },
+            { label: 'Scheduled', count: tickets.filter(t => t.status === 'SCHEDULED').length, color: 'text-purple-400' },
+          ].map(s => (
+            <div key={s.label} className="bg-card border border-border rounded-xl p-4">
+              <p className="text-xs text-muted-foreground">{s.label}</p>
+              <p className={`text-2xl font-bold mt-0.5 ${s.color}`}>{s.count}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
-      {/* Filters */}
-      <div className="flex gap-3">
-        <select
-          value={filterStatus}
-          onChange={e => setFilterStatus(e.target.value)}
-          className="bg-card border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
-        >
-          <option value="">All statuses</option>
-          {ALL_STATUSES.map(s => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
-        </select>
-        <select
-          value={filterAgent}
-          onChange={e => setFilterAgent(e.target.value)}
-          className="bg-card border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
-        >
-          <option value="">All agents</option>
-          {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </select>
-      </div>
+      {/* Filters — hidden on pipeline tab */}
+      {tab !== 'pipeline' && (
+        <div className="flex gap-3">
+          <select
+            value={filterStatus}
+            onChange={e => setFilterStatus(e.target.value)}
+            className="bg-card border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="">All statuses</option>
+            {ALL_STATUSES.map(s => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
+          </select>
+          <select
+            value={filterAgent}
+            onChange={e => setFilterAgent(e.target.value)}
+            className="bg-card border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="">All agents</option>
+            {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </div>
+      )}
 
       {/* Create form (internal only) */}
       {showCreate && tab === 'internal' && (
@@ -390,6 +450,16 @@ export default function TicketsPage() {
         <div className="flex items-center justify-center py-16">
           <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
         </div>
+      ) : tab === 'pipeline' ? (
+        <PipelineMonitor
+          tickets={tickets}
+          agents={agents}
+          stages={playbookStages}
+          expandedId={expandedId}
+          threadData={threadData}
+          threadLoading={threadLoading}
+          onExpand={expandTicket}
+        />
       ) : (
         <div className="space-y-6">
           {activeTickets.length > 0 && (
@@ -453,6 +523,360 @@ export default function TicketsPage() {
                   <p className="font-medium">No customer enquiries yet</p>
                   <p className="text-sm mt-1">Tickets will appear here when customers chat via the website widget.</p>
                 </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Pipeline Monitor ───────────────────────────────────────────────
+
+function PipelineMonitor({ tickets, agents, stages, expandedId, threadData, threadLoading, onExpand }: {
+  tickets: ActivityTicket[]
+  agents: Agent[]
+  stages: PlaybookStage[]
+  expandedId: string | null
+  threadData: Record<string, ThreadMessage[]>
+  threadLoading: string | null
+  onExpand: (t: ActivityTicket) => void
+}) {
+  const activeTickets = tickets.filter(t => !['COMPLETED', 'CANCELLED'].includes(t.status))
+  const completedToday = tickets.filter(t => {
+    if (t.status !== 'COMPLETED') return false
+    const updated = new Date(t.updatedAt)
+    const today = new Date()
+    return updated.toDateString() === today.toDateString()
+  })
+
+  // Match a ticket to a stage based on its assigned agent's role
+  function matchStage(ticket: ActivityTicket): number {
+    if (!ticket.assignedAgent?.role) return -1
+    const agentRole = ticket.assignedAgent.role.toLowerCase()
+    return stages.findIndex(s => {
+      const stageRole = s.ownerRole?.toLowerCase() ?? ''
+      return agentRole.includes(stageRole) || stageRole.includes(agentRole) ||
+        agentRole.split(' ').some(word => word.length > 3 && stageRole.includes(word))
+    })
+  }
+
+  // Group active tickets by stage
+  const stageTickets: ActivityTicket[][] = stages.map(() => [])
+  const unstagedTickets: ActivityTicket[] = []
+
+  activeTickets.forEach(ticket => {
+    const idx = matchStage(ticket)
+    if (idx >= 0) stageTickets[idx].push(ticket)
+    else unstagedTickets.push(ticket)
+  })
+
+  // Find agent name for a stage role
+  function agentForRole(role: string): Agent | undefined {
+    if (!role) return undefined
+    const r = role.toLowerCase()
+    return agents.find(a => {
+      const ar = a.role?.toLowerCase() ?? ''
+      return ar.includes(r) || r.includes(ar) || ar.split(' ').some(w => w.length > 3 && r.includes(w))
+    })
+  }
+
+  const urgentCount = activeTickets.filter(t => t.priority === 'URGENT').length
+  const escalatedCount = activeTickets.filter(t => t.status === 'ESCALATED').length
+  const awaitingCount = activeTickets.filter(t => ['AWAITING_CUSTOMER', 'AWAITING_AGENT'].includes(t.status)).length
+
+  return (
+    <div className="space-y-5">
+      {/* Summary strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: 'Active Jobs', value: activeTickets.length, color: 'text-foreground' },
+          { label: 'Escalated', value: escalatedCount, color: escalatedCount > 0 ? 'text-red-400' : 'text-muted-foreground' },
+          { label: 'Awaiting Reply', value: awaitingCount, color: awaitingCount > 0 ? 'text-amber-400' : 'text-muted-foreground' },
+          { label: 'Completed Today', value: completedToday.length, color: 'text-emerald-400' },
+        ].map(s => (
+          <div key={s.label} className="bg-card border border-border rounded-xl px-4 py-3">
+            <p className="text-xs text-muted-foreground">{s.label}</p>
+            <p className={`text-2xl font-bold mt-0.5 ${s.color}`}>{s.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* No playbook configured */}
+      {stages.length === 0 && (
+        <div className="border border-border rounded-xl p-8 text-center text-muted-foreground">
+          <LayoutList className="w-8 h-8 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">No playbook configured</p>
+          <p className="text-sm mt-1">Go to <strong>Brain → Playbook</strong> to define your pipeline stages.</p>
+        </div>
+      )}
+
+      {/* Pipeline stages */}
+      {stages.map((stage, i) => {
+        const stageAgent = agentForRole(stage.ownerRole)
+        const stageTix = stageTickets[i] ?? []
+        const urgentInStage = stageTix.filter(t => t.priority === 'URGENT' || t.status === 'ESCALATED').length
+        const isLast = i === stages.length - 1
+
+        return (
+          <div key={i} className="relative">
+            {/* Connector line */}
+            {!isLast && (
+              <div className="absolute left-5 top-full w-px h-5 bg-border z-0" />
+            )}
+
+            <div className="bg-card border border-border rounded-xl overflow-hidden">
+              {/* Stage header */}
+              <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-muted/20">
+                <span className="w-7 h-7 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center shrink-0">
+                  {i + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-sm">{stage.name}</span>
+                    {stage.sla && (
+                      <span className="text-[11px] text-muted-foreground bg-muted px-2 py-0.5 rounded-full border border-border">
+                        SLA: {stage.sla}
+                      </span>
+                    )}
+                    {urgentInStage > 0 && (
+                      <span className="text-[11px] text-red-400 bg-red-900/20 border border-red-800/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3" />
+                        {urgentInStage} urgent
+                      </span>
+                    )}
+                  </div>
+                  {stageAgent && (
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <div className="w-4 h-4 rounded-full bg-indigo-900/50 flex items-center justify-center text-[9px] font-bold text-indigo-300 shrink-0">
+                        {stageAgent.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
+                      </div>
+                      <span className="text-xs text-muted-foreground">{stageAgent.name}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="text-right shrink-0">
+                  <span className={`text-lg font-bold tabular-nums ${stageTix.length > 0 ? 'text-foreground' : 'text-muted-foreground/40'}`}>
+                    {stageTix.length}
+                  </span>
+                  <p className="text-[10px] text-muted-foreground">jobs</p>
+                </div>
+              </div>
+
+              {/* Trigger / completion hint */}
+              {(stage.trigger || stage.completion) && (
+                <div className="px-4 py-2 border-b border-border flex gap-6 text-xs text-muted-foreground bg-muted/10">
+                  {stage.trigger && <span><strong className="text-foreground/60">Starts when:</strong> {stage.trigger}</span>}
+                  {stage.completion && <span><strong className="text-foreground/60">Done when:</strong> {stage.completion}</span>}
+                </div>
+              )}
+
+              {/* Tickets in this stage */}
+              {stageTix.length > 0 ? (
+                <div className="divide-y divide-border">
+                  {stageTix.map(ticket => (
+                    <PipelineTicketRow
+                      key={ticket.id}
+                      ticket={ticket}
+                      isExpanded={expandedId === ticket.id}
+                      thread={threadData[ticket.id]}
+                      threadLoading={threadLoading === ticket.id}
+                      onExpand={() => onExpand(ticket)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="px-4 py-4 text-xs text-muted-foreground/50 italic">
+                  No active jobs in this stage
+                </div>
+              )}
+
+              {/* Handoff arrow */}
+              {stage.handoffTo && !isLast && (
+                <div className="px-4 py-2 border-t border-border bg-muted/10 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <ArrowRight className="w-3 h-3" />
+                  On completion → {agentForRole(stage.handoffTo)?.name ?? stage.handoffTo}
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })}
+
+      {/* Unstaged tickets */}
+      {unstagedTickets.length > 0 && (
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-muted/20">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Unassigned / Outside Pipeline</span>
+            <span className="text-sm font-bold text-muted-foreground ml-auto">{unstagedTickets.length}</span>
+          </div>
+          <div className="divide-y divide-border">
+            {unstagedTickets.map(ticket => (
+              <PipelineTicketRow
+                key={ticket.id}
+                ticket={ticket}
+                isExpanded={expandedId === ticket.id}
+                thread={threadData[ticket.id]}
+                threadLoading={threadLoading === ticket.id}
+                onExpand={() => onExpand(ticket)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Completed today */}
+      {completedToday.length > 0 && (
+        <div className="bg-card border border-border rounded-xl overflow-hidden opacity-70">
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Completed Today</span>
+            <span className="text-sm font-bold text-emerald-400 ml-auto">{completedToday.length}</span>
+          </div>
+          <div className="divide-y divide-border">
+            {completedToday.map(ticket => (
+              <PipelineTicketRow
+                key={ticket.id}
+                ticket={ticket}
+                isExpanded={expandedId === ticket.id}
+                thread={threadData[ticket.id]}
+                threadLoading={threadLoading === ticket.id}
+                onExpand={() => onExpand(ticket)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Pipeline Ticket Row (compact) ─────────────────────────────────
+
+function PipelineTicketRow({ ticket, isExpanded, thread, threadLoading, onExpand }: {
+  ticket: ActivityTicket
+  isExpanded: boolean
+  thread?: ThreadMessage[]
+  threadLoading: boolean
+  onExpand: () => void
+}) {
+  const isOverdue = ticket.followUpAt && new Date(ticket.followUpAt) < new Date() && !['COMPLETED', 'CANCELLED'].includes(ticket.status)
+  const ticketId = `#${String(ticket.ticketNumber ?? 0).padStart(4, '0')}`
+  const lastActivity = ticket.activityLog?.at(-1)
+
+  return (
+    <div className={`${isOverdue ? 'border-l-2 border-l-amber-500' : ''}`}>
+      <div
+        className="flex items-start gap-3 px-4 py-3 cursor-pointer hover:bg-accent/20 transition-colors"
+        onClick={onExpand}
+      >
+        <div className={`w-1.5 h-1.5 rounded-full mt-2 shrink-0 ${PRIORITY_DOT[ticket.priority as Priority]}`} />
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-mono text-muted-foreground">{ticketId}</span>
+            <span className={`text-[11px] px-1.5 py-0.5 rounded-full border font-medium ${STATUS_COLORS[ticket.status as TicketStatus]}`}>
+              {ticket.status.replace(/_/g, ' ')}
+            </span>
+            {ticket.contactRef && (
+              <span className="text-[11px] text-muted-foreground flex items-center gap-0.5">
+                <User className="w-2.5 h-2.5" />{ticket.contactRef}
+              </span>
+            )}
+            {ticket.followUpAt && (
+              <span className={`text-[11px] flex items-center gap-0.5 ${isOverdue ? 'text-amber-400' : 'text-muted-foreground'}`}>
+                <Clock className="w-2.5 h-2.5" />
+                {new Date(ticket.followUpAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
+          </div>
+          <p className="text-sm font-medium mt-0.5 truncate">{ticket.subject ?? ticket.title}</p>
+          {ticket.nextAction && (
+            <p className="text-xs text-indigo-400 mt-0.5 flex items-center gap-1 truncate">
+              <ArrowRight className="w-3 h-3 shrink-0" />{ticket.nextAction}
+            </p>
+          )}
+          {lastActivity && !isExpanded && (
+            <p className="text-[11px] text-muted-foreground/70 mt-0.5 truncate">
+              Last: {lastActivity.agentName} — {lastActivity.note}
+            </p>
+          )}
+        </div>
+
+        <div className="shrink-0 flex items-center gap-1 text-muted-foreground">
+          {ticket.activityLog?.length > 0 && (
+            <span className="text-[10px] tabular-nums">{ticket.activityLog.length} logs</span>
+          )}
+          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        </div>
+      </div>
+
+      {/* Expanded: activity log + thread summary */}
+      {isExpanded && (
+        <div className="px-4 pb-4 pt-1 bg-muted/10 border-t border-border space-y-4">
+
+          {/* Description */}
+          {ticket.description && (
+            <p className="text-xs text-muted-foreground">{ticket.description}</p>
+          )}
+
+          {/* Activity log */}
+          {ticket.activityLog?.length > 0 && (
+            <div>
+              <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Activity Log</p>
+              <div className="space-y-2">
+                {[...ticket.activityLog].reverse().map((entry, i) => (
+                  <div key={i} className="flex gap-3 text-xs">
+                    <div className="flex flex-col items-center shrink-0 mt-1">
+                      <div className="w-1.5 h-1.5 rounded-full bg-primary/50" />
+                      {i < ticket.activityLog.length - 1 && <div className="w-px flex-1 bg-border mt-1" />}
+                    </div>
+                    <div className="pb-2 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium text-foreground">{entry.agentName}</span>
+                        <span className="text-muted-foreground/60 text-[11px]">
+                          {new Date(entry.timestamp).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <p className="text-muted-foreground mt-0.5">{entry.note}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Conversation thread preview */}
+          {ticket.conversationId && (
+            <div>
+              <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <MessageSquare className="w-3 h-3" /> Conversation
+              </p>
+              {threadLoading ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="w-3 h-3 border border-primary border-t-transparent rounded-full animate-spin" />
+                  Loading...
+                </div>
+              ) : thread && thread.length > 0 ? (
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {thread.slice(-6).map((msg, i) => (
+                    <div key={i} className={`flex gap-2 ${msg.role === 'USER' ? 'flex-row-reverse' : ''}`}>
+                      <div className={`px-2.5 py-1.5 rounded-lg text-xs max-w-[80%] ${
+                        msg.role === 'USER'
+                          ? 'bg-muted text-foreground'
+                          : 'bg-indigo-900/20 text-foreground border border-indigo-900/30'
+                      }`}>
+                        <span className="text-[10px] text-muted-foreground block mb-0.5">
+                          {msg.role === 'USER' ? 'User' : msg.agentName}
+                        </span>
+                        {msg.content.slice(0, 200)}{msg.content.length > 200 ? '…' : ''}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground italic">No messages yet</p>
               )}
             </div>
           )}

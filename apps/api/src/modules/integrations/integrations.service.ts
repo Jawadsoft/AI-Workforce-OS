@@ -397,22 +397,32 @@ export class IntegrationsService {
         // Low confidence → notify only, don't auto-act
         const effectiveMode = classification.confidence >= threshold ? mode : 'notify_only'
 
-        let action: string | null = null
+        // ── Confirmation loop: check if this email is a customer reply to an AWAITING_CUSTOMER ticket ──
+        let confirmationHandled = false
+        try {
+          confirmationHandled = await this.handleCustomerConfirmation(tenantId, email, classification)
+        } catch (err: any) {
+          this.logger.warn(`[Confirmation] Failed for ${email.from}: ${err.message}`)
+        }
+
+        let action: string | null = confirmationHandled ? 'confirmation_auto_updated' : null
         let errorMessage: string | null = null
 
-        try {
-          action = await this.executeEmailAction(
-            tenantId,
-            account,
-            gmail,
-            email,
-            classification,
-            effectiveMode,
-            rule?.replyTemplate ?? null,
-            rule?.assignedAgentId ?? null,
-          )
-        } catch (err: any) {
-          errorMessage = err.message
+        if (!confirmationHandled) {
+          try {
+            action = await this.executeEmailAction(
+              tenantId,
+              account,
+              gmail,
+              email,
+              classification,
+              effectiveMode,
+              rule?.replyTemplate ?? null,
+              rule?.assignedAgentId ?? null,
+            )
+          } catch (err: any) {
+            errorMessage = err.message
+          }
         }
 
         await this.prisma.processedEmail.create({
@@ -509,24 +519,34 @@ export class IntegrationsService {
         const threshold = rule?.confidenceThreshold ?? 70
         const effectiveMode = classification.confidence >= threshold ? mode : 'notify_only'
 
-        let action: string | null = null
+        // ── Confirmation loop: check if this email is a customer reply to an AWAITING_CUSTOMER ticket ──
+        let confirmationHandled = false
+        try {
+          confirmationHandled = await this.handleCustomerConfirmation(tenantId, email, classification)
+        } catch (err: any) {
+          this.logger.warn(`[Confirmation][IMAP] Failed for ${email.from}: ${err.message}`)
+        }
+
+        let action: string | null = confirmationHandled ? 'confirmation_auto_updated' : null
         let errorMessage: string | null = null
 
-        try {
-          action = await this.executeImapEmailAction(
-            tenantId,
-            imap,
-            mailer,
-            email,
-            classification,
-            effectiveMode,
-            rule?.replyTemplate ?? null,
-            account.accountEmail,
-            rule?.assignedAgentId ?? null,
-          )
-        } catch (err: any) {
-          errorMessage = err.message
-          this.logger.error(`Action failed for ${email.from}: ${err.message}`)
+        if (!confirmationHandled) {
+          try {
+            action = await this.executeImapEmailAction(
+              tenantId,
+              imap,
+              mailer,
+              email,
+              classification,
+              effectiveMode,
+              rule?.replyTemplate ?? null,
+              account.accountEmail,
+              rule?.assignedAgentId ?? null,
+            )
+          } catch (err: any) {
+            errorMessage = err.message
+            this.logger.error(`Action failed for ${email.from}: ${err.message}`)
+          }
         }
 
         await this.prisma.processedEmail.create({
@@ -699,6 +719,111 @@ export class IntegrationsService {
         await this.notifyAgentOfEmail(tenantId, email, classification)
         return 'notified'
     }
+  }
+
+  /**
+   * Customer Confirmation Loop
+   *
+   * When an inbound email arrives:
+   *  1. Match the sender's email address to an open AWAITING_CUSTOMER ticket.
+   *  2. Scan the body for confirmation keywords.
+   *  3. If confirmed → flip ticket to OPEN (or SCHEDULED if a date is detected),
+   *     append an activityLog entry, and wake the assigned agent with a briefing.
+   *
+   * Returns true if a confirmation was handled (caller skips normal action routing).
+   */
+  private async handleCustomerConfirmation(
+    tenantId: string,
+    email: any,
+    classification: any,
+  ): Promise<boolean> {
+    const senderEmail: string = (email.from ?? '').toLowerCase().trim()
+    if (!senderEmail) return false
+
+    // Find an AWAITING_CUSTOMER ticket where contactEmail matches sender
+    const ticket = await this.prisma.activityTicket.findFirst({
+      where: {
+        tenantId,
+        status: 'AWAITING_CUSTOMER',
+        contactEmail: { equals: senderEmail, mode: 'insensitive' },
+      },
+      include: {
+        assignedAgent: { select: { id: true, name: true } },
+      },
+      orderBy: { updatedAt: 'desc' },
+    })
+
+    if (!ticket) return false
+
+    // Confirmation keyword scan
+    const body: string = ((email.body ?? '') + ' ' + (email.snippet ?? '')).toLowerCase()
+    const CONFIRM_KEYWORDS = ['yes', 'confirm', 'confirmed', 'works for me', 'sounds good',
+      'see you', 'approved', 'i agree', 'that works', 'perfect', 'great', 'ok', 'okay', 'sure']
+    const isConfirmation = CONFIRM_KEYWORDS.some(k => body.includes(k))
+
+    if (!isConfirmation) return false
+
+    // Extract date hint from extractedData or body
+    const extractedDate: string | null = classification.extractedData?.meetingDate ?? null
+    let followUpAt: Date | null = null
+    if (extractedDate) {
+      const parsed = new Date(extractedDate)
+      if (!isNaN(parsed.getTime())) followUpAt = parsed
+    }
+
+    const log = (ticket.activityLog as any[]) ?? []
+    const now = new Date()
+
+    await this.prisma.activityTicket.update({
+      where: { id: ticket.id },
+      data: {
+        status: followUpAt ? 'SCHEDULED' : 'OPEN',
+        followUpAt: followUpAt ?? undefined,
+        updatedAt: now,
+        activityLog: [
+          ...log,
+          {
+            agentName: 'System',
+            agentId: 'system',
+            action: 'CUSTOMER_CONFIRMED',
+            note: `Customer replied from ${senderEmail} confirming. Subject: "${email.subject}". Status → ${followUpAt ? 'SCHEDULED (followUpAt: ' + followUpAt.toISOString() + ')' : 'OPEN'}.`,
+            timestamp: now.toISOString(),
+          },
+        ] as any,
+      },
+    })
+
+    this.logger.log(`[Confirmation] Ticket #${String(ticket.ticketNumber).padStart(4,'0')} flipped to ${followUpAt ? 'SCHEDULED' : 'OPEN'} — customer ${senderEmail} confirmed`)
+
+    // Wake the assigned agent with a briefing
+    if (ticket.assignedAgent) {
+      const ticketNum = String(ticket.ticketNumber).padStart(4, '0')
+      const briefing = [
+        `✅ **Customer Confirmed — Ticket #${ticketNum} updated**`,
+        `Customer ${email.fromName || senderEmail} replied to confirm.`,
+        `Subject: "${email.subject}"`,
+        `Snippet: "${email.snippet}"`,
+        followUpAt ? `Confirmed date/time: ${followUpAt.toLocaleDateString('en-GB')}` : '',
+        ``,
+        `Ticket #${ticketNum} has been re-opened and assigned to you. Please:`,
+        `1. Review the customer's confirmation details.`,
+        `2. Call update_ticket with ticketId "${ticket.id.slice(-6)}" to progress the work.`,
+        `3. Proceed with the next step (e.g. dispatch, document, schedule crew).`,
+      ].filter(Boolean).join('\n')
+
+      setImmediate(() => {
+        this.chat.autoWakeAgent(
+          tenantId,
+          ticket.assignedAgent!.id,
+          ticket.id,
+          briefing,
+          ticket.assignedAgent!.id,
+          ticket.conversationId ?? undefined,
+        ).catch(e => this.logger.warn(`[Confirmation] Wake failed: ${e.message}`))
+      })
+    }
+
+    return true
   }
 
   private async notifyAgentOfEmail(

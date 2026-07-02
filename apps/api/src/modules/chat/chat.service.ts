@@ -261,7 +261,7 @@ const CRM_TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         ticketId: { type: 'string', description: 'The ticket ID (last 6 chars shown in your pending tickets list)' },
-        status: { type: 'string', enum: ['OPEN', 'IN_PROGRESS', 'COMPLETED'], description: 'OPEN=not yet started, IN_PROGRESS=being worked on, COMPLETED=fully resolved (booking confirmed, estimate sent, job done — any final outcome)' },
+        status: { type: 'string', enum: ['OPEN', 'IN_PROGRESS', 'AWAITING_CUSTOMER', 'AWAITING_AGENT', 'SCHEDULED', 'ESCALATED', 'COMPLETED', 'CANCELLED'], description: 'OPEN=not yet started | IN_PROGRESS=being worked on | AWAITING_CUSTOMER=sent email/message, waiting for customer reply (system auto-reopens when reply arrives) | AWAITING_AGENT=waiting on a colleague to complete their part | SCHEDULED=inspection/visit booked for a future date (set followUpAt to that date — system auto-reopens on that day) | ESCALATED=urgent, needs immediate human attention | COMPLETED=fully resolved | CANCELLED=no longer needed' },
         nextAction: { type: 'string', description: 'Updated next action description' },
         note: { type: 'string', description: 'Progress note to add to the ticket timeline' },
         assignedAgentRole: { type: 'string', description: 'Reassign to a team member by role keyword e.g. "operations", "hr", "finance", "sales"' },
@@ -1220,6 +1220,15 @@ export class ChatService {
             // Re-embed ticket so intent search reflects latest state (async, non-blocking)
             this.memory.embedTicket(ticket.id).catch(() => {})
 
+            // ── Pipeline auto-advance on COMPLETED ────────────────────
+            if (params.status === 'COMPLETED') {
+              setImmediate(() => {
+                this.pipelineAdvance(tenantId, ticket as any, agent, params.note ?? '').catch(e =>
+                  this.logger.warn(`[Pipeline] Auto-advance failed for ticket ${ticket.id.slice(-6)}: ${e.message}`)
+                )
+              })
+            }
+
             // Auto-notify creator when a different agent updates/completes the ticket
             const creatorId = (ticket as any).createdBy?.id ?? (ticket as any).createdByAgentId
             if (creatorId && creatorId !== agent.id) {
@@ -1694,6 +1703,23 @@ export class ChatService {
               ...topLines,
               reports.length > 10 ? `  ... and ${reports.length - 10} more events` : null,
             ].filter(Boolean).join('\n')
+
+            // ── Storm → Auto Lead Generation ────────────────────────
+            // If significant events found (hail >= 1" or any tornado/wind),
+            // auto-create Charlie lead tickets for CRM contacts in affected areas.
+            const significant = reports.filter(r =>
+              r.type === 'tornado' ||
+              r.type === 'wind' ||
+              (r.type === 'hail' && (r.size ?? 0) >= 1.0)
+            )
+            if (significant.length > 0) {
+              setImmediate(() => {
+                this.stormAutoLeads(tenantId, significant, agent.id).catch(e =>
+                  this.logger.warn(`[StormLeads] Auto-lead creation failed: ${e.message}`)
+                )
+              })
+            }
+
             return summary
           } catch (err: any) {
             return `Error fetching storm data: ${err.message}`
@@ -3054,5 +3080,220 @@ When chatting with the business owner/manager directly (in the internal chat thr
     // Convert the Web Streams ReadableStream to a Node.js Readable
     const webStream = response.body!
     return Readable.fromWeb(webStream as any)
+  }
+
+  // ── Storm → Auto Lead Creation ───────────────────────────────────────────────
+  /**
+   * When Arturo detects significant storm events, search the CRM for contacts
+   * in the affected state/county and create Charlie lead tickets for each.
+   * Deduplicates against existing open tickets to avoid spam.
+   */
+  private async stormAutoLeads(tenantId: string, stormReports: any[], triggeredByAgentId: string): Promise<void> {
+    // Find the lead qualification agent (Charlie)
+    const LEAD_QUAL_KEYWORDS = ['lead qual', 'charlie', 'qualification', 'intake', 'lead agent']
+    const leadAgent = await this.prisma.agent.findFirst({
+      where: {
+        tenantId,
+        status: 'ACTIVE',
+        OR: LEAD_QUAL_KEYWORDS.map(k => ({ role: { contains: k, mode: 'insensitive' as const } })),
+      },
+      select: { id: true, name: true },
+    })
+
+    if (!leadAgent) return
+
+    const now = new Date()
+    const affectedAreas = [...new Set(stormReports.map(r => `${r.county || ''} ${r.state}`.trim()))]
+    const eventSummary  = stormReports.map(r => `${r.type.toUpperCase()}${r.size ? ` ${r.size.toFixed(2)}"` : ''} in ${r.county || r.state}`).join(', ')
+
+    // Search CRM for contacts in affected areas (best-effort)
+    let crmContacts: any[] = []
+    try {
+      const query = affectedAreas.slice(0, 3).join(' ')
+      crmContacts = await this.crm.searchContacts(tenantId, query) ?? []
+    } catch {
+      // No CRM or search failed — create a general territory alert ticket instead
+    }
+
+    let leadsCreated = 0
+
+    if (crmContacts.length > 0) {
+      for (const contact of crmContacts.slice(0, 15)) {
+        const name  = contact.name ?? contact.fullName ?? `Contact ${contact.id}`
+        const email = contact.email ?? ''
+        const phone = contact.phone ?? ''
+
+        // Skip if ticket already exists for this contact + storm context
+        const existing = await this.prisma.activityTicket.findFirst({
+          where: {
+            tenantId,
+            title: { contains: 'Storm lead', mode: 'insensitive' },
+            contactEmail: email || undefined,
+            status: { notIn: ['COMPLETED', 'CANCELLED'] },
+          },
+          select: { id: true },
+        })
+        if (existing) continue
+
+        await this.prisma.activityTicket.create({
+          data: {
+            tenantId,
+            title: `Storm lead — ${name}`,
+            description: `Storm event detected in area: ${eventSummary}\n\nContact may be affected. Qualify and reach out.`,
+            type: 'GENERAL',
+            status: 'OPEN',
+            priority: 'HIGH',
+            source: 'INTERNAL',
+            contactRef: name,
+            contactEmail: email || undefined,
+            contactPhone: phone || undefined,
+            assignedAgentId: leadAgent.id,
+            nextAction: 'Qualify this storm lead — check property address, assess damage likelihood, and initiate contact.',
+            metadata: { stormTrigger: true, stormSummary: eventSummary } as any,
+            activityLog: [{
+              agentName: 'System',
+              agentId: 'system',
+              action: 'STORM_LEAD_CREATED',
+              note: `Auto-created by storm detection. Events: ${eventSummary}`,
+              timestamp: now.toISOString(),
+            }] as any,
+          },
+        })
+        leadsCreated++
+      }
+    } else {
+      // No CRM contacts — create a single territory alert ticket for Charlie
+      await this.prisma.activityTicket.create({
+        data: {
+          tenantId,
+          title: `Territory Storm Alert — ${affectedAreas.slice(0,2).join(', ')}`,
+          description: `Storm events detected: ${eventSummary}\n\nNo CRM contacts matched automatically. Review CRM manually for contacts in affected areas.`,
+          type: 'GENERAL',
+          status: 'OPEN',
+          priority: 'HIGH',
+          source: 'INTERNAL',
+          assignedAgentId: leadAgent.id,
+          nextAction: 'Review CRM contacts in affected areas and create lead tickets for likely storm-damage prospects.',
+          metadata: { stormTrigger: true, stormSummary: eventSummary } as any,
+          activityLog: [{
+            agentName: 'System',
+            agentId: 'system',
+            action: 'STORM_ALERT_CREATED',
+            note: `Territory alert auto-created. Events: ${eventSummary}`,
+            timestamp: now.toISOString(),
+          }] as any,
+        },
+      })
+      leadsCreated = 1
+    }
+
+    this.logger.log(`[StormLeads][${tenantId}] ${leadsCreated} lead ticket(s) created for storm events: ${eventSummary}`)
+  }
+
+  // ── Pipeline Auto-Advance ─────────────────────────────────────────────────
+  /**
+   * When a ticket is marked COMPLETED, consult the tenant's operationalPlaybook
+   * to determine the next pipeline stage. If a next stage exists, auto-create a
+   * new ticket assigned to the responsible agent role and notify them.
+   */
+  private async pipelineAdvance(tenantId: string, ticket: any, completingAgent: any, completionNote: string): Promise<void> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { settings: true },
+    })
+    const playbook = (tenant?.settings as any)?.brain?.operationalPlaybook
+    if (!playbook?.pipelineStages?.length) return
+
+    const stages: any[] = playbook.pipelineStages
+
+    // Determine current stage index from ticket metadata or title keyword match
+    const currentStageIndex = ticket.metadata?.pipelineStageIndex ?? -1
+    const nextStageIndex = currentStageIndex + 1
+
+    if (nextStageIndex >= stages.length) {
+      this.logger.log(`[Pipeline] Ticket #${String(ticket.ticketNumber).padStart(4,'0')} COMPLETED — no further stages`)
+      return
+    }
+
+    const nextStage = stages[nextStageIndex]
+    if (!nextStage?.ownerRole) return
+
+    // Find the agent for the next stage's role
+    const nextAgent = await this.prisma.agent.findFirst({
+      where: {
+        tenantId,
+        status: 'ACTIVE',
+        OR: [
+          { role: { contains: nextStage.ownerRole, mode: 'insensitive' } },
+          { name: { contains: nextStage.ownerRole, mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true, name: true, role: true },
+    })
+
+    if (!nextAgent) {
+      this.logger.warn(`[Pipeline] No agent found for role "${nextStage.ownerRole}" (next stage)`)
+      return
+    }
+
+    const now = new Date()
+    const newTicket = await this.prisma.activityTicket.create({
+      data: {
+        tenantId,
+        title: `[Stage ${nextStageIndex + 1}] ${nextStage.name} — ${ticket.contactRef ?? ticket.title}`,
+        description: [
+          `Auto-advanced from completed ticket #${String(ticket.ticketNumber).padStart(4,'0')}: "${ticket.title}"`,
+          completionNote ? `Handoff note: ${completionNote}` : '',
+          ticket.description ? `Original context:\n${ticket.description}` : '',
+        ].filter(Boolean).join('\n'),
+        type: ticket.type ?? 'GENERAL',
+        status: 'OPEN',
+        priority: ticket.priority ?? 'MEDIUM',
+        source: ticket.source ?? 'INTERNAL',
+        contactRef: ticket.contactRef,
+        contactEmail: ticket.contactEmail,
+        contactPhone: ticket.contactPhone,
+        assignedAgentId: nextAgent.id,
+        nextAction: nextStage.trigger ?? `Begin stage: ${nextStage.name}`,
+        metadata: {
+          ...(ticket.metadata ?? {}),
+          pipelineStageIndex: nextStageIndex,
+          previousTicketId: ticket.id,
+          advancedBy: completingAgent.name,
+        } as any,
+        activityLog: [
+          {
+            agentName: 'System',
+            agentId: 'system',
+            action: 'PIPELINE_ADVANCED',
+            note: `Auto-created from pipeline advance. Previous stage completed by ${completingAgent.name}.`,
+            timestamp: now.toISOString(),
+          },
+        ] as any,
+      },
+    })
+
+    this.logger.log(`[Pipeline] Advanced to stage ${nextStageIndex + 1} ("${nextStage.name}") — ticket #${String(newTicket.ticketNumber).padStart(4,'0')} created → assigned to ${nextAgent.name}`)
+
+    // Notify the next-stage agent
+    const briefing = [
+      `🔄 **Pipeline Advance — Stage ${nextStageIndex + 1}: ${nextStage.name}**`,
+      `Previous stage "${stages[currentStageIndex]?.name ?? 'Unknown'}" completed by ${completingAgent.name}.`,
+      `New ticket #${String(newTicket.ticketNumber).padStart(4,'0')} created and assigned to you.`,
+      ticket.contactRef ? `Contact: ${ticket.contactRef}` : '',
+      completionNote ? `Handoff note: "${completionNote}"` : '',
+      nextStage.trigger ? `Your trigger: ${nextStage.trigger}` : '',
+      nextStage.completion ? `Done when: ${nextStage.completion}` : '',
+      ``,
+      `Call get_my_tickets to see the full details, then take action.`,
+    ].filter(Boolean).join('\n')
+
+    await this.autoWakeAgent(
+      tenantId,
+      nextAgent.id,
+      newTicket.id,
+      briefing,
+      completingAgent.id,
+    )
   }
 }

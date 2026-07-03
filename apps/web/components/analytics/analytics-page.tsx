@@ -190,8 +190,8 @@ export function AnalyticsPage() {
                         <Cell key={i} fill={STATUS_COLOR[entry.name] ?? '#6b7280'} />
                       ))}
                     </Pie>
-                    <Tooltip formatter={(v, name) => [v, name.replace(/_/g, ' ')]} />
-                    <Legend formatter={(v) => v.replace(/_/g, ' ')} iconSize={8} />
+                    <Tooltip formatter={(v, name) => [v, String(name).replace(/_/g, ' ')]} />
+                    <Legend formatter={(v) => String(v).replace(/_/g, ' ')} iconSize={8} />
                   </PieChart>
                 </ResponsiveContainer>
               )}

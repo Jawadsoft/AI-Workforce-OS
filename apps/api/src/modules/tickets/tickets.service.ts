@@ -10,6 +10,37 @@ export interface TicketActivityEntry {
   timestamp: string
 }
 
+function derivePendingReason(ticket: any): string {
+  if (!ticket) return 'No active stage'
+  const meta = (ticket.metadata as any) ?? {}
+  switch (ticket.status as string) {
+    case 'OPEN':
+      return ticket.followUpAt
+        ? `Scheduled for follow-up on ${new Date(ticket.followUpAt).toLocaleDateString('en-GB')}`
+        : 'Waiting for agent to pick up'
+    case 'IN_PROGRESS':
+      return `Agent ${ticket.assignedAgent?.name ?? 'assigned'} is working on this`
+    case 'AWAITING_CUSTOMER':
+      return ticket.followUpAt
+        ? `Awaiting customer reply — follow-up scheduled for ${new Date(ticket.followUpAt).toLocaleDateString('en-GB')}${meta.followUpAttempts ? ` (attempt ${meta.followUpAttempts}/3)` : ''}`
+        : 'Awaiting customer response'
+    case 'AWAITING_AGENT':
+      return `Waiting for ${ticket.assignedAgent?.name ?? 'agent'} to review`
+    case 'SCHEDULED':
+      return ticket.followUpAt
+        ? `Inspection scheduled for ${new Date(ticket.followUpAt).toLocaleDateString('en-GB')}`
+        : 'Appointment confirmed — date TBD'
+    case 'ESCALATED':
+      return 'Escalated — requires manual intervention'
+    case 'COMPLETED':
+      return 'Stage complete'
+    case 'CANCELLED':
+      return 'Cancelled'
+    default:
+      return ticket.nextAction ?? 'Pending'
+  }
+}
+
 @Injectable()
 export class TicketsService {
   private readonly logger = new Logger(TicketsService.name)
@@ -291,6 +322,106 @@ export class TicketsService {
         assignedAgent: { select: { id: true, name: true, role: true } },
       },
     })
+  }
+
+  // ── Lead Journey ───────────────────────────────────────────────────
+
+  async getLeadJourney(tenantId: string, leadId: string) {
+    const tickets = await this.prisma.activityTicket.findMany({
+      where: { tenantId, leadId },
+      include: {
+        createdBy: { select: { id: true, name: true, role: true } },
+        assignedAgent: { select: { id: true, name: true, role: true } },
+      },
+      orderBy: [{ createdAt: 'asc' }],
+    })
+
+    if (!tickets.length) {
+      // Fallback: look up by metadata.crmLeadId (backfill path for tickets created before leadId column existed)
+      const all = await this.prisma.activityTicket.findMany({
+        where: {
+          tenantId,
+          metadata: { path: ['crmLeadId'], equals: leadId },
+        },
+        include: {
+          createdBy: { select: { id: true, name: true, role: true } },
+          assignedAgent: { select: { id: true, name: true, role: true } },
+        },
+        orderBy: [{ createdAt: 'asc' }],
+      })
+
+      if (all.length) {
+        // Backfill leadId for next time
+        await this.prisma.activityTicket.updateMany({
+          where: {
+            tenantId,
+            metadata: { path: ['crmLeadId'], equals: leadId },
+            leadId: null,
+          },
+          data: { leadId },
+        })
+      }
+
+      return this.buildJourneyResponse(leadId, all)
+    }
+
+    return this.buildJourneyResponse(leadId, tickets)
+  }
+
+  private buildJourneyResponse(leadId: string, tickets: any[]) {
+    const stageOrder: Record<string, number> = {
+      OPEN: 0, IN_PROGRESS: 1, AWAITING_CUSTOMER: 2, AWAITING_AGENT: 2,
+      SCHEDULED: 3, ESCALATED: 1, COMPLETED: 4, CANCELLED: 4,
+    }
+
+    // Sort by pipelineStageIndex then createdAt
+    const sorted = [...tickets].sort((a, b) => {
+      const ai = (a.metadata as any)?.pipelineStageIndex ?? 999
+      const bi = (b.metadata as any)?.pipelineStageIndex ?? 999
+      if (ai !== bi) return ai - bi
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    })
+
+    // Merged timeline from all activity logs
+    const mergedTimeline: any[] = sorted.flatMap((t) => {
+      const log = (t.activityLog as any[]) ?? []
+      return log.map(entry => ({ ...entry, ticketId: t.id, ticketTitle: t.title, stageIndex: (t.metadata as any)?.pipelineStageIndex }))
+    }).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+
+    const currentTicket = sorted.find(t => !['COMPLETED', 'CANCELLED'].includes(t.status))
+    const lastTicket = sorted[sorted.length - 1]
+
+    const pendingReason = currentTicket
+      ? derivePendingReason(currentTicket)
+      : null
+
+    return {
+      leadId,
+      contactRef: lastTicket?.contactRef ?? null,
+      contactEmail: lastTicket?.contactEmail ?? null,
+      contactPhone: lastTicket?.contactPhone ?? null,
+      currentStage: (currentTicket?.metadata as any)?.pipelineStageIndex ?? null,
+      currentStatus: currentTicket?.status ?? lastTicket?.status ?? null,
+      pendingReason,
+      stages: sorted.map(t => ({
+        id: t.id,
+        shortId: t.id.slice(-6),
+        ticketNumber: t.ticketNumber,
+        stageIndex: (t.metadata as any)?.pipelineStageIndex ?? null,
+        stageName: (t.metadata as any)?.pipelineStageName ?? t.title,
+        status: t.status,
+        assignedAgent: t.assignedAgent ? { id: t.assignedAgent.id, name: t.assignedAgent.name, role: t.assignedAgent.role } : null,
+        nextAction: t.nextAction,
+        followUpAt: t.followUpAt,
+        followUpAttempts: (t.metadata as any)?.followUpAttempts ?? 0,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+        resolvedAt: t.resolvedAt,
+      })),
+      timeline: mergedTimeline,
+      totalStages: sorted.length,
+      completedStages: sorted.filter(t => t.status === 'COMPLETED').length,
+    }
   }
 
   // ── Delete ticket ──────────────────────────────────────────────────

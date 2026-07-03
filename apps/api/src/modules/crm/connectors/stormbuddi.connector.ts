@@ -185,16 +185,25 @@ export class StormBuddiConnector implements CRMConnector {
   }
 
   private mapLead(l: any): CRMLead {
+    // StormBuddi API returns 'customer_name' on leads (not full_name/name/first+last)
+    const name = l.customer_name ?? l.full_name ?? l.name
+      ?? `${l.first_name ?? ''} ${l.last_name ?? ''}`.trim()
+      ?? `Lead #${l.id}`
+    // Address can be a string (leads) or an object (contacts)
+    const address = typeof l.address === 'string'
+      ? l.address
+      : l.address?.street ?? [l.address?.city, l.address?.state].filter(Boolean).join(', ') ?? ''
     return {
       id: l.id,
-      name: l.full_name ?? l.name ?? `${l.first_name ?? ''} ${l.last_name ?? ''}`.trim(),
+      name,
       email: l.email,
       phone: l.phone ?? l.mobile_phone,
-      stage: l.status ?? l.stage ?? 'New',
-      source: l.lead_source ?? l.source,
+      stage: l.stage ?? l.status ?? 'New',
+      source: l.source ?? l.lead_source,
       value: l.estimated_value ?? l.value,
-      address: l.address,
-      lastContactedAt: l.last_contacted_at,
+      address,
+      createdAt: l.created_at ?? l.createdAt,
+      lastContactedAt: l.last_contacted_at ?? l.follow_up_date,
     }
   }
 

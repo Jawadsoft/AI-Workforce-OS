@@ -10,6 +10,6 @@ import { ChatModule } from '../chat/chat.module'
   imports: [PrismaModule, AIModule, forwardRef(() => ChatModule)],
   controllers: [IntegrationsController],
   providers: [IntegrationsService, EmailScannerScheduler],
-  exports: [IntegrationsService],
+  exports: [IntegrationsService, EmailScannerScheduler],
 })
 export class IntegrationsModule {}

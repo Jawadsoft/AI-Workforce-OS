@@ -35,8 +35,14 @@ export class TicketProcessorScheduler {
   ) {}
 
   /**
-   * Auto-flip SCHEDULED tickets whose followUpAt has passed → back to OPEN so the
-   * processor picks them up next tick. Runs every minute alongside processOpenTickets.
+   * Inspection day handler — runs every minute.
+   *
+   * When a SCHEDULED pipeline ticket's followUpAt (= inspection date) is reached:
+   *   1. Marks the current stage COMPLETED (e.g. Hanna — Inspection Scheduling done)
+   *   2. Calls pipelineAdvance → auto-creates the next stage ticket (e.g. Jared — Field Inspection)
+   *
+   * For non-pipeline SCHEDULED tickets (no pipelineStageIndex): flips to OPEN as before
+   * so the assigned agent can pick it up normally.
    */
   @Cron('* * * * *')
   async flipScheduledTickets() {
@@ -48,57 +54,103 @@ export class TicketProcessorScheduler {
         assignedAgentId: { not: null },
         tenant: { isActive: true },
       },
-      select: { id: true, ticketNumber: true, activityLog: true },
+      include: {
+        assignedAgent: { select: { id: true, name: true, role: true, tenantId: true } },
+      },
       take: 20,
     })
+
     for (const t of tickets) {
       const log = (t.activityLog as any[]) ?? []
-      await this.prisma.activityTicket.update({
-        where: { id: t.id },
-        data: {
-          status: 'OPEN',
-          updatedAt: now,
-          activityLog: [
-            ...log,
-            {
-              agentName: 'System',
-              agentId: 'system',
-              action: 'AUTO_FLIPPED_TO_OPEN',
-              note: 'followUpAt reached — ticket re-opened for agent processing.',
-              timestamp: now.toISOString(),
+      const meta = (t.metadata as any) ?? {}
+      const ticketNum = String(t.ticketNumber ?? '').padStart(4, '0')
+      const isPipeline = meta.pipelineStageIndex !== undefined
+
+      try {
+        if (isPipeline && t.assignedAgent) {
+          // Pipeline ticket — mark stage COMPLETED and advance to next stage
+          const inspectionDate = t.followUpAt
+            ? new Date(t.followUpAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+            : 'today'
+
+          await this.prisma.activityTicket.update({
+            where: { id: t.id },
+            data: {
+              status: 'COMPLETED',
+              resolvedAt: now,
+              updatedAt: now,
+              activityLog: [
+                ...log,
+                {
+                  agentName: 'System',
+                  agentId: 'system',
+                  action: 'STAGE_COMPLETED',
+                  note: `Inspection date reached (${inspectionDate}). Stage auto-completed — advancing pipeline to next stage.`,
+                  timestamp: now.toISOString(),
+                },
+              ] as any,
             },
-          ] as any,
-        },
-      })
-      this.logger.log(`[TicketProcessor] Ticket #${String(t.ticketNumber).padStart(4,'0')} auto-flipped SCHEDULED → OPEN (followUpAt reached)`)
+          })
+
+          // Advance pipeline — creates next stage ticket for the right agent
+          setImmediate(() => {
+            this.chat.pipelineAdvance(
+              t.tenantId,
+              { ...t, status: 'COMPLETED', metadata: meta },
+              t.assignedAgent!,
+              `Inspection scheduled for ${inspectionDate}. Advancing to next stage.`,
+            ).catch(e => this.logger.warn(`[TicketProcessor] pipelineAdvance failed for #${ticketNum}: ${e.message}`))
+          })
+
+          this.logger.log(`[TicketProcessor] Ticket #${ticketNum} inspection date reached — stage COMPLETED, pipeline advancing`)
+        } else {
+          // Non-pipeline SCHEDULED ticket — just flip to OPEN for the agent
+          await this.prisma.activityTicket.update({
+            where: { id: t.id },
+            data: {
+              status: 'OPEN',
+              updatedAt: now,
+              activityLog: [
+                ...log,
+                {
+                  agentName: 'System',
+                  agentId: 'system',
+                  action: 'AUTO_FLIPPED_TO_OPEN',
+                  note: 'followUpAt reached — ticket re-opened for agent processing.',
+                  timestamp: now.toISOString(),
+                },
+              ] as any,
+            },
+          })
+          this.logger.log(`[TicketProcessor] Ticket #${ticketNum} auto-flipped SCHEDULED → OPEN (followUpAt reached)`)
+        }
+      } catch (err: any) {
+        this.logger.warn(`[TicketProcessor] flipScheduledTickets failed for #${ticketNum}: ${err.message}`)
+      }
     }
   }
 
   @Cron('* * * * *')
-  async processOpenTickets() {
-    const twoMinutesAgo    = new Date(Date.now() -  2 * 60 * 1000)
-    const fourHoursAgo     = new Date(Date.now() -  4 * 60 * 60 * 1000)
-    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000)
-    const now              = new Date()
+  async processOpenTickets(force = false) {
+    const twoMinutesAgo  = new Date(Date.now() -  2 * 60 * 1000)
+    const fourHoursAgo   = new Date(Date.now() -  4 * 60 * 60 * 1000)
+    const sevenDaysAgo   = new Date(Date.now() -  7 * 24 * 60 * 60 * 1000)
+    const thirtyDaysAgo  = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+    const now            = new Date()
 
     // Two-tier fetch:
-    // Tier 1 — OPEN tickets: never been woken (autoWakeAgent stamps IN_PROGRESS on first wake),
-    //          so no idle gate needed — pick them up immediately on the first cron run.
-    // Tier 2 — IN_PROGRESS / ESCALATED: 4-hour cooldown via updatedAt.
-    //          Once an agent has responded and said "I'll handle this on July 1", we must NOT
-    //          re-wake them every 2 minutes. Only re-visit after 4 hours (or ESCALATED urgency).
-    //          ESCALATED tickets still use 2-min cooldown so urgent issues are caught fast.
+    // Tier 1 — OPEN tickets: never been woken, pick up within 7 days of creation.
+    // Tier 2 — IN_PROGRESS: 4-hour cooldown (bypassed when force=true from manual trigger).
+    // Tier 3 — ESCALATED: 2-min cooldown, up to 30 days old.
     //
-    // SKIP statuses: AWAITING_CUSTOMER, AWAITING_AGENT, SCHEDULED (future), COMPLETED, CANCELLED
-    // SCHEDULED tickets where followUpAt > now are handled by flipScheduledTickets above.
+    // SKIP: AWAITING_CUSTOMER, AWAITING_AGENT, SCHEDULED, COMPLETED, CANCELLED
     const [freshTickets, idleInProgress, idleEscalated] = await Promise.all([
       this.prisma.activityTicket.findMany({
         where: {
           status: 'OPEN',
           assignedAgentId: { not: null },
           tenant: { isActive: true },
-          createdAt: { gte: fortyEightHoursAgo },
-          // Don't process tickets that are explicitly awaiting future dates
+          createdAt: { gte: sevenDaysAgo },
           OR: [
             { followUpAt: null },
             { followUpAt: { lte: now } },
@@ -111,29 +163,29 @@ export class TicketProcessorScheduler {
         orderBy: [{ priority: 'desc' }, { followUpAt: 'asc' }, { createdAt: 'asc' }],
         take: 10,
       }),
-      // IN_PROGRESS: 4-hour cooldown — agent already acknowledged, don't spam
+      // IN_PROGRESS: 4-hour cooldown unless force=true (manual trigger bypasses cooldown)
+      // On forced runs raise the cap so all agents get a slot (not just the first 5 tickets)
       this.prisma.activityTicket.findMany({
         where: {
           status: 'IN_PROGRESS',
           assignedAgentId: { not: null },
           tenant: { isActive: true },
-          createdAt: { gte: fortyEightHoursAgo },
-          updatedAt: { lt: fourHoursAgo },
+          ...(force ? {} : { updatedAt: { lt: fourHoursAgo } }),
         },
         include: {
           assignedAgent: { select: { id: true, name: true, role: true, tenantId: true } },
           createdBy: { select: { id: true, name: true } },
         },
         orderBy: [{ priority: 'desc' }, { followUpAt: 'asc' }, { createdAt: 'asc' }],
-        take: 5,
+        take: force ? 50 : 5,
       }),
-      // ESCALATED: 2-min cooldown — urgent, needs fast attention
+      // ESCALATED: 2-min cooldown, up to 30 days old
       this.prisma.activityTicket.findMany({
         where: {
           status: 'ESCALATED',
           assignedAgentId: { not: null },
           tenant: { isActive: true },
-          createdAt: { gte: fortyEightHoursAgo },
+          createdAt: { gte: thirtyDaysAgo },
           updatedAt: { lt: twoMinutesAgo },
         },
         include: {
@@ -154,11 +206,14 @@ export class TicketProcessorScheduler {
       if (seen.has(t.id)) return false
       seen.add(t.id)
       return true
-    }).slice(0, 10)  // hard cap at 10 per run
+    }).slice(0, force ? 50 : 10)  // forced runs process all agents; cron caps at 10
 
-    if (!tickets.length) return
+    if (!tickets.length) {
+      this.logger.log(`[TicketProcessor] No actionable tickets found${force ? ' (forced run)' : ''}`)
+      return
+    }
 
-    this.logger.log(`[TicketProcessor] Processing ${tickets.length} pending ticket(s)`)
+    this.logger.log(`[TicketProcessor] Processing ${tickets.length} pending ticket(s)${force ? ' (forced run — cooldowns bypassed)' : ''}`)
 
     // De-duplicate: process max ONE ticket per agent per cron run
     // This prevents a single agent from being woken 5 times simultaneously
@@ -176,42 +231,76 @@ export class TicketProcessorScheduler {
         const ticketNum = String(ticket.ticketNumber ?? '').padStart(4, '0')
         const isOverdue = ticket.followUpAt && new Date(ticket.followUpAt) < new Date()
 
-        // Bump updatedAt NOW before waking — this resets the 5-min cooldown window
-        // and prevents the next cron run from picking up the same ticket immediately
+        // Fetch tenant playbook to inject stage-specific context into the briefing
+        const tenantSettings = await this.prisma.tenant.findUnique({
+          where: { id: ticket.tenantId },
+          select: { settings: true },
+        })
+        const playbook = (tenantSettings?.settings as any)?.brain?.operationalPlaybook
+        const stages: any[] = playbook?.pipelineStages ?? []
+        const stageIndex: number = (ticket.metadata as any)?.pipelineStageIndex ?? -1
+        const currentStage = stageIndex >= 0 ? stages[stageIndex] : null
+        const stageContext = currentStage ? [
+          ``,
+          `📋 PIPELINE STAGE ${stageIndex + 1}: ${currentStage.name}`,
+          currentStage.completion ? `🎯 Your job: ${currentStage.completion}` : '',
+          currentStage.completion ? `✅ Call update_ticket(COMPLETED) as soon as the above is done.` : '',
+          currentStage.handoffTo  ? `➡️ When you mark COMPLETED, system auto-creates next ticket for: ${currentStage.handoffTo}` : '',
+          currentStage.sla        ? `⏱️ SLA: ${currentStage.sla}` : '',
+        ].filter(Boolean).join('\n') : ''
+
+        // Bump updatedAt NOW before waking — resets the 4-hour cooldown
         await this.prisma.activityTicket.update({
           where: { id: ticket.id },
           data: { updatedAt: new Date() },
         })
 
+        // In dev mode, use override email when contactEmail is missing
+        const devEmailOverride = process.env.DEV_EMAIL_OVERRIDE
+        const effectiveEmail = ticket.contactEmail || devEmailOverride || null
+
+        // Determine the primary action needed based on nextAction text
+        const nextAction = (ticket.nextAction || '').toLowerCase()
+        const needsEmail = nextAction.includes('email') || nextAction.includes('contact') || nextAction.includes('reach') || nextAction.includes('outreach') || nextAction.includes('schedule') || nextAction.includes('send')
+        const needsSlots = nextAction.includes('inspect') || nextAction.includes('book') || nextAction.includes('slot') || nextAction.includes('appointment')
+
+        // Build a minimal, direct command — no history, no rules, just: what to call and with what params
+        const ticketShortId = ticket.id.slice(-6)
+        const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+
+        // Pre-generate the email body so the LLM just passes it — no writing needed
+        const tenantName = (tenantSettings?.settings as any)?.brain?.companyName || 'our company'
+        const customerName = ticket.contactRef || 'there'
+        const prewrittenMessage = needsEmail
+          ? `Hi ${customerName},\n\nI'm reaching out from ${tenantName} regarding your property. We'd like to schedule a free roof inspection — could you let me know which of the following dates works best for you?\n\n• ${threeDaysFromNow}\n• ${new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\n• ${new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\n\nPlease reply to this email${ticket.contactPhone ? ` or call us at ${ticket.contactPhone}` : ''}.\n\nBest regards,\n${tenantName}`
+          : ''
+
         const briefing = [
-          `⏰ **Autonomous ticket review — action required**`,
-          `Ticket #${ticketNum} (ID: ${ticket.id.slice(-6)}): "${ticket.title}"`,
-          `Status: ${ticket.status} | Priority: ${ticket.priority}`,
-          ticket.contactRef ? `Contact: ${ticket.contactRef}` : '',
-          ticket.contactPhone ? `Phone: ${ticket.contactPhone}` : '',
-          ticket.description ? `Context: ${ticket.description}` : '',
-          ticket.nextAction ? `Pending action: ${ticket.nextAction}` : '',
-          isOverdue ? `⚠️ OVERDUE — follow-up was due ${new Date(ticket.followUpAt!).toLocaleDateString('en-GB')}` : '',
+          `TICKET #${ticketNum}: "${ticket.title}"`,
+          ticket.contactRef   ? `Customer: ${ticket.contactRef}` : '',
+          effectiveEmail      ? `Customer email: ${effectiveEmail}` : '',
+          ticket.contactPhone ? `Customer phone: ${ticket.contactPhone}` : '',
           ``,
-          `SELF-TRIAGE RULE (check this FIRST):`,
-          `• Read the ticket title and description carefully.`,
-          `• Does this ticket belong to YOUR role (${ticket.assignedAgent?.role ?? 'your role'})?`,
-          `• ROLE GUIDE: scheduling/booking/dates = operations coordinator | carrying out the inspection on site = field inspector | pricing/quotes = estimator | insurance/claims = insurance specialist`,
-          `• If this ticket requires scheduling or booking a date and you are NOT the operations coordinator → reassign immediately to operations role.`,
-          `• If NO in general — immediately call update_ticket with ticketId "${ticket.id.slice(-6)}" and set assignedAgentRole to the correct colleague's role. Do not attempt to action work outside your expertise.`,
-          `• If YES — proceed with the instructions below.`,
-          ``,
-        `INSTRUCTIONS (only if ticket is correctly assigned to you):`,
-        `1. Review this ticket and decide what action is needed.`,
-        `2. Call update_ticket with ticketId "${ticket.id.slice(-6)}" and set the correct status:`,
-        `   • Started / still working on it → IN_PROGRESS`,
-        `   • Sent email/message to customer, waiting for reply → AWAITING_CUSTOMER + set followUpAt to 3 days from now`,
-        `   • Inspection/visit booked for a FUTURE date → SCHEDULED + set followUpAt to that date (system will auto-reopen the ticket on that day)`,
-        `   • Waiting for a teammate to finish their part → AWAITING_AGENT + reassign via assignedAgentRole`,
-        `   • Fully resolved (booking confirmed, estimate sent, done) → COMPLETED`,
-        `3. If you need input from a colleague, reassign via update_ticket with assignedAgentRole.`,
-        `4. DO NOT create a new ticket — update this one (${ticket.id.slice(-6)}) only.`,
-        `5. DO NOT wake this ticket again on your own — the system scheduler will re-open it when followUpAt arrives or when the customer replies.`,
+          needsEmail ? [
+            `YOUR TASK: Call contact_customer tool immediately with these exact parameters:`,
+            `  contactEmail: "${effectiveEmail || ''}"`,
+            `  contactName: "${ticket.contactRef || 'Customer'}"`,
+            `  subject: "Roof Inspection Scheduling — ${tenantName}"`,
+            `  message: "${prewrittenMessage.replace(/\n/g, '\\n')}"`,
+            ``,
+            `Then call update_ticket:`,
+            `  ticketId: "${ticketShortId}"`,
+            `  status: "AWAITING_CUSTOMER"`,
+            `  followUpAt: "${threeDaysFromNow}"`,
+          ].join('\n') : needsSlots ? [
+            `YOUR TASK:`,
+            `1. Call get_available_slots`,
+            `2. Call contact_customer with: contactEmail="${effectiveEmail || ''}", contactName="${ticket.contactRef || 'Customer'}", message=list of available dates`,
+            `3. Call update_ticket(ticketId: "${ticketShortId}", status: "SCHEDULED")`,
+          ].join('\n') : [
+            `YOUR TASK: ${ticket.nextAction || 'Review and action this ticket'}`,
+            `When done → call update_ticket(ticketId: "${ticketShortId}", status: "COMPLETED")`,
+          ].join('\n'),
         ].filter(Boolean).join('\n')
 
         this.logger.log(`[TicketProcessor] Waking ${ticket.assignedAgent.name} for ticket #${ticketNum}`)
@@ -246,16 +335,18 @@ export class TicketProcessorScheduler {
    */
   @Cron('*/2 * * * *')
   async checkNoResponseEscalation() {
-    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000)
-    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000)
+    // Pipeline tickets are auto-assigned to specific agents — give them 4 hours before escalating
+    // Non-pipeline (ad-hoc) tickets escalate after 2 hours
+    const twoHoursAgo   = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    const sevenDaysAgo  = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
 
-    // Only tickets that are still OPEN (never progressed) AND were created 15+ min ago
+    // Only tickets that are still OPEN (never progressed) AND were created 2+ hours ago
     const tickets = await this.prisma.activityTicket.findMany({
       where: {
         status: 'OPEN',
         assignedAgentId: { not: null },
         tenant: { isActive: true },
-        createdAt: { gte: fortyEightHoursAgo, lte: fifteenMinutesAgo },
+        createdAt: { gte: sevenDaysAgo, lte: twoHoursAgo },
       },
       include: {
         assignedAgent: { select: { id: true, name: true, role: true, tenantId: true } },
@@ -269,6 +360,14 @@ export class TicketProcessorScheduler {
 
     for (const ticket of tickets) {
       if (!ticket.assignedAgent) continue
+
+      // Pipeline tickets have a specific designated agent — give them 4 hours before escalating
+      const meta = (ticket.metadata as Record<string, unknown>) ?? {}
+      const stageIdx = meta.pipelineStageIndex as number | undefined
+      if (stageIdx !== undefined) {
+        const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000)
+        if (new Date(ticket.createdAt) > fourHoursAgo) continue // not old enough for pipeline tickets
+      }
 
       // Idempotent guard — skip if already escalated this way
       const log = (ticket.activityLog as Array<{ action: string }>) ?? []
@@ -373,5 +472,121 @@ export class TicketProcessorScheduler {
         this.logger.warn(`[TicketProcessor] No-response escalation failed for ticket ${ticket.id.slice(-6)}: ${err.message}`)
       }
     }
+  }
+
+  /**
+   * AWAITING_CUSTOMER follow-up loop — runs every 30 minutes.
+   *
+   * Finds AWAITING_CUSTOMER pipeline tickets whose followUpAt has passed and:
+   *  - Attempt 1–3: wakes the assigned agent to send a follow-up email, resets followUpAt +3 days
+   *  - Attempt 4+:  escalates to ESCALATED and notifies owner
+   *
+   * Tracks attempt count in metadata.followUpAttempts.
+   * Only fires on pipeline tickets (metadata.pipelineStageIndex is set).
+   */
+  @Cron('0 */30 * * * *')
+  async checkAwaitingFollowUp() {
+    const now = new Date()
+    const tickets = await this.prisma.activityTicket.findMany({
+      where: {
+        status: 'AWAITING_CUSTOMER',
+        followUpAt: { lte: now },
+        tenant: { isActive: true },
+      },
+      include: {
+        assignedAgent: { select: { id: true, name: true, role: true, tenantId: true } },
+      },
+      orderBy: { followUpAt: 'asc' },
+      take: 20,
+    })
+
+    if (!tickets.length) return
+
+    for (const ticket of tickets) {
+      // Only act on pipeline tickets
+      const meta = (ticket.metadata as Record<string, unknown>) ?? {}
+      if ((meta.pipelineStageIndex as number | undefined) === undefined) continue
+      if (!ticket.assignedAgent) continue
+
+      const attempts = (meta.followUpAttempts as number | undefined) ?? 0
+      const ticketNum = String(ticket.ticketNumber ?? '').padStart(4, '0')
+      const devEmail = process.env.DEV_EMAIL_OVERRIDE
+      const effectiveEmail = ticket.contactEmail || devEmail || null
+
+      try {
+        if (attempts >= 3) {
+          // Escalate — customer has not responded after 3 follow-ups
+          this.logger.warn(`[TicketProcessor] Ticket #${ticketNum} escalated — no customer response after ${attempts} follow-ups`)
+          const log = (ticket.activityLog as any[]) ?? []
+          await this.prisma.activityTicket.update({
+            where: { id: ticket.id },
+            data: {
+              status: 'ESCALATED',
+              nextAction: `Escalated — customer did not respond after ${attempts} follow-up attempts. Manual intervention required.`,
+              updatedAt: now,
+              activityLog: [...log, {
+                agentName: 'System', agentId: 'system',
+                action: 'ESCALATED',
+                note: `Auto-escalated after ${attempts} unanswered follow-up attempts.`,
+                timestamp: now.toISOString(),
+              }] as any,
+            },
+          })
+        } else {
+          // Send follow-up
+          const nextAttempt = attempts + 1
+          const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
+
+          this.logger.log(`[TicketProcessor] Follow-up #${nextAttempt} for ticket #${ticketNum} (${ticket.assignedAgent.name})`)
+
+          const briefing = [
+            `TICKET #${ticketNum}: "${ticket.title}"`,
+            `Customer: ${ticket.contactRef || 'Customer'}`,
+            effectiveEmail ? `Customer email: ${effectiveEmail}` : '',
+            ``,
+            `TASK: This is follow-up attempt #${nextAttempt}. The customer has not responded to the previous email.`,
+            `STEP 1 — Call contact_customer with:`,
+            `  contactEmail: "${effectiveEmail || ''}"`,
+            `  contactName: "${ticket.contactRef || 'Customer'}"`,
+            `  message: "Hi ${ticket.contactRef || 'there'}, just following up on our previous message about scheduling your roof inspection. Are any of the dates we mentioned still convenient, or would you prefer a different time? Please let us know at your earliest convenience."`,
+            `STEP 2 — Call update_ticket(ticketId: "${ticket.id.slice(-6)}", status: "AWAITING_CUSTOMER", followUpAt: "${threeDaysFromNow.toISOString().split('T')[0]}")`,
+          ].filter(Boolean).join('\n')
+
+          // Update metadata before waking agent
+          const log = (ticket.activityLog as any[]) ?? []
+          await this.prisma.activityTicket.update({
+            where: { id: ticket.id },
+            data: {
+              followUpAt: threeDaysFromNow,
+              metadata: { ...(meta as any), followUpAttempts: nextAttempt } as any,
+              updatedAt: new Date(Date.now() - 5 * 60 * 1000), // backdate so autoWake cooldown is bypassed
+              activityLog: [...log, {
+                agentName: 'System', agentId: 'system',
+                action: 'FOLLOW_UP_QUEUED',
+                note: `Auto follow-up #${nextAttempt} queued. Next check: ${threeDaysFromNow.toLocaleDateString('en-GB')}.`,
+                timestamp: now.toISOString(),
+              }] as any,
+            },
+          })
+
+          setImmediate(() => {
+            this.chat.autoWakeAgent(
+              ticket.tenantId,
+              ticket.assignedAgent!.id,
+              ticket.id,
+              briefing,
+              ticket.assignedAgent!.id,
+              ticket.conversationId ?? undefined,
+            ).catch(e => this.logger.warn(`[TicketProcessor] Follow-up wake failed for #${ticketNum}: ${e.message}`))
+          })
+        }
+      } catch (err: any) {
+        this.logger.warn(`[TicketProcessor] Follow-up check failed for ticket ${ticket.id.slice(-6)}: ${err.message}`)
+      }
+    }
+  }
+
+  async runFollowUpCheck() {
+    return this.checkAwaitingFollowUp()
   }
 }

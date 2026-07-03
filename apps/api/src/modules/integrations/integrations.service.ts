@@ -755,60 +755,59 @@ export class IntegrationsService {
 
     if (!ticket) return false
 
-    // Confirmation keyword scan
-    const body: string = ((email.body ?? '') + ' ' + (email.snippet ?? '')).toLowerCase()
-    const CONFIRM_KEYWORDS = ['yes', 'confirm', 'confirmed', 'works for me', 'sounds good',
-      'see you', 'approved', 'i agree', 'that works', 'perfect', 'great', 'ok', 'okay', 'sure']
-    const isConfirmation = CONFIRM_KEYWORDS.some(k => body.includes(k))
-
-    if (!isConfirmation) return false
-
-    // Extract date hint from extractedData or body
-    const extractedDate: string | null = classification.extractedData?.meetingDate ?? null
+    // AI-based intent analysis — understand the reply in context of the ticket
+    const aiIntent = await this.analyseReplyIntent(email, ticket).catch(() => null)
+    const isConfirmation = aiIntent?.intent === 'confirmed'
     let followUpAt: Date | null = null
-    if (extractedDate) {
-      const parsed = new Date(extractedDate)
+    if (isConfirmation && aiIntent?.confirmedDate) {
+      const parsed = new Date(aiIntent.confirmedDate)
       if (!isNaN(parsed.getTime())) followUpAt = parsed
     }
+    // Fallback: if AI fails, treat any reply as "needs review" (reopen)
+    const intentSummary = aiIntent?.summary ?? `Customer replied — review needed`
 
+    const newStatus = followUpAt ? 'SCHEDULED' : 'OPEN'
     const log = (ticket.activityLog as any[]) ?? []
     const now = new Date()
 
     await this.prisma.activityTicket.update({
       where: { id: ticket.id },
       data: {
-        status: followUpAt ? 'SCHEDULED' : 'OPEN',
-        followUpAt: followUpAt ?? undefined,
+        status: newStatus,
+        followUpAt: followUpAt ?? null,
         updatedAt: now,
+        nextAction: isConfirmation
+          ? (followUpAt ? `Inspection confirmed for ${followUpAt.toLocaleDateString('en-GB')} — call update_ticket(SCHEDULED, followUpAt: ${followUpAt.toISOString().split('T')[0]})` : `Customer confirmed — ask for exact date then call update_ticket(SCHEDULED)`)
+          : `${intentSummary} — review reply and respond via contact_customer`,
         activityLog: [
           ...log,
           {
             agentName: 'System',
             agentId: 'system',
             action: 'CUSTOMER_CONFIRMED',
-            note: `Customer replied from ${senderEmail} confirming. Subject: "${email.subject}". Status → ${followUpAt ? 'SCHEDULED (followUpAt: ' + followUpAt.toISOString() + ')' : 'OPEN'}.`,
+            note: `Customer replied from ${senderEmail}. AI intent: "${intentSummary}". Status → ${newStatus}.`,
             timestamp: now.toISOString(),
           },
         ] as any,
       },
     })
 
-    this.logger.log(`[Confirmation] Ticket #${String(ticket.ticketNumber).padStart(4,'0')} flipped to ${followUpAt ? 'SCHEDULED' : 'OPEN'} — customer ${senderEmail} confirmed`)
+    this.logger.log(`[Confirmation] Ticket #${String(ticket.ticketNumber).padStart(4,'0')} → ${newStatus} — reply from ${senderEmail} (confirmed: ${isConfirmation})`)
 
     // Wake the assigned agent with a briefing
     if (ticket.assignedAgent) {
       const ticketNum = String(ticket.ticketNumber).padStart(4, '0')
       const briefing = [
-        `✅ **Customer Confirmed — Ticket #${ticketNum} updated**`,
-        `Customer ${email.fromName || senderEmail} replied to confirm.`,
-        `Subject: "${email.subject}"`,
-        `Snippet: "${email.snippet}"`,
-        followUpAt ? `Confirmed date/time: ${followUpAt.toLocaleDateString('en-GB')}` : '',
+        followUpAt
+          ? `✅ Customer confirmed inspection — Ticket #${ticketNum}`
+          : `📬 Customer replied — Ticket #${ticketNum} reopened`,
+        `From: ${email.fromName || senderEmail}`,
+        `Their message: "${email.snippet}"`,
+        followUpAt ? `Confirmed date: ${followUpAt.toLocaleDateString('en-GB')}` : '',
         ``,
-        `Ticket #${ticketNum} has been re-opened and assigned to you. Please:`,
-        `1. Review the customer's confirmation details.`,
-        `2. Call update_ticket with ticketId "${ticket.id.slice(-6)}" to progress the work.`,
-        `3. Proceed with the next step (e.g. dispatch, document, schedule crew).`,
+        followUpAt
+          ? `TASK: The date is confirmed. Call update_ticket(ticketId: "${ticket.id.slice(-6)}", status: "SCHEDULED", followUpAt: "${followUpAt.toISOString().split('T')[0]}", note: "Inspection confirmed for ${followUpAt.toLocaleDateString('en-GB')}"). Then the system will auto-dispatch the field inspector on that date.`
+          : `TASK: The customer replied but hasn't confirmed a date yet. Reply via contact_customer to clarify or propose new dates. Customer email: ${senderEmail}. Then call update_ticket(ticketId: "${ticket.id.slice(-6)}", status: "AWAITING_CUSTOMER").`,
       ].filter(Boolean).join('\n')
 
       setImmediate(() => {
@@ -824,6 +823,50 @@ export class IntegrationsService {
     }
 
     return true
+  }
+
+  /**
+   * AI-powered reply intent analysis.
+   * Given the customer's reply email and the ticket they're responding to,
+   * determines whether they confirmed, need clarification, want to reschedule, etc.
+   */
+  private async analyseReplyIntent(
+    email: any,
+    ticket: any,
+  ): Promise<{ intent: 'confirmed' | 'needs_clarification' | 'reschedule' | 'other'; confirmedDate: string | null; summary: string }> {
+    const systemPrompt = `You are analysing a customer's email reply to an inspection scheduling request.
+
+Return ONLY valid JSON in this exact format:
+{
+  "intent": "confirmed",
+  "confirmedDate": "2026-07-05",
+  "summary": "Customer confirmed July 5th at 10am"
+}
+
+intent must be exactly one of:
+- "confirmed"           → customer agrees to an inspection date
+- "needs_clarification" → customer asked a question or needs more info
+- "reschedule"          → customer wants a different date/time
+- "other"               → unrelated or unclear
+
+confirmedDate: ISO date string (YYYY-MM-DD) if a specific date was mentioned, otherwise null.
+summary: one sentence describing what the customer said.`
+
+    const userPrompt = `Ticket context: "${ticket.title}"
+We sent: inspection scheduling email asking them to pick a date.
+Customer replied:
+Subject: ${email.subject}
+Body: ${(email.body ?? email.snippet ?? '').slice(0, 800)}`
+
+    const raw = await this.ai.chat(systemPrompt, [{ role: 'user', content: userPrompt }])
+    const jsonMatch = raw.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) throw new Error('No JSON returned')
+    const result = JSON.parse(jsonMatch[0])
+    return {
+      intent: result.intent ?? 'other',
+      confirmedDate: result.confirmedDate ?? null,
+      summary: result.summary ?? '',
+    }
   }
 
   private async notifyAgentOfEmail(
@@ -949,7 +992,7 @@ Instructions:
   // PROCESSED EMAILS HISTORY
   // ─────────────────────────────────────────────
 
-  async getProcessedEmails(tenantId: string, limit = 50, offset = 0) {
+  async getProcessedEmails(tenantId: string, limit = 50, offset = 0): Promise<{ items: any[]; total: number; limit: number; offset: number }> {
     const [items, total] = await Promise.all([
       this.prisma.processedEmail.findMany({
         where: { tenantId },

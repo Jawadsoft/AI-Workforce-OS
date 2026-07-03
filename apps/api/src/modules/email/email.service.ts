@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import * as nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
+import { decrypt } from '../integrations/crypto.util'
 
 export interface SmtpConfig {
   host: string
@@ -19,10 +20,14 @@ export class EmailService {
 
   constructor(private prisma: PrismaService) {}
 
-  // ── Get SMTP config (tenant settings override .env) ───────────────
+  // ── Get SMTP config ───────────────────────────────────────────────
+  // Priority: 1) tenant.settings (manual override)
+  //           2) ConnectedAccount (IMAP integration configured in UI)
+  //           3) .env fallback
 
   async getSmtpConfig(tenantId?: string): Promise<SmtpConfig> {
     if (tenantId) {
+      // 1) Explicit tenant settings
       const tenant = await this.prisma.tenant.findUnique({
         where: { id: tenantId },
         select: { settings: true },
@@ -39,8 +44,34 @@ export class EmailService {
           fromEmail: s.smtpFromEmail || s.smtpUser,
         }
       }
+
+      // 2) ConnectedAccount (IMAP/SMTP integration configured in the Integrations UI)
+      const account = await this.prisma.connectedAccount.findFirst({
+        where: { tenantId, provider: 'imap', status: 'active' },
+        orderBy: { createdAt: 'desc' },
+      })
+      if (account) {
+        const meta = account.metadata as any
+        if (meta?.smtpHost && meta?.encryptedSmtpPassword) {
+          try {
+            return {
+              host: meta.smtpHost,
+              port: meta.smtpPort ?? 587,
+              secure: meta.smtpSecure ?? false,
+              user: meta.smtpUser || account.accountEmail,
+              pass: decrypt(meta.encryptedSmtpPassword),
+              fromName: meta.smtpFromName || account.accountName || account.accountEmail,
+              fromEmail: account.accountEmail,
+            }
+          } catch (e) {
+            this.logger.warn(`[EmailService] ConnectedAccount decrypt failed — falling back to .env SMTP: ${e.message}`)
+            // Fall through to .env fallback below
+          }
+        }
+      }
     }
-    // Fall back to .env
+
+    // 3) .env fallback
     return {
       host: process.env.SMTP_HOST || 'smtp.office365.com',
       port: parseInt(process.env.SMTP_PORT || '587'),
@@ -77,16 +108,25 @@ export class EmailService {
       this.logger.warn('SMTP not configured — skipping email send')
       return
     }
+
+    // Dev override: redirect ALL outgoing emails to a safe address
+    const devOverride = process.env.DEV_EMAIL_OVERRIDE
+    const originalTo = Array.isArray(params.to) ? params.to.join(', ') : params.to
+    const actualTo = devOverride ?? originalTo
+    const subject = devOverride
+      ? `[DEV → ${originalTo}] ${params.subject}`
+      : params.subject
+
     const transporter = await this.buildTransporter(params.tenantId)
     try {
       await transporter.sendMail({
         from: `"${cfg.fromName}" <${cfg.fromEmail}>`,
-        to: Array.isArray(params.to) ? params.to.join(', ') : params.to,
-        subject: params.subject,
+        to: actualTo,
+        subject,
         html: params.html,
         text: params.text,
       })
-      this.logger.log(`Email sent to ${params.to}: ${params.subject}`)
+      this.logger.log(`Email sent to ${actualTo}${devOverride ? ` (dev override — original: ${originalTo})` : ''}: ${params.subject}`)
     } catch (err) {
       this.logger.error(`Email send failed: ${err}`)
       throw err

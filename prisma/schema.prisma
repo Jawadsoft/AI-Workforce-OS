@@ -551,6 +551,7 @@ model ActivityTicket {
   contactRef       String?
   contactPhone     String?
   contactEmail     String?
+  leadId           String?      // CRM lead ID — all pipeline tickets for one lead share this value
   createdByAgentId String?
   assignedAgentId  String?
   nextAction       String?      @db.Text
@@ -571,6 +572,7 @@ model ActivityTicket {
   @@index([tenantId, source])
   @@index([tenantId, assignedAgentId])
   @@index([tenantId, followUpAt])
+  @@index([tenantId, leadId])
 }
 
 // ─────────────────────────────────────────────

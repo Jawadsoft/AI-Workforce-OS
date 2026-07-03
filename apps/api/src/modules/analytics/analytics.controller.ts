@@ -40,4 +40,16 @@ export class AnalyticsController {
   conversations(@CurrentTenant() tenantId: string, @Query('days') days?: string) {
     return this.service.getConversationVolume(tenantId, Number(days ?? 14))
   }
+
+  @Get('pipeline')
+  @ApiOperation({ summary: 'Pipeline / ticket analytics for Operations tab' })
+  pipeline(@CurrentTenant() tenantId: string) {
+    return this.service.getPipelineStats(tenantId)
+  }
+
+  @Get('activity')
+  @ApiOperation({ summary: 'Flat activity feed across all tickets' })
+  activity(@CurrentTenant() tenantId: string, @Query('limit') limit?: string) {
+    return this.service.getActivityFeed(tenantId, Number(limit ?? 100))
+  }
 }

@@ -626,32 +626,14 @@ export class ChatService {
       industry: (tenant?.settings as any)?.brain?.industry ?? tenant?.industry ?? '',
       tenantName: tenant?.name ?? '',
     }
-    const brainContext = this.brain.buildAgentContext(mergedSettings)
+    const company = (tenant?.settings as any)?.brain?.companyName || tenant?.name || 'the company'
 
-    // Fetch pending tickets for context injection
-    const pendingTickets = await this.tickets.getForAgent(tenantId, agentId)
-    const ticketsBlock = pendingTickets.length
-      ? `\n\nYOUR PENDING TICKETS:\n${pendingTickets.map(t => `• ${t.id.slice(-6)} — "${t.title}" [${t.status}]${t.nextAction ? ` → ${t.nextAction}` : ''}`).join('\n')}`
-      : ''
-
-    // Fetch team roster for dynamic prompt
-    const wakeTeamRoster = await this.prisma.agent.findMany({
-      where: { tenantId, status: 'ACTIVE' },
-      select: { name: true, role: true, prompt: true },
-      orderBy: { createdAt: 'asc' },
-    })
-
-    // Fetch specialist's industry + tenant knowledge for the briefing topic
-    const wakeRagContext = await this.knowledge.retrieveContext(
-      agentId,
-      briefing.slice(0, 400),  // use first 400 chars of briefing as the query
-      mergedSettings.industry,
-      agentRecord.role,
-      3,
-    )
-
-    // isSpecialist=true → strips create_ticket — prevents duplicate ticket creation during auto-wake
-    const systemPrompt = this.buildFullSystemPrompt(agentRecord, mergedSettings, brainContext, '', wakeRagContext, true, ticketsBlock, wakeTeamRoster)
+    // Minimal system prompt for auto-wake — no role instructions, no history, no conflicting rules.
+    // The briefing message already contains the exact tool call to make and the parameters.
+    const systemPrompt = `You are ${agentRecord.name}, ${agentRecord.role} at ${company}.
+You have been automatically assigned a task. Execute it immediately using the tools provided.
+Do NOT ask for approval. Do NOT explain what you will do. Just call the tools in the order listed in the task.
+Available tools: contact_customer, update_ticket, get_available_slots, get_my_tickets.`
 
     try {
       // Step 2 — specialist reasons and acts (depth=1, no create_ticket, no further handoffs)
@@ -670,6 +652,7 @@ export class ChatService {
         this.logger.warn(`[autoWake] Agent ${agentRecord.name} produced no response`)
         return
       }
+      this.logger.log(`[autoWake] ${agentRecord.name} full response: ${response}`)
 
       // Step 3 — save specialist's work to their OWN thread as an internal briefing
       // (briefingType = 'TICKET_BRIEF' keeps it out of the main chat tab)
@@ -931,8 +914,14 @@ export class ChatService {
     const specialistTicketTools = ['update_ticket', 'get_my_tickets', 'get_team_activity']
 
     const internalToolNames = isSpecialist
-      // Called via handoff or auto-wake: update existing tickets only, no create_ticket
-      ? ['reply_to_widget_session', 'contact_customer', 'generate_document', 'ask_user', ...specialistTicketTools, ...schedulingTools, ...socialTools]
+      // Called via handoff or auto-wake: update existing tickets only, no create_ticket.
+      // Lead qual agents (Charlie) keep their storm/CRM tools even in specialist mode —
+      // without them Charlie cannot qualify leads and is completely useless when woken by the scheduler.
+      ? [
+          'reply_to_widget_session', 'contact_customer', 'generate_document', 'ask_user',
+          ...specialistTicketTools, ...schedulingTools, ...socialTools,
+          ...(isLeadQualAgent ? ['fetch_storm_data', 'crm_search_leads', 'handoff_to_agent'] : []),
+        ]
       : isLeadQualAgent
         // Lead qualification (Charlie): storm lookup + CRM search + routing
         ? ['handoff_to_agent', 'suggest_transfer', 'ask_user', 'fetch_storm_data', 'crm_search_leads', ...ticketToolNames, ...taskTools]
@@ -956,9 +945,11 @@ export class ChatService {
       return this.ai.chat(systemPrompt, messages)
     }
 
-    // Specialists (called via handoff) get 1 round max — just answer.
-    // Primary agents get up to 5 rounds to support: gather → confirm → user input → generate flow.
-    const maxRounds = isSpecialist ? 1 : 5
+    // Specialists called via handoff get 1 round max (just answer).
+    // Auto-woken agents (handoffDepth=1, INTERNAL channel) need multiple rounds for multi-step work
+    // e.g. contact_customer → update_ticket requires 2 sequential tool calls.
+    // Primary agents get up to 5 rounds.
+    const maxRounds = isSpecialist ? 3 : 5
 
     return this.ai.chatWithTools(
       systemPrompt,
@@ -1208,12 +1199,16 @@ export class ChatService {
               })
               if (matched) resolvedAssignedAgentId = matched.id
             }
+            // If resetting to OPEN and no explicit followUpAt given, clear it so the scheduler can pick it up
+            const resolvedFollowUpAt = params.followUpAt !== undefined
+              ? params.followUpAt
+              : params.status === 'OPEN' ? null : undefined
             const ticket = await this.tickets.update(tenantId, ticketId, agent.id, agent.name, {
               status: params.status,
               nextAction: params.nextAction,
               note: params.note,
               assignedAgentId: resolvedAssignedAgentId,
-              followUpAt: params.followUpAt,
+              followUpAt: resolvedFollowUpAt,
             })
             const assignedTo = ticket.assignedAgent?.name
             const result = `Ticket "${ticket.title}" updated — Status: ${ticket.status}${assignedTo ? `, Assigned to: ${assignedTo}` : ''}${params.note ? `, Note: "${params.note}"` : ''}`
@@ -1372,6 +1367,65 @@ export class ChatService {
         // ── Smart contact: widget if active, email if idle ─
         if (toolName === 'contact_customer') {
           try {
+            const tenant = await this.prisma.tenant.findUnique({
+              where: { id: tenantId },
+              select: { settings: true, name: true },
+            })
+            const companyName = (tenant?.settings as any)?.brain?.companyName || tenant?.name || 'Us'
+
+            // ── Path A: direct outbound email to a CRM contact ─────────────
+            // When contactEmail is provided directly (CRM leads, pipeline tickets)
+            // and there is no widget sessionId, send a direct outbound email.
+            // In dev mode (DEV_EMAIL_OVERRIDE set), allow sending even without a
+            // contactEmail so the full pipeline can be tested end-to-end.
+            const devOverrideEmail = process.env.DEV_EMAIL_OVERRIDE
+            const effectiveEmail = (params.contactEmail as string | undefined) || (devOverrideEmail ? devOverrideEmail : undefined)
+
+            // If sessionId looks like a ticket short ID (6 alphanumeric chars), the LLM
+            // confused the ticket ID with a session ID — clear it so Path A fires instead.
+            const sessionIdStr = params.sessionId as string | undefined
+            if (sessionIdStr && /^[a-z0-9]{6}$/i.test(sessionIdStr)) {
+              this.logger.warn(`[contact_customer] sessionId "${sessionIdStr}" looks like a ticket ID — ignoring, using email path instead`)
+              params.sessionId = undefined
+            }
+
+            if (effectiveEmail && !params.sessionId) {
+              // Always redirect to devOverrideEmail in dev mode if set; otherwise use effectiveEmail
+              params.contactEmail = devOverrideEmail || effectiveEmail
+              const recipientName = params.contactName || params.contactRef || 'there'
+              const subject = params.subject || `Regarding your property — ${companyName}`
+              await this.email.send({
+                tenantId,
+                to: params.contactEmail as string,
+                subject,
+                html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto">
+                  <p>Hi ${recipientName},</p>
+                  <p>${(params.message as string).replace(/\n/g, '<br>')}</p>
+                  <p style="color:#64748b;font-size:13px;margin-top:24px;">— ${companyName}</p>
+                </div>`,
+                text: `Hi ${recipientName},\n\n${params.message}\n\n— ${companyName}`,
+              })
+              this.logger.log(`[contact_customer] Outbound email sent to ${params.contactEmail}`)
+
+              // If the ticket had no contactEmail and we used the dev override, save it back
+              // so that when the customer replies, the scanner can match the ticket.
+              // sessionIdStr holds the 6-char ticket ID the LLM passed (already cleared above).
+              const shortId = sessionIdStr || (params.ticketId as string | undefined)
+              if (shortId && devOverrideEmail) {
+                await this.prisma.activityTicket.updateMany({
+                  where: { id: { endsWith: shortId }, contactEmail: null },
+                  data: { contactEmail: params.contactEmail as string },
+                }).catch(() => {})
+              }
+
+              return `✅ Email sent to ${params.contactEmail}: "${params.message}"`
+            }
+
+            // ── Path B: widget session (inbound chat follow-up) ────────────
+            if (!params.sessionId) {
+              return `⚠️ No contact email or widget session provided. Cannot reach this customer automatically. Manually call or email using the phone/email in the ticket.`
+            }
+
             const widgetConv = await this.prisma.conversation.findFirst({
               where: { id: params.sessionId, tenantId, channel: 'WIDGET' },
               include: {
@@ -1385,18 +1439,15 @@ export class ChatService {
             if (!widgetConv) return `Widget session ${params.sessionId} not found`
 
             const meta = widgetConv.metadata as any
-            // Use last USER message time (most reliable activity indicator)
             const lastUserMessage = widgetConv.messages[0]
             const lastActivity = lastUserMessage?.createdAt ?? widgetConv.updatedAt
             const idleMs = Date.now() - new Date(lastActivity).getTime()
-            // Active if customer sent a message within the last 10 minutes
             const isActive = idleMs < 10 * 60 * 1000
 
             const visitorName = meta?.visitorName || 'Customer'
             const visitorEmail = meta?.callerEmail
 
             if (isActive) {
-              // Send via widget chat
               await this.prisma.message.create({
                 data: { conversationId: params.sessionId, role: 'ASSISTANT', content: params.message },
               })
@@ -1407,12 +1458,6 @@ export class ChatService {
               this.logger.log(`[contact_customer] Widget reply sent to session ${params.sessionId}`)
               return `✅ Message delivered to ${visitorName} via website chat: "${params.message}"`
             } else if (visitorEmail) {
-              // Session idle — fall back to email
-              const tenant = await this.prisma.tenant.findUnique({
-                where: { id: tenantId },
-                select: { settings: true, name: true },
-              })
-              const companyName = (tenant?.settings as any)?.brain?.companyName || tenant?.name || 'Us'
               const subject = params.subject || `Follow-up from ${companyName}`
               await this.email.send({
                 tenantId,
@@ -1420,7 +1465,7 @@ export class ChatService {
                 subject,
                 html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto">
                   <p>Hi ${visitorName},</p>
-                  <p>${params.message.replace(/\n/g, '<br>')}</p>
+                  <p>${(params.message as string).replace(/\n/g, '<br>')}</p>
                   <p style="color:#64748b;font-size:13px;margin-top:24px;">— ${companyName}</p>
                 </div>`,
                 text: `Hi ${visitorName},\n\n${params.message}\n\n— ${companyName}`,
@@ -2285,26 +2330,53 @@ You are an insurance specialist — treat every uploaded claim document as a sup
     // Specialists do NOT get proactive task creation — they just handle the handed-off request
     const internalToolsSection = isSpecialist
       ? `
+${isExecAssistRole ? `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AUTONOMOUS MODE — INSPECTION SCHEDULING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You have been automatically assigned this ticket. There is NO owner to approve — act immediately.
 
+YOUR ONLY JOB RIGHT NOW (execute in this exact order):
+STEP 1 → Call contact_customer with:
+  - contactEmail: the email shown in the ticket (it will be provided in the briefing)
+  - contactName: the homeowner's name
+  - message: A warm, professional email proposing 2-3 inspection date options. Example:
+    "Hi [Name], I'm reaching out from [Company] to schedule your roof inspection. I have availability on [date 1], [date 2], or [date 3] — which works best for you? Reply to this email or call us at [phone]."
+
+STEP 2 → After contact_customer returns success, call update_ticket with:
+  - ticketId: the short ID from the briefing
+  - status: AWAITING_CUSTOMER
+  - followUpAt: 3 days from today
+  - note: "Inspection scheduling email sent to homeowner."
+
+⛔ STRICT RULES:
+- DO NOT call update_ticket before contact_customer — the email MUST be sent first.
+- DO NOT skip contact_customer because there is no email — the system handles routing automatically.
+- DO NOT reassign this ticket — it is already assigned to you.
+- DO NOT wait for approval — this is an autonomous background task.
+- Available tools: contact_customer, update_ticket, get_available_slots.
+` : `
 SPECIALIST MODE — You are actioning an assigned ticket or handling a handed-off request.
-Available tools: update_ticket (update status/notes on existing tickets), get_my_tickets (view your queue), get_team_activity (scan all recent team jobs), get_available_slots (check availability), contact_customer, generate_document, ask_user.
-
-USE get_team_activity FIRST when the owner refers to a job, client, or request without giving you full details — e.g. "the gutter replacement", "my client from yesterday". Scan to identify the right ticket before asking the owner to repeat themselves.
+Available tools: update_ticket, get_my_tickets, get_team_activity, get_available_slots, contact_customer, generate_document, ask_user${isLeadQualRole ? ', fetch_storm_data, crm_search_leads, handoff_to_agent' : ''}.
 
 CRITICAL RULES:
 - DO NOT call create_ticket — you can only UPDATE existing tickets, never create new ones.
-- DO NOT create tasks or approvals.
 - Action the request, update the ticket, and give a clear response.
-- SELF-TRIAGE: Before doing any work, check whether the ticket is actually relevant to your role (${agent.role}). If not → immediately reassign via update_ticket (set assignedAgentRole to the correct role).
-
-TICKET STATUS — three options only:
-- OPEN        → Not yet actioned (default when created).
-- IN_PROGRESS → You are working on it (includes checking availability, waiting for replies, getting quotes).
-- COMPLETED   → Fully resolved — booking confirmed, estimate sent, inspection done, any final outcome.
-
-✅ Started looking into it → IN_PROGRESS
-✅ Booking confirmed with customer → COMPLETED
-✅ Estimate delivered → COMPLETED`
+${isLeadQualRole ? `
+LEAD QUALIFICATION WORKFLOW (your primary job when woken by the scheduler):
+1. Read the ticket — get the homeowner name, address, and any notes from the description.
+2. Call fetch_storm_data with the property's state/county to check for recent hail or wind events.
+3. Score the lead (0–100) using storm severity, insurance involvement, urgency.
+4. Call contact_customer to send an initial outreach email to the homeowner if email is available.
+5. Call update_ticket with status AWAITING_CUSTOMER (if emailed) or COMPLETED (if fully qualified).
+6. DO NOT leave the ticket as IN_PROGRESS.
+` : ''}
+TICKET STATUS:
+- IN_PROGRESS       → Actively working right now.
+- AWAITING_CUSTOMER → Sent email/message, waiting for homeowner reply.
+- SCHEDULED         → Inspection/visit booked — set followUpAt to that date.
+- COMPLETED         → Your stage is fully done — triggers handoff to next agent.
+`}`
       : isIntakeAgentRole
       ? `
 
@@ -3196,7 +3268,7 @@ When chatting with the business owner/manager directly (in the internal chat thr
    * to determine the next pipeline stage. If a next stage exists, auto-create a
    * new ticket assigned to the responsible agent role and notify them.
    */
-  private async pipelineAdvance(tenantId: string, ticket: any, completingAgent: any, completionNote: string): Promise<void> {
+  async pipelineAdvance(tenantId: string, ticket: any, completingAgent: any, completionNote: string): Promise<void> {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
       select: { settings: true },
@@ -3237,7 +3309,8 @@ When chatting with the business owner/manager directly (in the internal chat thr
     }
 
     const now = new Date()
-    const newTicket = await this.prisma.activityTicket.create({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const newTicket = await (this.prisma.activityTicket.create as any)({
       data: {
         tenantId,
         title: `[Stage ${nextStageIndex + 1}] ${nextStage.name} — ${ticket.contactRef ?? ticket.title}`,
@@ -3253,11 +3326,16 @@ When chatting with the business owner/manager directly (in the internal chat thr
         contactRef: ticket.contactRef,
         contactEmail: ticket.contactEmail,
         contactPhone: ticket.contactPhone,
+        leadId: ticket.leadId ?? (ticket.metadata as any)?.crmLeadId ?? undefined,
         assignedAgentId: nextAgent.id,
-        nextAction: nextStage.trigger ?? `Begin stage: ${nextStage.name}`,
+        // Use completion criteria as the actionable instruction (trigger is a condition, not a task)
+        nextAction: nextStage.completion
+          ? `${nextStage.completion}. Contact the homeowner via contact_customer, then call update_ticket with the correct status (AWAITING_CUSTOMER after emailing, SCHEDULED when date is confirmed, COMPLETED when stage is fully done).`
+          : nextStage.trigger ?? `Begin stage: ${nextStage.name}`,
         metadata: {
           ...(ticket.metadata ?? {}),
           pipelineStageIndex: nextStageIndex,
+          pipelineStageName: nextStage.name,
           previousTicketId: ticket.id,
           advancedBy: completingAgent.name,
         } as any,

@@ -50,6 +50,12 @@ export class TicketsController {
     return this.service.findAll(req.user.tenantId, { status, source, assignedAgentId, contactRef, type })
   }
 
+  @Get('lead/:leadId/journey')
+  @ApiOperation({ summary: 'Get the full stage-by-stage journey for a CRM lead' })
+  getLeadJourney(@Request() req: any, @Param('leadId') leadId: string) {
+    return this.service.getLeadJourney(req.user.tenantId, leadId)
+  }
+
   @Get('agent/:agentId')
   @ApiOperation({ summary: 'Get pending tickets for a specific agent' })
   getForAgent(@Request() req: any, @Param('agentId') agentId: string) {

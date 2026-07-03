@@ -18,7 +18,7 @@ const { PrismaClient } = require('@prisma/client')
 const prisma = new PrismaClient()
 
 // ─── Find tenant ───────────────────────────────────────────────────────────────
-const OWNER_EMAIL = 'curtis@stormbuddi.co'
+const OWNER_EMAIL = 'jawadsyed501@gmail.com'
 
 // ─── Brain / company profile ────────────────────────────────────────────────
 const BRAIN = {

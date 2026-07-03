@@ -47,13 +47,25 @@ export class CrmLeadScannerScheduler {
   }
 
   private async scanTenant(tenantId: string, settings: any) {
+    // Grab the operational playbook once — used for stage-0 context + nextAction
+    const playbook = settings?.brain?.operationalPlaybook
+    const pipelineStages: any[] = playbook?.pipelineStages ?? []
+    const stage0 = pipelineStages[0]   // Lead Qualification stage (index 0)
+
     // Find the lead qualification agent for this tenant
-    const LEAD_QUAL_KEYWORDS = ['lead qual', 'charlie', 'qualification', 'intake', 'lead agent']
+    // Prefer the agent whose role matches stage-0's ownerRole from the playbook,
+    // falling back to known keyword matches (charlie / lead qual / qualification / intake)
+    // 'intake' intentionally excluded — Customer Intake (Jackie/Nora) is a different role
+    const LEAD_QUAL_KEYWORDS = ['lead qual', 'charlie', 'qualification', 'lead agent']
+    const roleKeywords = stage0?.ownerRole
+      ? [stage0.ownerRole, ...LEAD_QUAL_KEYWORDS]
+      : LEAD_QUAL_KEYWORDS
+
     const leadAgent = await this.prisma.agent.findFirst({
       where: {
         tenantId,
         status: 'ACTIVE',
-        OR: LEAD_QUAL_KEYWORDS.map(k => ({ role: { contains: k, mode: 'insensitive' as const } })),
+        OR: roleKeywords.map(k => ({ role: { contains: k, mode: 'insensitive' as const } })),
       },
       orderBy: { createdAt: 'asc' },
     })
@@ -80,7 +92,11 @@ export class CrmLeadScannerScheduler {
       return
     }
 
-    if (!leads.length) return
+    if (!leads.length) {
+      this.logger.log(`[CrmLeadScanner][${tenantId}] CRM returned 0 leads — nothing to import`)
+      return
+    }
+    this.logger.log(`[CrmLeadScanner][${tenantId}] Fetched ${leads.length} lead(s) from CRM — checking for new ones...`)
 
     // Stamp lastScannedAt immediately so a crash doesn't cause double-processing
     const now = new Date()
@@ -94,9 +110,24 @@ export class CrmLeadScannerScheduler {
       },
     })
 
+    // Only import leads created within the last 30 days.
+    // If the CRM lead has no createdAt we include it (can't tell age → safer to process).
+    const twoDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+
     let created = 0
-    for (const lead of leads.slice(0, 20)) {
-      if (created >= 20) break
+    let skipped = 0
+    for (const lead of leads.slice(0, 50)) {
+      if (created >= 50) break
+
+      // Skip leads older than 2 days (only when the CRM provides a createdAt date)
+      if (lead.createdAt) {
+        const leadDate = new Date(lead.createdAt)
+        if (!isNaN(leadDate.getTime()) && leadDate < twoDaysAgo) {
+          this.logger.debug(`[CrmLeadScanner][${tenantId}] Skipping lead older than 30 days: "${lead.name}" (created ${lead.createdAt})`)
+          skipped++
+          continue
+        }
+      }
 
       // Normalize lead fields (CRMs vary in field names)
       const name: string  = lead.name ?? lead.contactName ?? lead.fullName ?? `Lead #${lead.id ?? ''}`
@@ -118,10 +149,17 @@ export class CrmLeadScannerScheduler {
         },
         select: { id: true },
       })
-      if (existing) continue
+      if (existing) { skipped++; continue }
 
-      // Create the lead qualification ticket
-      const ticket = await this.prisma.activityTicket.create({
+      // Build nextAction — use completion criteria reworded as a task (NOT the trigger text)
+      // The trigger describes when the stage starts; we want what Charlie must DO to finish it.
+      const stage0NextAction = stage0?.completion
+        ? `Qualify this lead: ${stage0.completion}. Call fetch_storm_data for the property address, score the lead, email the homeowner via contact_customer, then call update_ticket(AWAITING_CUSTOMER) after emailing or update_ticket(COMPLETED) if fully qualified.`
+        : 'Qualify this lead — run storm data check, score (0–100), email the homeowner, then call update_ticket with status AWAITING_CUSTOMER or COMPLETED.'
+
+      // Create the lead qualification ticket — Stage 0 of the pipeline
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ticket = await (this.prisma.activityTicket.create as any)({
         data: {
           tenantId,
           title: `New lead — ${name} (via ${source})`,
@@ -132,17 +170,25 @@ export class CrmLeadScannerScheduler {
             email  ? `Email: ${email}` : '',
             lead.address ? `Address: ${lead.address}` : '',
             lead.notes ? `Notes: ${lead.notes}` : '',
+            stage0?.name ? `Pipeline stage: ${stage0.name}` : '',
+            stage0?.completion ? `Done when: ${stage0.completion}` : '',
           ].filter(Boolean).join('\n'),
           type: 'GENERAL',
           status: 'OPEN',
           priority: 'MEDIUM',
-          source: 'INTERNAL',
+          source: 'PIPELINE',
           contactRef: name,
           contactEmail: email || undefined,
           contactPhone: phone || undefined,
+          leadId: leadId || undefined,
           assignedAgentId: leadAgent.id,
-          nextAction: 'Qualify this lead — check CRM history, assess fit, and either progress or reject.',
-          metadata: { crmLeadId: leadId, crmProvider: crmConn.provider } as any,
+          nextAction: stage0NextAction,
+          metadata: {
+            crmLeadId: leadId,
+            crmProvider: crmConn.provider,
+            pipelineStageIndex: 0,   // starts at Stage 0 (Lead Qualification)
+            pipelineStageName: stage0?.name ?? 'Lead Qualification',
+          } as any,
           activityLog: [
             {
               agentName: 'System',
@@ -159,8 +205,6 @@ export class CrmLeadScannerScheduler {
       created++
     }
 
-    if (created > 0) {
-      this.logger.log(`[CrmLeadScanner][${tenantId}] ${created} new lead ticket(s) created → assigned to ${leadAgent.name}`)
-    }
+    this.logger.log(`[CrmLeadScanner][${tenantId}] Done — ${created} ticket(s) created, ${skipped} already existed → assigned to ${leadAgent.name}`)
   }
 }

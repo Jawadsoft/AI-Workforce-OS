@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "postinstall": "prisma generate --schema=./prisma/schema.prisma",
     "dev": "turbo run dev",
     "dev:https": "turbo run dev:https",
     "dev:network": "turbo run dev:network",

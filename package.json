@@ -7,7 +7,7 @@
     "dev": "turbo run dev",
     "dev:https": "turbo run dev:https",
     "dev:network": "turbo run dev:network",
-    "build": "turbo run build",
+    "build": "prisma generate --schema=./prisma/schema.prisma && turbo run build",
     "start": "turbo run start",
     "lint": "turbo run lint",
     "test": "turbo run test",

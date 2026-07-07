@@ -190,6 +190,49 @@ export class CrmService {
     } catch { return null }
   }
 
+  // ── Job card (full detail) ────────────────────────────────────────
+
+  async getJobIdByLeadId(tenantId: string, leadId: string): Promise<string | null> {
+    try {
+      const connector = await this.getActiveConnector(tenantId)
+      return (connector as any).getJobIdByLeadId?.(leadId) ?? null
+    } catch { return null }
+  }
+
+  async getJobCard(tenantId: string, jobId: string) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.getJobCard(jobId)
+  }
+
+  async updateJobCard(tenantId: string, jobId: string, fields: Record<string, unknown>) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.updateJobCard(jobId, fields)
+  }
+
+  // ── Checklist ─────────────────────────────────────────────────────
+
+  async getChecklist(tenantId: string, jobId: string, stageIndex: number) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.getChecklist(jobId, stageIndex)
+  }
+
+  async markChecklistItem(tenantId: string, jobId: string, stageIndex: number, itemIndex: number, completed: boolean, completedBy?: string) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.markChecklistItem(jobId, stageIndex, itemIndex, completed, completedBy)
+  }
+
+  // ── Document management ───────────────────────────────────────────
+
+  async attachDocument(tenantId: string, input: { jobId: string; documentType: string; fileName: string; fileUrl: string; uploadedBy?: string; stageIndex?: number; notes?: string }) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.attachDocument(input)
+  }
+
+  async getDocuments(tenantId: string, jobId: string, type?: string) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.getDocuments(jobId, type)
+  }
+
   // ── Private ───────────────────────────────────────────────────────
 
   private getConnector(conn: any): CRMConnector {

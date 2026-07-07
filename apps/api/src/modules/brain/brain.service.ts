@@ -442,12 +442,20 @@ export class BrainService {
       if (playbook.pipelineStages?.length) {
         pb.push('PIPELINE STAGES:')
         playbook.pipelineStages.forEach((stage: any, i: number) => {
-          pb.push(`  ${i + 1}. ${stage.name}`)
-          if (stage.ownerRole)     pb.push(`     Owner: ${stage.ownerRole}`)
-          if (stage.trigger)       pb.push(`     Starts when: ${stage.trigger}`)
-          if (stage.completion)    pb.push(`     Done when: ${stage.completion}`)
-          if (stage.handoffTo)     pb.push(`     Hands off to: ${stage.handoffTo}`)
-          if (stage.sla)           pb.push(`     SLA: ${stage.sla}`)
+          pb.push(`  ${i}. ${stage.name}`)
+          if (stage.ownerRole)  pb.push(`     Owner: ${stage.ownerRole}`)
+          if (stage.trigger)    pb.push(`     Starts when: ${stage.trigger}`)
+          if (stage.completion) pb.push(`     Done when: ${stage.completion}`)
+          if (stage.handoffTo)  pb.push(`     Hands off to: ${stage.handoffTo}`)
+          if (stage.sla)        pb.push(`     SLA: ${stage.sla}`)
+          if (stage.crmRetrieve?.length) {
+            pb.push(`     CRM RETRIEVE (call crm_get_job then read these fields):`)
+            stage.crmRetrieve.forEach((item: string) => pb.push(`       - ${item}`))
+          }
+          if (stage.checklist?.length) {
+            pb.push(`     VERIFY BEFORE COMPLETE (tick each via crm_mark_checklist_item):`)
+            stage.checklist.forEach((item: string) => pb.push(`       ☐ ${item}`))
+          }
         })
       }
 

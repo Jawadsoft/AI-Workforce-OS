@@ -284,6 +284,104 @@ export class CrmContextService {
         return { result: { ok: true }, summary: `${params.model} record updated` }
       }
 
+      // ── Job card tools ──────────────────────────────────────────────
+
+      case 'crm_get_job': {
+        if (!can('read_job_cards')) throw new Error('Permission denied: read_job_cards')
+        const card = await connector.getJobCard(params.jobId)
+        const lines: string[] = [`Job card for job ${params.jobId}:`]
+        if (card.contactName)         lines.push(`  Contact: ${card.contactName} | ${card.contactEmail ?? ''} | ${card.contactPhone ?? ''}`)
+        if (card.propertyAddress)     lines.push(`  Property: ${card.propertyAddress} (ZIP: ${card.propertyZip ?? '—'})`)
+        if (card.insuranceCarrier)    lines.push(`  Insurance: ${card.insuranceCarrier} | Policy: ${card.policyNumber ?? '—'}`)
+        if (card.claimNumber)         lines.push(`  Claim #: ${card.claimNumber} | Ref: ${card.claimReferenceNumber ?? '—'}`)
+        if (card.stormEventDate)      lines.push(`  Storm date: ${card.stormEventDate} | NOAA event: ${card.noaaEventId ?? '—'}`)
+        if (card.damageSeverity)      lines.push(`  Damage: ${card.damageSeverity} | Hail: ${card.hailSizeInches ?? '—'}"`)
+        if (card.estimateTotal)       lines.push(`  Estimate: $${card.estimateTotal} | ACV: $${card.acvAmount ?? '—'} | RCV: $${card.rcvAmount ?? '—'}`)
+        if (card.depreciationHoldback) lines.push(`  Depreciation holdback: $${card.depreciationHoldback}`)
+        if (card.depositPaid)         lines.push(`  Deposit paid: $${card.depositPaid} | Balance owing: $${card.balanceOwing ?? '—'}`)
+        if (card.inspectionDate)      lines.push(`  Inspection: ${card.inspectionDate}`)
+        if (card.installationDate)    lines.push(`  Installation: ${card.installationDate}`)
+        if (card.materialDeliveryDate) lines.push(`  Material delivery: ${card.materialDeliveryDate}`)
+        if (card.permitNumber)        lines.push(`  Permit #: ${card.permitNumber}`)
+        if (card.poNumber)            lines.push(`  PO #: ${card.poNumber}`)
+        if (card.materialSpecs)       lines.push(`  Materials: ${card.materialSpecs.brand ?? ''} ${card.materialSpecs.product ?? ''} ${card.materialSpecs.colour ?? ''} | Underlayment: ${card.materialSpecs.underlayment ?? '—'}`)
+        if (card.leadStatus)          lines.push(`  Lead status: ${card.leadStatus}`)
+        if (card.warrantyType)        lines.push(`  Warranty: ${card.warrantyType}`)
+        if (card.currentStageIndex !== undefined) lines.push(`  Current stage: ${card.currentStageIndex}`)
+        if (card.notes)               lines.push(`  Notes: ${card.notes}`)
+        return { result: card, summary: lines.join('\n') }
+      }
+
+      case 'crm_update_job': {
+        if (!can('write_job_cards')) throw new Error('Permission denied: write_job_cards')
+        const result = await connector.updateJobCard(params.jobId, params.fields ?? {})
+        return {
+          result,
+          summary: `Job card updated — ${result.updatedFields.length} field(s) saved: ${result.updatedFields.join(', ')}`,
+        }
+      }
+
+      // ── Checklist tools ─────────────────────────────────────────────
+
+      case 'crm_get_checklist': {
+        if (!can('read_job_cards')) throw new Error('Permission denied: read_job_cards')
+        const cl = await connector.getChecklist(params.jobId, params.stageIndex)
+        const lines = [`Checklist for Stage ${cl.stageIndex} — ${cl.stageName} (${cl.completedItems}/${cl.totalItems} complete):`]
+        cl.items.forEach(item => {
+          lines.push(`  [${item.completed ? '✓' : '☐'}] ${item.label}${item.completedBy ? ` (by ${item.completedBy})` : ''}`)
+        })
+        if (cl.allComplete) lines.push('\nAll checklist items complete — stage can be marked COMPLETED.')
+        return { result: cl, summary: lines.join('\n') }
+      }
+
+      case 'crm_mark_checklist_item': {
+        if (!can('write_checklists')) throw new Error('Permission denied: write_checklists')
+        const res = await connector.markChecklistItem(
+          params.jobId,
+          params.stageIndex,
+          params.itemIndex,
+          params.completed !== false,
+          params.completedBy ?? `${agentRole} (agent)`,
+        )
+        const statusMsg = res.allComplete
+          ? 'All checklist items are now complete — you may call update_ticket(COMPLETED).'
+          : `${res.remainingUncompleted} item(s) still remaining.`
+        return {
+          result: res,
+          summary: `Checklist item ${params.itemIndex} marked ${params.completed !== false ? 'complete' : 'incomplete'}. ${statusMsg}`,
+        }
+      }
+
+      // ── Document tools ──────────────────────────────────────────────
+
+      case 'crm_attach_document': {
+        if (!can('write_documents')) throw new Error('Permission denied: write_documents')
+        const res = await connector.attachDocument({
+          jobId: params.jobId,
+          documentType: params.documentType,
+          fileName: params.fileName,
+          fileUrl: params.fileUrl,
+          uploadedBy: params.uploadedBy ?? `${agentRole} (agent)`,
+          stageIndex: params.stageIndex,
+          notes: params.notes,
+        })
+        return {
+          result: res,
+          summary: `Document attached to job ${params.jobId}: "${params.fileName}" (type: ${params.documentType}, id: ${res.documentId})`,
+        }
+      }
+
+      case 'crm_get_documents': {
+        if (!can('read_job_cards')) throw new Error('Permission denied: read_job_cards')
+        const docs = await connector.getDocuments(params.jobId, params.type)
+        if (!docs.length) {
+          return { result: docs, summary: params.type ? `No ${params.type} documents found on job ${params.jobId}` : `No documents found on job ${params.jobId}` }
+        }
+        const lines = [`${docs.length} document(s) on job ${params.jobId}:`]
+        docs.forEach(d => lines.push(`  - [${d.type}] ${d.fileName} (uploaded ${d.uploadedAt ? new Date(d.uploadedAt).toLocaleDateString() : 'unknown'})`))
+        return { result: docs, summary: lines.join('\n') }
+      }
+
       default:
         throw new Error(`Unknown CRM tool: ${tool}`)
     }

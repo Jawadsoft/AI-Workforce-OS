@@ -73,6 +73,88 @@ const CRM_TOOL_DEFINITIONS = [
     description: 'Update any record in the CRM (customer, job, proposal, etc.)',
     parameters: { type: 'object', properties: { model: { type: 'string', description: 'Record type e.g. customer, job, lead' }, id: { type: 'string' }, data: { type: 'object', description: 'Fields to update' } }, required: ['model', 'id', 'data'] },
   },
+
+  // ── Job card tools (StormBuddy roofing workflow) ────────────────
+  {
+    name: 'crm_get_job',
+    description: 'Fetch the FULL job card for a roofing job — returns all fields: insurance carrier, claim number, ACV/RCV amounts, hail size, damage severity, permit number, PO number, lead status, material specs, and more. Call this at the START of every pipeline stage to get complete context before doing any work.',
+    parameters: { type: 'object', properties: { jobId: { type: 'string', description: 'CRM job ID from the ticket metadata' } }, required: ['jobId'] },
+  },
+  {
+    name: 'crm_update_job',
+    description: 'Write fields back to the job card after completing work at a pipeline stage. Pass only the fields that changed. Examples: claim number after filing, permit number after permit is issued, ACV/RCV amounts after carrier approval, lead status, profitability at closeout.',
+    parameters: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'CRM job ID' },
+        fields: {
+          type: 'object',
+          description: 'Key-value pairs of fields to update on the job card. Examples: { "claimNumber": "CLM-1234", "leadStatus": "Contract Signed", "acvAmount": 12000, "permitNumber": "PRM-5678" }',
+        },
+      },
+      required: ['jobId', 'fields'],
+    },
+  },
+
+  // ── Checklist tools ─────────────────────────────────────────────
+  {
+    name: 'crm_get_checklist',
+    description: 'Read the current completion state of the checklist for a specific pipeline stage on a job. Use this to see which items are already ticked before resuming work at a stage.',
+    parameters: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'CRM job ID' },
+        stageIndex: { type: 'number', description: 'Pipeline stage index (0–21)' },
+      },
+      required: ['jobId', 'stageIndex'],
+    },
+  },
+  {
+    name: 'crm_mark_checklist_item',
+    description: 'Tick a single checklist item as complete on a pipeline stage. Call this for EACH item once you have verified it is done. You MUST tick all checklist items before calling update_ticket(COMPLETED). The response tells you how many items remain.',
+    parameters: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'CRM job ID' },
+        stageIndex: { type: 'number', description: 'Pipeline stage index (0–21)' },
+        itemIndex: { type: 'number', description: 'Zero-based index of the checklist item to tick' },
+        completed: { type: 'boolean', description: 'true to mark complete, false to un-tick' },
+        completedBy: { type: 'string', description: 'Your name/role e.g. "Kevin (Insurance Specialist)"' },
+      },
+      required: ['jobId', 'stageIndex', 'itemIndex'],
+    },
+  },
+
+  // ── Document tools ──────────────────────────────────────────────
+  {
+    name: 'crm_attach_document',
+    description: 'Attach a generated or uploaded document to the job card. Use after generating any report, certificate, contract, invoice, or permit. documentType must be one of: inspection_report, storm_verification, supplement, sow, contract, permit, invoice, warranty_certificate, qc_report, photo, approval_letter, other.',
+    parameters: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'CRM job ID' },
+        documentType: { type: 'string', description: 'Document category e.g. inspection_report, storm_verification, supplement, sow, contract, permit, invoice, warranty_certificate, qc_report, approval_letter' },
+        fileName: { type: 'string', description: 'File name e.g. "inspection-report-2026-07-10.pdf"' },
+        fileUrl: { type: 'string', description: 'URL where the document is stored' },
+        uploadedBy: { type: 'string', description: 'Your name/role' },
+        stageIndex: { type: 'number', description: 'Pipeline stage index when document was created' },
+        notes: { type: 'string', description: 'Optional description of the document' },
+      },
+      required: ['jobId', 'documentType', 'fileName', 'fileUrl'],
+    },
+  },
+  {
+    name: 'crm_get_documents',
+    description: 'List all documents attached to a job card. Use to verify that required documents exist before filing a claim (S8/S9), completing invoicing (S17), or closing out the job (S21). Optionally filter by type.',
+    parameters: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'CRM job ID' },
+        type: { type: 'string', description: 'Optional filter by document type e.g. "inspection_report"' },
+      },
+      required: ['jobId'],
+    },
+  },
   {
     name: 'create_internal_task',
     description: 'Create an internal task ONLY when a staff member or owner explicitly asks to schedule a reminder, add a task, or set a follow-up (e.g. "add a task to call John tomorrow", "remind me to send the invoice"). Never call this automatically — use create_ticket for all customer interactions.',
@@ -128,15 +210,17 @@ const CRM_TOOL_DEFINITIONS = [
   },
   {
     name: 'contact_customer',
-    description: 'Smart contact tool: automatically sends via website chat if the customer sent a message within the last 10 minutes, or falls back to email if they have left and an email was collected. Use this as the DEFAULT way to reply to any widget customer. Always prefer this over email when the customer is likely still in the chat.',
+    description: 'Send a message to a customer. For CRM/pipeline leads provide contactEmail directly. For widget/chat customers provide sessionId. Always pass contactEmail when you have it — do not pass sessionId for pipeline tickets.',
     parameters: {
       type: 'object',
       properties: {
-        sessionId: { type: 'string', description: 'The widget session ID from the briefing card' },
-        message: { type: 'string', description: 'The message or follow-up to send to the customer' },
-        subject: { type: 'string', description: 'Email subject line (only used when sending by email, optional)' },
+        contactEmail: { type: 'string', description: 'Customer email address — use for CRM leads and pipeline tickets' },
+        contactName:  { type: 'string', description: 'Customer full name (used to personalise the email greeting)' },
+        sessionId:    { type: 'string', description: 'Widget session ID — only for live website chat customers, not for CRM leads' },
+        message:      { type: 'string', description: 'The message body to send to the customer' },
+        subject:      { type: 'string', description: 'Email subject line (used when sending by email)' },
       },
-      required: ['sessionId', 'message'],
+      required: ['message'],
     },
   },
   {
@@ -1376,22 +1460,20 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
             // ── Path A: direct outbound email to a CRM contact ─────────────
             // When contactEmail is provided directly (CRM leads, pipeline tickets)
             // and there is no widget sessionId, send a direct outbound email.
-            // In dev mode (DEV_EMAIL_OVERRIDE set), allow sending even without a
-            // contactEmail so the full pipeline can be tested end-to-end.
-            const devOverrideEmail = process.env.DEV_EMAIL_OVERRIDE
-            const effectiveEmail = (params.contactEmail as string | undefined) || (devOverrideEmail ? devOverrideEmail : undefined)
+            const effectiveEmail = (params.contactEmail as string | undefined)
 
-            // If sessionId looks like a ticket short ID (6 alphanumeric chars), the LLM
-            // confused the ticket ID with a session ID — clear it so Path A fires instead.
+            // If sessionId is anything other than a real widget session UUID (26-char cuid or 36-char uuid),
+            // the LLM hallucinated it (e.g. passed a ticket short ID or customer name). Clear it so
+            // Path A (direct email) fires instead of attempting a broken session lookup.
             const sessionIdStr = params.sessionId as string | undefined
-            if (sessionIdStr && /^[a-z0-9]{6}$/i.test(sessionIdStr)) {
-              this.logger.warn(`[contact_customer] sessionId "${sessionIdStr}" looks like a ticket ID — ignoring, using email path instead`)
+            const isRealSessionId = sessionIdStr && (sessionIdStr.length >= 20)
+            if (sessionIdStr && !isRealSessionId) {
+              this.logger.warn(`[contact_customer] sessionId "${sessionIdStr}" does not look like a real session — ignoring, using email path instead`)
               params.sessionId = undefined
             }
 
             if (effectiveEmail && !params.sessionId) {
-              // Always redirect to devOverrideEmail in dev mode if set; otherwise use effectiveEmail
-              params.contactEmail = devOverrideEmail || effectiveEmail
+              params.contactEmail = effectiveEmail
               const recipientName = params.contactName || params.contactRef || 'there'
               const subject = params.subject || `Regarding your property — ${companyName}`
               await this.email.send({
@@ -1406,17 +1488,6 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                 text: `Hi ${recipientName},\n\n${params.message}\n\n— ${companyName}`,
               })
               this.logger.log(`[contact_customer] Outbound email sent to ${params.contactEmail}`)
-
-              // If the ticket had no contactEmail and we used the dev override, save it back
-              // so that when the customer replies, the scanner can match the ticket.
-              // sessionIdStr holds the 6-char ticket ID the LLM passed (already cleared above).
-              const shortId = sessionIdStr || (params.ticketId as string | undefined)
-              if (shortId && devOverrideEmail) {
-                await this.prisma.activityTicket.updateMany({
-                  where: { id: { endsWith: shortId }, contactEmail: null },
-                  data: { contactEmail: params.contactEmail as string },
-                }).catch(() => {})
-              }
 
               return `✅ Email sent to ${params.contactEmail}: "${params.message}"`
             }
@@ -3308,6 +3379,25 @@ When chatting with the business owner/manager directly (in the internal chat thr
       return
     }
 
+    // Guard: if a non-cancelled ticket for this stage+contact already exists, skip creation.
+    // This prevents duplicate tickets when pipelineAdvance is called more than once for the
+    // same completion event (e.g. agent update_ticket + explicit service call in parallel).
+    if (ticket.contactEmail) {
+      const existing = await this.prisma.activityTicket.findFirst({
+        where: {
+          tenantId,
+          contactEmail: ticket.contactEmail,
+          status: { notIn: ['CANCELLED', 'COMPLETED'] },
+          metadata: { path: ['pipelineStageIndex'], equals: nextStageIndex },
+        },
+        select: { id: true, ticketNumber: true },
+      })
+      if (existing) {
+        this.logger.log(`[Pipeline] Dedup: stage ${nextStageIndex} ticket #${String(existing.ticketNumber).padStart(4,'0')} already exists for ${ticket.contactEmail} — skipping duplicate creation`)
+        return
+      }
+    }
+
     const now = new Date()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const newTicket = await (this.prisma.activityTicket.create as any)({
@@ -3353,17 +3443,137 @@ When chatting with the business owner/manager directly (in the internal chat thr
 
     this.logger.log(`[Pipeline] Advanced to stage ${nextStageIndex + 1} ("${nextStage.name}") — ticket #${String(newTicket.ticketNumber).padStart(4,'0')} created → assigned to ${nextAgent.name}`)
 
-    // Notify the next-stage agent
+    // Build explicit, actionable briefing so the next agent knows exactly what to do
+    const newTicketShortId = newTicket.id.slice(-6)
+    const contactEmail = (newTicket as any).contactEmail ?? ticket.contactEmail ?? null
+    const contactName  = (newTicket as any).contactRef  ?? ticket.contactRef  ?? 'Customer'
+    const contactPhone = (newTicket as any).contactPhone ?? ticket.contactPhone ?? null
+    const tenantRec = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true, settings: true } })
+    const tenantName = (tenantRec?.settings as any)?.brain?.companyName || tenantRec?.name || 'our company'
+
+    // A stage needs homeowner email contact only when its completion criteria explicitly involves
+    // communicating with the homeowner. Internal work stages (Field Inspection, Insurance Analysis,
+    // Storm Verification, Compliance) do NOT need to email the customer.
+    const completionLC = (nextStage.completion ?? '').toLowerCase()
+    const needsHomeonerContact = (
+      completionLC.includes('homeowner') &&
+      (completionLC.includes('email') || completionLC.includes('phone') || completionLC.includes('confirm') || completionLC.includes('engaged') || completionLC.includes('sent to homeowner'))
+    ) || completionLC.includes('confirmed with homeowner')
+     || completionLC.includes('homeowner engaged')
+
+    const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+
+    // Stage-specific task block — each stage gets a concrete checklist, not a generic instruction
+    const stageTaskBlock = (() => {
+      const stageNameLC = (nextStage.name ?? '').toLowerCase()
+
+      if (needsHomeonerContact && contactEmail) {
+        // Stages that contact the homeowner: Sales Consultation (Will), Inspection Scheduling (Hanna)
+        return [
+          `STEP 1 — Contact homeowner. Call contact_customer with EXACTLY these parameters (do NOT pass sessionId):`,
+          `{`,
+          `  "contactEmail": "${contactEmail}",`,
+          `  "contactName": "${contactName}",`,
+          `  "subject": "${nextStage.name} — ${tenantName}",`,
+          `  "message": "Hi ${contactName},\\n\\nI am ${nextAgent.name} from ${tenantName}. ${(nextStage.trigger ?? 'I am following up regarding your roofing project.').replace(/'/g, '')}\\n\\n${completionLC.includes('financing') ? 'I would like to walk you through your financing options and answer any questions.' : 'Could you please confirm your availability for the next step?'}\\n\\nBest regards,\\n${nextAgent.name}, ${tenantName}"`,
+          `}`,
+          ``,
+          `STEP 2 — After email sends: call update_ticket(ticketId: "${newTicketShortId}", status: "AWAITING_CUSTOMER", followUpAt: "${threeDaysFromNow}")`,
+          ``,
+          `STEP 3 — When the homeowner confirms or the stage goal is fully met: call update_ticket(ticketId: "${newTicketShortId}", status: "COMPLETED") to advance to the next stage.`,
+          ``,
+          `If email fails, do NOT call update_ticket. Report the error instead.`,
+        ].join('\n')
+
+      } else if (stageNameLC.includes('field inspection')) {
+        // Stage 3 — Jared
+        return [
+          `TASK (Field Inspection):`,
+          `1. Visit the property at the scheduled time.`,
+          `2. Take damage photos (roof, gutters, siding, interior if visible).`,
+          `3. Document damage severity, affected area, and storm evidence.`,
+          `4. When inspection is complete and report is ready, call:`,
+          `   update_ticket(ticketId: "${newTicketShortId}", status: "COMPLETED", note: "<damage summary + photo references>")`,
+          ``,
+          contactEmail ? `Customer: ${contactName} | Email: ${contactEmail}` : `Customer: ${contactName}`,
+          contactPhone ? `Phone: ${contactPhone}` : '',
+        ].filter(Boolean).join('\n')
+
+      } else if (stageNameLC.includes('insurance') || stageNameLC.includes('supplement')) {
+        // Stage 4 — Kevin
+        return [
+          `TASK (Insurance Analysis & Supplement):`,
+          `1. Review the field inspection report and damage photos from the previous stage.`,
+          `2. Identify all missing or underpaid line items in the insurance scope.`,
+          `3. Generate a supplement document covering all additional claims.`,
+          `4. Submit supplement to insurance carrier.`,
+          `5. When submitted, call:`,
+          `   update_ticket(ticketId: "${newTicketShortId}", status: "COMPLETED", note: "<supplement summary + carrier reference>")`,
+          ``,
+          contactEmail ? `Customer: ${contactName} | Email: ${contactEmail}` : `Customer: ${contactName}`,
+        ].filter(Boolean).join('\n')
+
+      } else if (stageNameLC.includes('estimate') || stageNameLC.includes('scope')) {
+        // Stage 5 — Cris
+        return [
+          `TASK (Estimate & Scope of Work):`,
+          `1. Review the insurance analysis and supplement from the previous stage.`,
+          `2. Prepare the contractor estimate aligned to the approved insurance scope.`,
+          `3. Generate the Scope of Work (SOW) document.`,
+          `4. Send SOW to homeowner for signature${contactEmail ? ` at ${contactEmail}` : ''}.`,
+          `5. When homeowner signs or stage is complete, call:`,
+          `   update_ticket(ticketId: "${newTicketShortId}", status: "COMPLETED", note: "<estimate total + SOW status>")`,
+          ``,
+          contactEmail ? `Customer: ${contactName} | Email: ${contactEmail}` : `Customer: ${contactName}`,
+          contactPhone ? `Phone: ${contactPhone}` : '',
+        ].filter(Boolean).join('\n')
+
+      } else if (stageNameLC.includes('storm')) {
+        // Stage 6 — Arturo
+        return [
+          `TASK (Storm Verification):`,
+          `1. Pull storm data for this property's location using fetch_storm_data.`,
+          `2. Verify hail and wind events via NOAA / NEXRAD / hail swath data.`,
+          `3. Formally document storm evidence and attach to claim file.`,
+          `4. When verification is complete, call:`,
+          `   update_ticket(ticketId: "${newTicketShortId}", status: "COMPLETED", note: "<storm event details + data sources>")`,
+          ``,
+          contactEmail ? `Customer: ${contactName} | ${contactEmail}` : `Customer: ${contactName}`,
+        ].filter(Boolean).join('\n')
+
+      } else if (stageNameLC.includes('compliance') || stageNameLC.includes('permit')) {
+        // Stage 7 — Linda
+        return [
+          `TASK (Compliance & Permit Review):`,
+          `1. Identify all required permits for the roofing work in this jurisdiction.`,
+          `2. Pull all required permits.`,
+          `3. Confirm code compliance for the proposed work.`,
+          `4. Confirm contractor is cleared and licensed to start.`,
+          `5. When all permits are in place and contractor is cleared, call:`,
+          `   update_ticket(ticketId: "${newTicketShortId}", status: "COMPLETED", note: "<permits issued + compliance notes>")`,
+          ``,
+          contactEmail ? `Customer: ${contactName} | ${contactEmail}` : `Customer: ${contactName}`,
+        ].filter(Boolean).join('\n')
+
+      } else {
+        // Generic fallback
+        return [
+          `TASK: ${nextStage.completion ?? nextStage.trigger ?? `Complete stage: ${nextStage.name}`}`,
+          contactEmail ? `Customer: ${contactName} | Email: ${contactEmail}` : `Customer: ${contactName}`,
+          contactPhone ? `Phone: ${contactPhone}` : '',
+          `When done: call update_ticket(ticketId: "${newTicketShortId}", status: "COMPLETED", note: "<summary of work completed>")`,
+        ].filter(Boolean).join('\n')
+      }
+    })()
+
     const briefing = [
-      `🔄 **Pipeline Advance — Stage ${nextStageIndex + 1}: ${nextStage.name}**`,
-      `Previous stage "${stages[currentStageIndex]?.name ?? 'Unknown'}" completed by ${completingAgent.name}.`,
-      `New ticket #${String(newTicket.ticketNumber).padStart(4,'0')} created and assigned to you.`,
-      ticket.contactRef ? `Contact: ${ticket.contactRef}` : '',
-      completionNote ? `Handoff note: "${completionNote}"` : '',
-      nextStage.trigger ? `Your trigger: ${nextStage.trigger}` : '',
-      nextStage.completion ? `Done when: ${nextStage.completion}` : '',
+      `TICKET #${String(newTicket.ticketNumber).padStart(4,'0')}: ${nextStage.name}`,
+      `Customer: ${contactName}`,
+      contactEmail ? `Email: ${contactEmail}` : '',
+      contactPhone ? `Phone: ${contactPhone}` : '',
+      `Handoff from ${stages[currentStageIndex]?.name ?? 'previous stage'}: ${completionNote || 'Stage complete.'}`,
       ``,
-      `Call get_my_tickets to see the full details, then take action.`,
+      stageTaskBlock,
     ].filter(Boolean).join('\n')
 
     await this.autoWakeAgent(

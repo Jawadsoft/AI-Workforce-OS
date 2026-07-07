@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common'
+import { Module, forwardRef } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
 import { resolve } from 'path'
 import { ThrottlerModule } from '@nestjs/throttler'
@@ -32,6 +32,7 @@ import { DocumentTemplatesModule } from './modules/document-templates/document-t
 import { StormModule } from './modules/storm/storm.module'
 import { TicketsModule } from './modules/tickets/tickets.module'
 import { TicketProcessorModule } from './modules/tickets/ticket-processor.module'
+import { OperationsModule } from './modules/tickets/operations.module'
 import { ScheduleModule } from '@nestjs/schedule'
 
 @Module({
@@ -72,11 +73,12 @@ import { ScheduleModule } from '@nestjs/schedule'
     CommunicationsModule,
     EmailModule,
     SuperAdminModule,
-    IntegrationsModule,
+    forwardRef(() => IntegrationsModule),
     DocumentTemplatesModule,
     StormModule,
     TicketsModule,
-    TicketProcessorModule,
+    forwardRef(() => TicketProcessorModule),
+    OperationsModule,
   ],
 })
 export class AppModule {}

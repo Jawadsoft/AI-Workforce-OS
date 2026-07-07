@@ -255,25 +255,39 @@ export class TicketProcessorScheduler {
           data: { updatedAt: new Date() },
         })
 
-        // In dev mode, use override email when contactEmail is missing
-        const devEmailOverride = process.env.DEV_EMAIL_OVERRIDE
-        const effectiveEmail = ticket.contactEmail || devEmailOverride || null
+        const effectiveEmail = ticket.contactEmail || null
 
-        // Determine the primary action needed based on nextAction text
+        // Determine the primary action needed based on nextAction text and stage index
         const nextAction = (ticket.nextAction || '').toLowerCase()
-        const needsEmail = nextAction.includes('email') || nextAction.includes('contact') || nextAction.includes('reach') || nextAction.includes('outreach') || nextAction.includes('schedule') || nextAction.includes('send')
-        const needsSlots = nextAction.includes('inspect') || nextAction.includes('book') || nextAction.includes('slot') || nextAction.includes('appointment')
+        const isStage0 = stageIndex === 0
 
-        // Build a minimal, direct command — no history, no rules, just: what to call and with what params
+        // A Stage 0 ticket needs an outreach email ONLY on first contact.
+        // If the customer has already replied (nextAction contains "replied" or "continue"),
+        // the agent should craft a conversational reply — not re-send the intro email.
+        const isInitialOutreach = isStage0
+          && !nextAction.includes('replied')
+          && !nextAction.includes('continue the conversation')
+          && !nextAction.includes('answer their question')
+
+        const needsEmail = isInitialOutreach
+          || nextAction.includes('send email')
+          || nextAction.includes('outreach')
+          || nextAction.includes('contact_customer')
+          || (stageIndex === 2 && (nextAction.includes('schedule') || nextAction.includes('confirm'))) // Hanna
+        const isReplyMode = isStage0 && !isInitialOutreach  // customer replied, agent should respond
+        const needsSlots = !isStage0 && !isInitialOutreach && (nextAction.includes('book') || nextAction.includes('slot') || nextAction.includes('appointment'))
+
         const ticketShortId = ticket.id.slice(-6)
         const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-
-        // Pre-generate the email body so the LLM just passes it — no writing needed
         const tenantName = (tenantSettings?.settings as any)?.brain?.companyName || 'our company'
         const customerName = ticket.contactRef || 'there'
-        const prewrittenMessage = needsEmail
-          ? `Hi ${customerName},\n\nI'm reaching out from ${tenantName} regarding your property. We'd like to schedule a free roof inspection — could you let me know which of the following dates works best for you?\n\n• ${threeDaysFromNow}\n• ${new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\n• ${new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\n\nPlease reply to this email${ticket.contactPhone ? ` or call us at ${ticket.contactPhone}` : ''}.\n\nBest regards,\n${tenantName}`
-          : ''
+
+        // Pre-written email for first-contact outreach only (not for conversation replies)
+        const prewrittenMessage = isInitialOutreach
+          ? `Hi ${customerName},\n\nMy name is from ${tenantName}. We noticed your property may have been affected by a recent storm in your area, and we would like to offer you a free roof inspection.\n\nThere is no cost or obligation — our specialist will assess any damage and walk you through your options, including how to file an insurance claim if needed.\n\nWould you be available for a quick call or visit? Please reply to this email${ticket.contactPhone ? ` or call us at ${ticket.contactPhone}` : ''} and we will arrange a convenient time.\n\nBest regards,\n${tenantName}`
+          : stageIndex === 2
+            ? `Hi ${customerName},\n\nI am reaching out from ${tenantName} to confirm your upcoming roof inspection. Could you let me know which of the following dates works best for you?\n\n• ${threeDaysFromNow}\n• ${new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\n• ${new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\n\nPlease reply to this email${ticket.contactPhone ? ` or call us at ${ticket.contactPhone}` : ''}.\n\nBest regards,\n${tenantName}`
+            : ''
 
         const briefing = [
           `TICKET #${ticketNum}: "${ticket.title}"`,
@@ -281,26 +295,55 @@ export class TicketProcessorScheduler {
           effectiveEmail      ? `Customer email: ${effectiveEmail}` : '',
           ticket.contactPhone ? `Customer phone: ${ticket.contactPhone}` : '',
           ``,
-          needsEmail ? [
-            `YOUR TASK: Call contact_customer tool immediately with these exact parameters:`,
-            `  contactEmail: "${effectiveEmail || ''}"`,
-            `  contactName: "${ticket.contactRef || 'Customer'}"`,
-            `  subject: "Roof Inspection Scheduling — ${tenantName}"`,
-            `  message: "${prewrittenMessage.replace(/\n/g, '\\n')}"`,
+          isReplyMode ? [
+            // Customer already replied — agent must continue the conversation, then mark COMPLETED
+            `CONTEXT: ${ticket.nextAction || 'Customer replied to your previous email.'}`,
             ``,
-            `Then call update_ticket:`,
-            `  ticketId: "${ticketShortId}"`,
-            `  status: "AWAITING_CUSTOMER"`,
-            `  followUpAt: "${threeDaysFromNow}"`,
+            `YOUR TASK:`,
+            `1. Reply to the customer by calling contact_customer:`,
+            `{`,
+            `  "contactEmail": "${effectiveEmail || ''}",`,
+            `  "contactName": "${customerName}",`,
+            `  "subject": "Re: Your Roof Inspection — ${tenantName}",`,
+            `  "message": "<write a helpful reply addressing their question or comment>"`,
+            `}`,
+            `DO NOT pass sessionId. Use contactEmail only.`,
+            ``,
+            `2. Only call update_ticket AFTER the reply is sent:`,
+            `   - If conversation is ongoing: update_ticket(ticketId: "${ticketShortId}", status: "AWAITING_CUSTOMER")`,
+            `   - If lead is FULLY QUALIFIED (customer confirmed interest and ready to proceed): update_ticket(ticketId: "${ticketShortId}", status: "COMPLETED")`,
+            ``,
+            `A lead is fully qualified when: customer acknowledged damage, is interested in the free inspection, and has no remaining objections or questions.`,
+          ].join('\n') : needsEmail ? [
+            `STEP 1 — Send email now. Call contact_customer with EXACTLY these parameters (do not add sessionId):`,
+            `{`,
+            `  "contactEmail": "${effectiveEmail || ''}",`,
+            `  "contactName": "${customerName}",`,
+            `  "subject": "${isInitialOutreach ? `Free Roof Inspection — ${tenantName}` : `Roof Inspection Scheduling — ${tenantName}`}",`,
+            `  "message": "${prewrittenMessage.replace(/\n/g, '\\n').replace(/"/g, '\\"')}"`,
+            `}`,
+            `IMPORTANT: Use contactEmail only. Do NOT pass sessionId.`,
+            ``,
+            `STEP 2 — Only AFTER the email sends successfully, call update_ticket:`,
+            `{`,
+            `  "ticketId": "${ticketShortId}",`,
+            `  "status": "AWAITING_CUSTOMER",`,
+            `  "followUpAt": "${threeDaysFromNow}"`,
+            `}`,
+            ``,
+            `If the email fails, do NOT call update_ticket. Report the error instead.`,
           ].join('\n') : needsSlots ? [
             `YOUR TASK:`,
             `1. Call get_available_slots`,
-            `2. Call contact_customer with: contactEmail="${effectiveEmail || ''}", contactName="${ticket.contactRef || 'Customer'}", message=list of available dates`,
-            `3. Call update_ticket(ticketId: "${ticketShortId}", status: "SCHEDULED")`,
+            `2. Call contact_customer with: contactEmail="${effectiveEmail || ''}", contactName="${customerName}", message=list of available dates. Do NOT pass sessionId.`,
+            `3. Only after email succeeds: call update_ticket(ticketId: "${ticketShortId}", status: "SCHEDULED")`,
           ].join('\n') : [
             `YOUR TASK: ${ticket.nextAction || 'Review and action this ticket'}`,
-            `When done → call update_ticket(ticketId: "${ticketShortId}", status: "COMPLETED")`,
+            ``,
+            `When ALL work is done → call update_ticket(ticketId: "${ticketShortId}", status: "COMPLETED", note: "<brief summary of what you completed>")`,
+            `This will automatically create the next stage ticket for the next team member.`,
           ].join('\n'),
+          stageContext,
         ].filter(Boolean).join('\n')
 
         this.logger.log(`[TicketProcessor] Waking ${ticket.assignedAgent.name} for ticket #${ticketNum}`)
@@ -510,8 +553,7 @@ export class TicketProcessorScheduler {
 
       const attempts = (meta.followUpAttempts as number | undefined) ?? 0
       const ticketNum = String(ticket.ticketNumber ?? '').padStart(4, '0')
-      const devEmail = process.env.DEV_EMAIL_OVERRIDE
-      const effectiveEmail = ticket.contactEmail || devEmail || null
+      const effectiveEmail = ticket.contactEmail || null
 
       try {
         if (attempts >= 3) {

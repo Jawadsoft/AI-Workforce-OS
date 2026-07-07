@@ -8,6 +8,7 @@ import { ImapAdapter, ImapConfig } from './imap/imap.adapter'
 import { AccountMailer } from './account-mailer'
 import { EmailClassifier, EmailType } from './email-classifier'
 import { ChatService } from '../chat/chat.service'
+import { EmailService } from '../email/email.service'
 import { encrypt, decrypt } from './crypto.util'
 
 export interface EmailScanItem {
@@ -67,6 +68,7 @@ export class IntegrationsService {
     private readonly config: ConfigService,
     private readonly ai: AIService,
     private readonly chat: ChatService,
+    private readonly email: EmailService,
   ) {}
 
   // ─────────────────────────────────────────────
@@ -749,66 +751,143 @@ export class IntegrationsService {
       },
       include: {
         assignedAgent: { select: { id: true, name: true } },
+        tenant: { select: { name: true, settings: true } },
       },
       orderBy: { updatedAt: 'desc' },
     })
 
     if (!ticket) return false
 
-    // AI-based intent analysis — understand the reply in context of the ticket
+    const stageIndex: number = (ticket.metadata as any)?.pipelineStageIndex ?? -1
+
+    // AI-based intent analysis
     const aiIntent = await this.analyseReplyIntent(email, ticket).catch(() => null)
+    const isNegative     = aiIntent?.intent === 'not_interested' || aiIntent?.intent === 'declined'
     const isConfirmation = aiIntent?.intent === 'confirmed'
+
     let followUpAt: Date | null = null
     if (isConfirmation && aiIntent?.confirmedDate) {
       const parsed = new Date(aiIntent.confirmedDate)
       if (!isNaN(parsed.getTime())) followUpAt = parsed
     }
-    // Fallback: if AI fails, treat any reply as "needs review" (reopen)
     const intentSummary = aiIntent?.summary ?? `Customer replied — review needed`
+    const tenantName = (ticket.tenant as any)?.settings?.brain?.companyName || (ticket.tenant as any)?.name || 'us'
+    const customerName = ticket.contactRef || 'there'
 
-    const newStatus = followUpAt ? 'SCHEDULED' : 'OPEN'
+    // ─────────────────────────────────────────────────────────────────
+    // STATUS LOGIC
+    //
+    // Rule: the system NEVER auto-advances pipeline stages based on
+    // intent alone. The assigned agent (Charlie, Hanna, etc.) decides
+    // when a stage is complete by calling update_ticket(COMPLETED).
+    //
+    // The system only:
+    //   - Re-opens the ticket so the agent can continue the conversation
+    //   - Sends a confirmation email when a specific date is locked in
+    //   - Marks SCHEDULED only when a confirmed date is detected
+    //   - Marks AWAITING_CUSTOMER for negative/declined replies
+    // ─────────────────────────────────────────────────────────────────
+    let newStatus: string
+    let newNextAction: string
+
+    if (isNegative) {
+      // Customer declined — keep status as AWAITING_CUSTOMER so agent can decide next step
+      newStatus = 'AWAITING_CUSTOMER'
+      newNextAction = `${intentSummary} — customer declined. Review and decide whether to follow up.`
+    } else if (followUpAt) {
+      // Specific inspection date confirmed — mark SCHEDULED, send confirmation email
+      newStatus = 'SCHEDULED'
+      newNextAction = `Inspection confirmed for ${followUpAt.toLocaleDateString('en-GB')} — send customer a confirmation email, then call update_ticket(COMPLETED) when done.`
+    } else {
+      // Customer replied (interested, question, clarification, etc.) — re-open for agent
+      // The agent reads the reply, responds, continues conversation until THEY mark COMPLETED
+      newStatus = 'OPEN'
+      newNextAction = `Customer replied: "${intentSummary}". Read their message and respond via contact_customer(contactEmail: "${senderEmail}", contactName: "${customerName}"). Answer any questions. When the customer is fully qualified and confirmed, call update_ticket(COMPLETED) to advance the pipeline.`
+    }
+
     const log = (ticket.activityLog as any[]) ?? []
     const now = new Date()
 
     await this.prisma.activityTicket.update({
       where: { id: ticket.id },
       data: {
-        status: newStatus,
+        status: newStatus as any,
         followUpAt: followUpAt ?? null,
         updatedAt: now,
-        nextAction: isConfirmation
-          ? (followUpAt ? `Inspection confirmed for ${followUpAt.toLocaleDateString('en-GB')} — call update_ticket(SCHEDULED, followUpAt: ${followUpAt.toISOString().split('T')[0]})` : `Customer confirmed — ask for exact date then call update_ticket(SCHEDULED)`)
-          : `${intentSummary} — review reply and respond via contact_customer`,
+        nextAction: newNextAction,
         activityLog: [
           ...log,
           {
             agentName: 'System',
             agentId: 'system',
-            action: 'CUSTOMER_CONFIRMED',
-            note: `Customer replied from ${senderEmail}. AI intent: "${intentSummary}". Status → ${newStatus}.`,
+            action: 'CUSTOMER_REPLIED',
+            note: `Reply from ${senderEmail}. AI intent: "${intentSummary}". Stage ${stageIndex} → ${newStatus}.`,
             timestamp: now.toISOString(),
           },
         ] as any,
       },
     })
 
-    this.logger.log(`[Confirmation] Ticket #${String(ticket.ticketNumber).padStart(4,'0')} → ${newStatus} — reply from ${senderEmail} (confirmed: ${isConfirmation})`)
+    this.logger.log(`[Confirmation] Ticket #${String(ticket.ticketNumber).padStart(4,'0')} → ${newStatus} (stage ${stageIndex}) — intent: "${aiIntent?.intent ?? 'unknown'}"`)
 
-    // Wake the assigned agent with a briefing
+    // Send confirmation email to customer when a specific date is locked in
+    if (followUpAt && senderEmail) {
+      const confirmDate = followUpAt.toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+      this.email.send({
+        tenantId,
+        to: senderEmail,
+        subject: `Inspection Confirmed — ${tenantName}`,
+        html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto">
+          <p>Hi ${customerName},</p>
+          <p>Your roof inspection has been confirmed for <strong>${confirmDate}</strong>.</p>
+          <p>Our specialist will be in touch shortly with further details. If you need to reschedule, please reply to this email.</p>
+          <p style="color:#64748b;font-size:13px;margin-top:24px;">— ${tenantName}</p>
+        </div>`,
+        text: `Hi ${customerName},\n\nYour roof inspection has been confirmed for ${confirmDate}.\n\nOur specialist will be in touch shortly with further details.\n\n— ${tenantName}`,
+      }).catch(e => this.logger.warn(`[Confirmation] Confirmation email failed: ${e.message}`))
+    }
+
+    // Wake the assigned agent with full context so they can continue the conversation
     if (ticket.assignedAgent) {
       const ticketNum = String(ticket.ticketNumber).padStart(4, '0')
-      const briefing = [
-        followUpAt
-          ? `✅ Customer confirmed inspection — Ticket #${ticketNum}`
-          : `📬 Customer replied — Ticket #${ticketNum} reopened`,
-        `From: ${email.fromName || senderEmail}`,
+
+      const briefing = isNegative ? [
+        `Customer declined — Ticket #${ticketNum}`,
+        `From: ${customerName} <${senderEmail}>`,
         `Their message: "${email.snippet}"`,
-        followUpAt ? `Confirmed date: ${followUpAt.toLocaleDateString('en-GB')}` : '',
         ``,
-        followUpAt
-          ? `TASK: The date is confirmed. Call update_ticket(ticketId: "${ticket.id.slice(-6)}", status: "SCHEDULED", followUpAt: "${followUpAt.toISOString().split('T')[0]}", note: "Inspection confirmed for ${followUpAt.toLocaleDateString('en-GB')}"). Then the system will auto-dispatch the field inspector on that date.`
-          : `TASK: The customer replied but hasn't confirmed a date yet. Reply via contact_customer to clarify or propose new dates. Customer email: ${senderEmail}. Then call update_ticket(ticketId: "${ticket.id.slice(-6)}", status: "AWAITING_CUSTOMER").`,
-      ].filter(Boolean).join('\n')
+        `The customer is not interested. You may attempt one gentle follow-up or close the ticket.`,
+        `Call update_ticket(ticketId: "${ticket.id.slice(-6)}", status: "COMPLETED") to close.`,
+      ].join('\n') : followUpAt ? [
+        `Inspection date confirmed — Ticket #${ticketNum}`,
+        `From: ${customerName} <${senderEmail}>`,
+        `Confirmed date: ${followUpAt.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`,
+        `Their message: "${email.snippet}"`,
+        ``,
+        `✅ A confirmation email has already been sent to the customer.`,
+        `✅ The ticket is now SCHEDULED with followUpAt = ${followUpAt.toISOString().split('T')[0]}.`,
+        ``,
+        `IMPORTANT: Do NOT call update_ticket(COMPLETED). The system will automatically advance to the next stage on the inspection date (${followUpAt.toLocaleDateString('en-GB')}).`,
+        `Your job is done for now — just add a note if needed: call update_ticket(ticketId: "${ticket.id.slice(-6)}", status: "SCHEDULED", note: "Inspection confirmed for ${followUpAt.toLocaleDateString('en-GB')}")`,
+      ].join('\n') : [
+        `Customer replied to your outreach — Ticket #${ticketNum}`,
+        `From: ${customerName} <${senderEmail}>`,
+        `Their message: "${email.snippet}"`,
+        `AI summary: ${intentSummary}`,
+        ``,
+        `TASK: The customer has a question or needs more information. Reply to them now:`,
+        `Call contact_customer with:`,
+        `{`,
+        `  "contactEmail": "${senderEmail}",`,
+        `  "contactName": "${customerName}",`,
+        `  "subject": "Re: Your Roof Inspection — ${tenantName}",`,
+        `  "message": "<answer their question, explain the inspection booking process, propose dates>"`,
+        `}`,
+        ``,
+        `Continue the conversation until the customer is fully qualified (confirmed interest + ready to proceed).`,
+        `Only when the conversation is COMPLETE, call update_ticket(ticketId: "${ticket.id.slice(-6)}", status: "COMPLETED") — this will automatically advance to the next stage.`,
+        `DO NOT call update_ticket(COMPLETED) yet — the customer still has unanswered questions.`,
+      ].join('\n')
 
       setImmediate(() => {
         this.chat.autoWakeAgent(
@@ -827,36 +906,50 @@ export class IntegrationsService {
 
   /**
    * AI-powered reply intent analysis.
-   * Given the customer's reply email and the ticket they're responding to,
-   * determines whether they confirmed, need clarification, want to reschedule, etc.
+   * Understands the full range of customer responses — interest, questions,
+   * confirmed dates, reschedule requests, or declines — so the assigned
+   * agent gets a clear, actionable summary rather than a binary flag.
    */
   private async analyseReplyIntent(
     email: any,
     ticket: any,
-  ): Promise<{ intent: 'confirmed' | 'needs_clarification' | 'reschedule' | 'other'; confirmedDate: string | null; summary: string }> {
-    const systemPrompt = `You are analysing a customer's email reply to an inspection scheduling request.
+  ): Promise<{
+    intent: 'confirmed' | 'interested' | 'needs_clarification' | 'reschedule' | 'not_interested' | 'declined' | 'other'
+    confirmedDate: string | null
+    summary: string
+  }> {
+    const systemPrompt = `You are analysing a customer's email reply in the context of a roofing/insurance pipeline.
+The customer was contacted about a free roof inspection.
 
-Return ONLY valid JSON in this exact format:
+Return ONLY valid JSON — no markdown, no explanation:
 {
-  "intent": "confirmed",
-  "confirmedDate": "2026-07-05",
-  "summary": "Customer confirmed July 5th at 10am"
+  "intent": "interested",
+  "confirmedDate": null,
+  "summary": "Customer is interested and asked how to book the inspection"
 }
 
-intent must be exactly one of:
-- "confirmed"           → customer agrees to an inspection date
-- "needs_clarification" → customer asked a question or needs more info
-- "reschedule"          → customer wants a different date/time
-- "other"               → unrelated or unclear
+intent values (pick the single best match):
+- "confirmed"           → customer explicitly agrees to a specific inspection date/time
+- "interested"          → customer is interested but has NOT yet confirmed a specific date (asking questions, saying yes in general, etc.)
+- "needs_clarification" → customer needs more info before deciding (cost, process, what's involved)
+- "reschedule"          → customer wants to change an already agreed date
+- "not_interested"      → customer does not want the inspection right now
+- "declined"            → customer explicitly refuses / says no / asks to stop contact
+- "other"               → unrelated, automated, or unclear
 
-confirmedDate: ISO date string (YYYY-MM-DD) if a specific date was mentioned, otherwise null.
-summary: one sentence describing what the customer said.`
+confirmedDate: ISO date string (YYYY-MM-DD) ONLY if customer confirmed a SPECIFIC date. Otherwise null.
+summary: one concise sentence describing exactly what the customer said/asked.`
 
-    const userPrompt = `Ticket context: "${ticket.title}"
-We sent: inspection scheduling email asking them to pick a date.
-Customer replied:
-Subject: ${email.subject}
-Body: ${(email.body ?? email.snippet ?? '').slice(0, 800)}`
+    const stageIndex = (ticket.metadata as any)?.pipelineStageIndex ?? -1
+    const stageContext = stageIndex === 0
+      ? 'This is Stage 0 (Lead Qualification). We sent an initial outreach email about a free roof inspection.'
+      : `This is Stage ${stageIndex + 1}. We sent a follow-up about scheduling/confirming an inspection.`
+
+    const userPrompt = `${stageContext}
+Ticket: "${ticket.title}"
+Customer email (from: ${email.from}):
+Subject: ${email.subject || '(no subject)'}
+Body: ${(email.body ?? email.snippet ?? '').slice(0, 1200)}`
 
     const raw = await this.ai.chat(systemPrompt, [{ role: 'user', content: userPrompt }])
     const jsonMatch = raw.match(/\{[\s\S]*\}/)

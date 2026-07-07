@@ -25,6 +25,7 @@ export interface CRMLead {
   assignedTo?: string
   createdAt?: string
   lastContactedAt?: string
+  jobId?: string       // CRM job/claim ID linked to this lead (present in Stormbuddy lead response)
   [key: string]: unknown
 }
 
@@ -76,6 +77,74 @@ export interface CRMMaterial {
   [key: string]: unknown
 }
 
+export interface CRMJobCard {
+  jobId: string
+  leadId?: string
+  contactName?: string
+  contactEmail?: string
+  contactPhone?: string
+  propertyAddress?: string
+  propertyZip?: string
+  insuranceCarrier?: string
+  policyNumber?: string
+  claimNumber?: string
+  claimReferenceNumber?: string
+  stormEventDate?: string
+  noaaEventId?: string
+  damageType?: string
+  damageSeverity?: string
+  hailSizeInches?: number
+  estimateTotal?: number
+  acvAmount?: number
+  rcvAmount?: number
+  depreciationHoldback?: number
+  depositPaid?: number
+  balanceOwing?: number
+  inspectionDate?: string
+  installationDate?: string
+  materialDeliveryDate?: string
+  permitNumber?: string
+  poNumber?: string
+  contractorLicenceNumber?: string
+  materialSpecs?: { brand?: string; product?: string; colour?: string; underlayment?: string }
+  leadStatus?: string
+  warrantyType?: string
+  profitability?: number
+  googleReviewLink?: string
+  currentStageIndex?: number
+  notes?: string
+  [key: string]: unknown
+}
+
+export interface CRMChecklistItem {
+  index: number
+  label: string
+  completed: boolean
+  completedBy?: string | null
+  completedAt?: string | null
+}
+
+export interface CRMChecklist {
+  jobId: string
+  stageIndex: number
+  stageName: string
+  items: CRMChecklistItem[]
+  totalItems: number
+  completedItems: number
+  allComplete: boolean
+}
+
+export interface CRMDocument {
+  documentId: string
+  type: string
+  fileName: string
+  fileUrl: string
+  uploadedBy?: string
+  uploadedAt?: string
+  stageIndex?: number
+  notes?: string
+}
+
 // ── Connector Interface ───────────────────────────────────────────
 
 export interface CRMConnector {
@@ -115,6 +184,18 @@ export interface CRMConnector {
 
   // ── Generic update ──────────────────────────────────────
   updateRecord(model: string, id: string, data: Record<string, unknown>): Promise<void>
+
+  // ── Job card (full detail) ───────────────────────────────
+  getJobCard(jobId: string): Promise<CRMJobCard>
+  updateJobCard(jobId: string, fields: Partial<CRMJobCard>): Promise<{ success: boolean; updatedFields: string[] }>
+
+  // ── Checklist ───────────────────────────────────────────
+  getChecklist(jobId: string, stageIndex: number): Promise<CRMChecklist>
+  markChecklistItem(jobId: string, stageIndex: number, itemIndex: number, completed: boolean, completedBy?: string): Promise<{ success: boolean; remainingUncompleted: number; allComplete: boolean }>
+
+  // ── Document management ─────────────────────────────────
+  attachDocument(data: { jobId: string; documentType: string; fileName: string; fileUrl: string; uploadedBy?: string; stageIndex?: number; notes?: string }): Promise<{ success: boolean; documentId: string; fileUrl: string }>
+  getDocuments(jobId: string, type?: string): Promise<CRMDocument[]>
 }
 
 // ── CRM Context (injected into agent prompt) ──────────────────────
@@ -140,6 +221,10 @@ export const CRM_PERMISSIONS = {
   WRITE_NOTES: 'write_notes',
   CREATE_TASKS: 'create_tasks',
   UPDATE_RECORDS: 'update_records',
+  READ_JOB_CARDS: 'read_job_cards',
+  WRITE_JOB_CARDS: 'write_job_cards',
+  WRITE_CHECKLISTS: 'write_checklists',
+  WRITE_DOCUMENTS: 'write_documents',
 } as const
 
 // ── Industry → CRM defaults ───────────────────────────────────────
@@ -158,14 +243,19 @@ export const INDUSTRY_CRM_DEFAULTS: Record<string, IndustryCRMDefaults> = {
   ROOFING: {
     label: 'Roofing & Storm Damage',
     recommendedCRM: ['STORMBUDDI', 'JOBNIMBUS', 'CUSTOM'],
-    defaultTools: ['crm_search_leads', 'crm_get_lead_stats', 'crm_get_jobs', 'crm_get_proposals', 'crm_create_note', 'crm_create_task', 'crm_update_lead', 'crm_update', 'crm_search_contacts'],
+    defaultTools: [
+      'crm_search_leads', 'crm_get_lead_stats', 'crm_get_jobs', 'crm_get_proposals',
+      'crm_create_note', 'crm_create_task', 'crm_update_lead', 'crm_update', 'crm_search_contacts',
+      'crm_get_job', 'crm_update_job', 'crm_get_checklist', 'crm_mark_checklist_item',
+      'crm_attach_document', 'crm_get_documents',
+    ],
     workflow: 'Lead -> Inspection -> Estimate -> Insurance Claim -> Job -> Invoice',
     agentRoleDefaults: {
-      'Sales Assistant': ['read_leads', 'update_leads', 'read_customers', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks'],
-      'Estimator': ['read_customers', 'read_jobs', 'read_proposals', 'read_materials', 'read_notes', 'write_notes'],
-      'Inspector': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks'],
-      'Insurance Assistant': ['read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks'],
-      'Receptionist': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks'],
+      'Sales Assistant': ['read_leads', 'update_leads', 'read_customers', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_checklists'],
+      'Estimator': ['read_customers', 'read_jobs', 'read_proposals', 'read_materials', 'read_notes', 'write_notes', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
+      'Inspector': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_checklists', 'write_documents'],
+      'Insurance Assistant': ['read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
+      'Receptionist': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards'],
     },
   },
   HVAC: {
@@ -273,14 +363,14 @@ export const INDUSTRY_CRM_DEFAULTS: Record<string, IndustryCRMDefaults> = {
 
 // Default permissions per agent role
 export const ROLE_CRM_PERMISSIONS: Record<string, string[]> = {
-  'Receptionist': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks'],
-  'Sales Assistant': ['read_leads', 'update_leads', 'read_customers', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks'],
-  'Estimator': ['read_customers', 'read_jobs', 'read_proposals', 'read_materials', 'read_notes', 'write_notes'],
-  'Inspector': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks'],
-  'Insurance Assistant': ['read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks'],
-  'Executive Assistant': ['read_leads', 'read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks'],
-  'Lead Qualification Assistant': ['read_leads', 'update_leads', 'read_notes', 'write_notes', 'create_tasks'],
+  'Receptionist': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards'],
+  'Sales Assistant': ['read_leads', 'update_leads', 'read_customers', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists'],
+  'Estimator': ['read_customers', 'read_jobs', 'read_proposals', 'read_materials', 'read_notes', 'write_notes', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
+  'Inspector': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
+  'Insurance Assistant': ['read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
+  'Executive Assistant': ['read_leads', 'read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists'],
+  'Lead Qualification Assistant': ['read_leads', 'update_leads', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_checklists'],
   'Marketing Assistant': ['read_leads', 'read_notes'],
-  'Project Coordinator': ['read_customers', 'read_jobs', 'read_materials', 'read_notes', 'write_notes', 'create_tasks'],
-  'Procurement Assistant': ['read_jobs', 'read_materials', 'create_tasks'],
+  'Project Coordinator': ['read_customers', 'read_jobs', 'read_materials', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
+  'Procurement Assistant': ['read_jobs', 'read_materials', 'create_tasks', 'read_job_cards'],
 }

@@ -153,9 +153,7 @@ export class CrmLeadScannerScheduler {
 
       // Build nextAction — use completion criteria reworded as a task (NOT the trigger text)
       // The trigger describes when the stage starts; we want what Charlie must DO to finish it.
-      const stage0NextAction = stage0?.completion
-        ? `Qualify this lead: ${stage0.completion}. Call fetch_storm_data for the property address, score the lead, email the homeowner via contact_customer, then call update_ticket(AWAITING_CUSTOMER) after emailing or update_ticket(COMPLETED) if fully qualified.`
-        : 'Qualify this lead — run storm data check, score (0–100), email the homeowner, then call update_ticket with status AWAITING_CUSTOMER or COMPLETED.'
+      const stage0NextAction = `Send outreach email to homeowner introducing free roof inspection offer. Use contact_customer tool with the pre-written message, then call update_ticket(status: AWAITING_CUSTOMER, followUpAt: 3 days from now). Do NOT update status before sending the email.`
 
       // Create the lead qualification ticket — Stage 0 of the pipeline
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

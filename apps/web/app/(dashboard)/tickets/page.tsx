@@ -6,7 +6,7 @@ import {
   Ticket, Plus, RefreshCw, Clock, AlertCircle,
   User, ChevronDown, ChevronUp, MessageSquare, Globe, Briefcase,
   ArrowRight, X, LayoutList, CheckCircle2, Play, Zap, Mail,
-  Route, ChevronRight, Send,
+  Route, ChevronRight, Send, FlaskConical, Terminal, SkipForward,
 } from 'lucide-react'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -154,6 +154,7 @@ export default function TicketsPage() {
   const [journeyLeadId, setJourneyLeadId] = useState<string | null>(null)
   const [journeyData, setJourneyData] = useState<LeadJourney | null>(null)
   const [journeyLoading, setJourneyLoading] = useState(false)
+  const [showDevJourney, setShowDevJourney] = useState(false)
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const [createForm, setCreateForm] = useState({
@@ -345,6 +346,14 @@ export default function TicketsPage() {
                   {label}
                 </button>
               ))}
+              <button
+                onClick={() => setShowDevJourney(true)}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-amber-800/40 text-amber-400 hover:bg-amber-900/20 transition-colors"
+                title="Dev: simulate a full 8-stage test journey"
+              >
+                <FlaskConical className="w-3 h-3" />
+                Test Journey
+              </button>
               <span className="text-xs text-muted-foreground flex items-center gap-1.5 px-2 py-1.5 opacity-60">
                 <RefreshCw className="w-3 h-3" /> 30s
               </span>
@@ -633,6 +642,11 @@ export default function TicketsPage() {
           onRefresh={() => openJourney(journeyLeadId)}
         />
       )}
+
+      {/* Dev Test Journey Modal */}
+      {showDevJourney && (
+        <DevJourneyModal onClose={() => { setShowDevJourney(false); load() }} />
+      )}
     </div>
   )
 }
@@ -659,7 +673,8 @@ function PipelineMonitor({ tickets, agents, stages, expandedId, threadData, thre
     })
   }
 
-  const allTickets = tickets.filter(t => t.status !== 'CANCELLED')
+  // Exclude dev test-journey tickets from the live pipeline view
+  const allTickets = tickets.filter(t => t.status !== 'CANCELLED' && !(t.metadata as any)?.testJourney)
   const activeTickets = allTickets.filter(t => t.status !== 'COMPLETED')
   const completedToday = allTickets.filter(t => {
     if (t.status !== 'COMPLETED') return false
@@ -1397,6 +1412,406 @@ function ThreadBubble({ msg, source }: { msg: ThreadMessage; source: string }) {
   )
 }
 
+// ── Dev Test Journey Modal ─────────────────────────────────────────
+
+interface DevJourneyTicket {
+  id: string
+  ticketNumber: number
+  status: TicketStatus
+  stageIndex: number | null
+  stageName: string
+  assignedAgent: { id: string; name: string; role: string } | null
+  nextAction: string | null
+  followUpAt: string | null
+  activityLog: any[]
+  createdAt: string
+  updatedAt: string
+  suggestedReply: string | null
+}
+
+interface JourneyLogEntry {
+  time: string
+  icon: string
+  label: string
+  msg: string
+}
+
+function DevJourneyModal({ onClose }: { onClose: () => void }) {
+  const [logs, setLogs]           = useState<JourneyLogEntry[]>([])
+  const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle')
+  const [busy, setBusy]           = useState(false)
+  const [activeTab, setActiveTab] = useState<'terminal' | 'tickets'>('terminal')
+  const [tickets, setTickets]     = useState<DevJourneyTicket[]>([])
+  const [msg, setMsg]             = useState<{ text: string; ok: boolean } | null>(null)
+  const [replyOverrides, setReplyOverrides] = useState<Record<string, string>>({})
+  const logEndRef = useRef<HTMLDivElement>(null)
+  const pollRef   = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const flash = (text: string, ok = true) => { setMsg({ text, ok }); setTimeout(() => setMsg(null), 5000) }
+
+  const fetchLogs = async () => {
+    try {
+      const res = await api.get('/operations/test-journey/logs')
+      setLogs(res.data.logs ?? [])
+      setRunStatus(res.data.status ?? 'idle')
+    } catch { /* ignore */ }
+  }
+
+  const fetchTickets = async () => {
+    try {
+      const res = await api.get('/operations/test-journey/tickets')
+      setTickets(res.data ?? [])
+    } catch { /* ignore */ }
+  }
+
+  useEffect(() => {
+    fetchLogs(); fetchTickets()
+    pollRef.current = setInterval(() => { fetchLogs(); fetchTickets() }, 3000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [])
+
+  useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [logs.length])
+
+  const runFull = async () => {
+    setBusy(true)
+    try {
+      const res = await api.post('/operations/test-journey/run-full')
+      flash(res.data.message); setActiveTab('terminal')
+    } catch (e: any) { flash(`Error: ${e?.response?.data?.message ?? e.message}`, false) }
+    finally { setBusy(false) }
+  }
+
+  const simulateReply = async (ticketId: string) => {
+    setBusy(true)
+    try {
+      const reply = replyOverrides[ticketId] ?? undefined
+      const res = await api.post(`/operations/test-journey/reply/${ticketId}`, { reply })
+      flash(res.data.message); await fetchTickets()
+    } catch (e: any) { flash(`Error: ${e?.response?.data?.message ?? e.message}`, false) }
+    finally { setBusy(false) }
+  }
+
+  const forceAdvance = async (ticketId: string) => {
+    setBusy(true)
+    try {
+      const res = await api.post(`/operations/test-journey/advance/${ticketId}`)
+      flash(res.data.message); await fetchTickets()
+    } catch (e: any) { flash(`Error: ${e?.response?.data?.message ?? e.message}`, false) }
+    finally { setBusy(false) }
+  }
+
+  const STATUS_DOT: Record<string, string> = {
+    idle: 'text-muted-foreground', running: 'text-amber-500',
+    complete: 'text-emerald-600', error: 'text-red-500',
+  }
+  const STATUS_LABEL: Record<string, string> = {
+    idle: 'Idle', running: '● Running…', complete: '✓ Complete', error: '✕ Error',
+  }
+
+  const activeTickets = tickets.filter(t => !['COMPLETED','CANCELLED'].includes(t.status))
+  const doneTickets   = tickets.filter(t => t.status === 'COMPLETED')
+  const devTabs: Array<'terminal' | 'tickets'> = ['terminal', 'tickets']
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div className="fixed inset-0 bg-black/50 z-40 backdrop-blur-sm" onClick={onClose} />
+
+      {/* Drawer */}
+      <div className="fixed right-0 top-0 h-full w-full sm:w-[540px] bg-background border-l border-border z-50 flex flex-col shadow-2xl">
+
+        {/* ── Header ── */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-amber-50/60 dark:bg-amber-950/10 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-amber-100 border border-amber-300 flex items-center justify-center">
+              <FlaskConical className="w-4 h-4 text-amber-600" />
+            </div>
+            <div>
+              <h2 className="font-bold text-sm text-foreground">Test Journey — Dev Panel</h2>
+              <p className="text-[11px] text-muted-foreground">Full 8-stage simulation · info@stormbuddy.co → ronaldo@mitiesoft.com</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className={`text-xs font-semibold ${STATUS_DOT[runStatus]}`}>{STATUS_LABEL[runStatus]}</span>
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* ── Toolbar ── */}
+        <div className="px-4 py-2.5 border-b border-border bg-muted/30 flex items-center gap-2 shrink-0 flex-wrap">
+          <button
+            onClick={runFull}
+            disabled={busy || runStatus === 'running'}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold transition-colors disabled:opacity-40"
+          >
+            {busy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3 h-3" />}
+            {runStatus === 'running' ? 'Running…' : 'Run Full Journey'}
+          </button>
+          <span className="text-[10px] text-muted-foreground hidden sm:block font-mono">node test-full-journey.js</span>
+          <div className="flex gap-0.5 ml-auto">
+            {devTabs.map(tabName => (
+              <button key={tabName} onClick={() => setActiveTab(tabName)}
+                className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded transition-colors ${
+                  activeTab === tabName
+                    ? 'bg-background text-foreground shadow border border-border font-semibold'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}>
+                {tabName === 'terminal'
+                  ? <><Terminal className="w-3 h-3" />Terminal</>
+                  : <><LayoutList className="w-3 h-3" />Tickets ({tickets.filter(t => t.status !== 'CANCELLED').length})</>
+                }
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Message banner ── */}
+        {msg && (
+          <div className={`mx-4 mt-3 px-3 py-2 rounded-lg text-xs font-medium ${
+            msg.ok
+              ? 'bg-emerald-50 border border-emerald-200 text-emerald-800'
+              : 'bg-red-50 border border-red-200 text-red-800'
+          }`}>
+            {msg.text}
+          </div>
+        )}
+
+        {/* ══════════════ TERMINAL TAB ══════════════ */}
+        {activeTab === 'terminal' && (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* idle start screen */}
+            {logs.length === 0 && runStatus === 'idle' && (
+              <div className="flex-1 flex flex-col items-center justify-center p-6 gap-5">
+                <FlaskConical className="w-10 h-10 text-amber-400" />
+                <div className="text-center">
+                  <p className="text-base font-bold text-foreground mb-1">Press <span className="text-amber-600">Run Full Journey</span> — then do nothing</p>
+                  <p className="text-sm text-muted-foreground">Everything is fully automatic. No clicking required.</p>
+                </div>
+
+                {/* Auto-script preview table */}
+                <div className="w-full max-w-md border border-border rounded-xl overflow-hidden">
+                  <div className="px-3 py-2 bg-muted border-b border-border">
+                    <p className="text-xs font-semibold text-foreground">What happens automatically:</p>
+                  </div>
+                  {[
+                    { who: 'Charlie',       icon: '🤖', what: 'Sends outreach email to ronaldo@mitiesoft.com',     ronaldo: false },
+                    { who: 'Ronaldo ✓',     icon: '👤', what: 'Auto-reply: "Interested, tell me more"',            ronaldo: true  },
+                    { who: 'Charlie',       icon: '🤖', what: 'Answers and qualifies the lead',                    ronaldo: false },
+                    { who: 'Ronaldo ✓',     icon: '👤', what: 'Auto-reply: "I am fully on board"',               ronaldo: true  },
+                    { who: 'Will',          icon: '🤖', what: 'Sales consultation email',                          ronaldo: false },
+                    { who: 'Ronaldo ✓',     icon: '👤', what: 'Auto-reply: "Insurance help sounds great"',         ronaldo: true  },
+                    { who: 'Hanna',         icon: '🤖', what: 'Sends available inspection dates',                  ronaldo: false },
+                    { who: 'Ronaldo ✓',     icon: '👤', what: 'Auto-reply: "July 10th at 10am works" → SCHEDULED', ronaldo: true },
+                    { who: 'System',        icon: '✉️', what: 'Sends confirmation email to Ronaldo',               ronaldo: false },
+                    { who: 'Jared → Linda', icon: '🤖', what: 'Stages 3–7 internal work auto-completes',      ronaldo: false },
+                  ].map((row, i) => (
+                    <div key={i} className={`flex items-start gap-3 px-3 py-2 border-b border-border/60 last:border-0 ${row.ronaldo ? 'bg-pink-50/60 dark:bg-pink-950/10' : ''}`}>
+                      <span className="text-base shrink-0">{row.icon}</span>
+                      <span className={`text-xs font-semibold w-[80px] shrink-0 ${row.ronaldo ? 'text-pink-700' : 'text-foreground'}`}>{row.who}</span>
+                      <span className="text-xs text-muted-foreground leading-relaxed">{row.what}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Live log output */}
+            {(logs.length > 0 || runStatus !== 'idle') && (
+              <div className="flex-1 overflow-y-auto bg-zinc-950 font-mono text-[11px] leading-relaxed px-4 py-3 space-y-0.5">
+                {logs.map((entry, i) => {
+                  const isDivider = entry.label === '\u2500\u2500\u2500\u2500\u2500'
+                  const lc =
+                    entry.label.includes('ERROR')    ? 'text-red-400' :
+                    entry.label.includes('COMPLETE') || entry.label === 'DONE' ? 'text-emerald-400' :
+                    entry.label.includes('WAKE')     ? 'text-amber-300' :
+                    entry.label.startsWith('STAGE')  ? 'text-indigo-300' :
+                    entry.label === 'CHARLIE' || entry.label === 'WILL' || entry.label === 'HANNA' ? 'text-cyan-300' :
+                    entry.label === 'EMAIL' || entry.label === 'CUSTOMER' ? 'text-pink-300' :
+                    entry.label === 'TICKET' || entry.label === 'CREATE'  ? 'text-green-300' :
+                    'text-zinc-400'
+                  return isDivider ? (
+                    <div key={i} className="text-zinc-600 py-0.5 select-none">
+                      {'─'.repeat(6)} <span className="text-zinc-400">{entry.msg}</span> {'─'.repeat(6)}
+                    </div>
+                  ) : (
+                    <div key={i} className="flex gap-2 hover:bg-white/5 rounded px-1 -mx-1">
+                      <span className="text-zinc-600 shrink-0 w-[54px] tabular-nums">{entry.time}</span>
+                      <span className="shrink-0 w-5 text-center">{entry.icon}</span>
+                      <span className={`shrink-0 w-[86px] truncate font-semibold ${lc}`}>[{entry.label.slice(0,10)}]</span>
+                      <span className="text-zinc-200 break-all leading-snug">{entry.msg}</span>
+                    </div>
+                  )
+                })}
+
+                {runStatus === 'running' && (
+                  <div className="flex gap-2 text-amber-400 animate-pulse pl-1 mt-1">
+                    <span className="w-[54px]"> </span>
+                    <span className="w-5 text-center">●</span>
+                    <span className="text-zinc-500">[WAIT]</span>
+                    <span>agents processing…</span>
+                  </div>
+                )}
+                {runStatus === 'complete' && (
+                  <div className="mt-3 text-emerald-400 font-bold text-center text-xs py-2 border-t border-zinc-800">
+                    ✓ All 8 stages complete — check Pipeline tab and ronaldo@mitiesoft.com inbox
+                  </div>
+                )}
+                {runStatus === 'error' && (
+                  <div className="mt-3 text-red-400 font-bold text-center text-xs py-2 border-t border-zinc-800">
+                    ✕ Journey failed — check log above for the error
+                  </div>
+                )}
+                <div ref={logEndRef} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══════════════ TICKETS TAB ══════════════ */}
+        {activeTab === 'tickets' && (
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+
+            {/* Auto-pilot banner */}
+            {runStatus === 'running' && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
+                <p className="text-sm font-bold text-emerald-800 flex items-center gap-2 mb-1">
+                  <Zap className="w-4 h-4" /> Full auto-pilot active
+                </p>
+                <p className="text-xs text-emerald-700 leading-relaxed">
+                  Ronaldo&apos;s replies are being injected automatically after each agent responds.
+                  No action needed — watch the <span className="font-semibold">Terminal</span> tab for live output.
+                </p>
+              </div>
+            )}
+
+            {/* Ronaldo replies reference */}
+            {runStatus !== 'idle' && (
+              <div className="border border-border rounded-xl overflow-hidden">
+                <div className="px-3 py-2 bg-muted border-b border-border flex items-center gap-2">
+                  <Mail className="w-3.5 h-3.5 text-pink-500" />
+                  <span className="text-xs font-bold text-foreground">Ronaldo&apos;s auto-replies (pre-scripted, injected automatically)</span>
+                </div>
+                {[
+                  { stage: 'Stage 0 — Reply 1', text: 'Interested in the free inspection — tell me more about the process.' },
+                  { stage: 'Stage 0 — Reply 2', text: 'I am fully on board — let us move forward with the inspection.' },
+                  { stage: 'Stage 1 — Sales',   text: 'Insurance assistance sounds great — what are the next steps?' },
+                  { stage: 'Stage 2 — Date',    text: 'July 10th at 10am works perfectly → confirms inspection date.' },
+                ].map((r, i) => (
+                  <div key={i} className="flex gap-3 px-3 py-2.5 border-b border-border/60 last:border-0">
+                    <span className="text-xs font-semibold text-pink-600 shrink-0 w-[110px]">{r.stage}</span>
+                    <span className="text-xs text-muted-foreground leading-relaxed">{r.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Empty state */}
+            {tickets.filter(t => t.status !== 'CANCELLED').length === 0 && runStatus === 'idle' && (
+              <div className="text-center py-10">
+                <p className="text-sm text-muted-foreground">No test tickets yet.</p>
+                <p className="text-xs text-muted-foreground mt-1">Click <strong className="text-amber-600">Run Full Journey</strong> — everything runs automatically.</p>
+              </div>
+            )}
+
+            {/* Active tickets */}
+            {activeTickets.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-bold text-foreground uppercase tracking-wider">
+                  Active ({activeTickets.length})
+                  {runStatus === 'running' && <span className="ml-2 text-emerald-600 normal-case font-normal">auto-handling…</span>}
+                </p>
+                {activeTickets.map(t => (
+                  <div key={t.id} className={`border rounded-xl p-3.5 space-y-2.5 bg-card ${
+                    t.status === 'AWAITING_CUSTOMER'
+                      ? 'border-amber-300 bg-amber-50/40'
+                      : 'border-indigo-200 bg-indigo-50/30'
+                  }`}>
+                    {/* Stage header */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[10px] font-bold text-muted-foreground font-mono">S{(t.stageIndex ?? 0) + 1}</span>
+                      <span className="text-sm font-bold text-foreground">{t.stageName}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold ${STATUS_COLORS[t.status] ?? 'bg-gray-100 text-gray-700 border-gray-300'}`}>
+                        {t.status.replace(/_/g, ' ')}
+                      </span>
+                      {t.assignedAgent && (
+                        <span className="text-xs text-muted-foreground ml-auto font-medium">{t.assignedAgent.name}</span>
+                      )}
+                    </div>
+
+                    {/* Next action */}
+                    {t.nextAction && (
+                      <p className="text-xs text-indigo-700 flex items-start gap-1.5 font-medium">
+                        <ArrowRight className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span className="line-clamp-2">{t.nextAction}</span>
+                      </p>
+                    )}
+
+                    {/* Auto-pilot badge OR manual override */}
+                    {runStatus === 'running' ? (
+                      <div className="flex items-center gap-1.5 text-xs text-emerald-700 font-medium">
+                        <Zap className="w-3 h-3" />
+                        Auto-pilot handling this stage — no action needed
+                      </div>
+                    ) : (
+                      <div className="space-y-2 pt-1 border-t border-border/60">
+                        <p className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider">Manual override</p>
+                        {['AWAITING_CUSTOMER', 'OPEN'].includes(t.status) && (
+                          <textarea
+                            value={replyOverrides[t.id] ?? t.suggestedReply ?? ''}
+                            onChange={e => setReplyOverrides(r => ({ ...r, [t.id]: e.target.value }))}
+                            rows={2}
+                            placeholder={t.suggestedReply ?? 'Customer reply…'}
+                            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-foreground outline-none resize-none focus:ring-1 focus:ring-amber-500 placeholder:text-muted-foreground"
+                          />
+                        )}
+                        <div className="flex gap-2">
+                          {['AWAITING_CUSTOMER', 'OPEN'].includes(t.status) && (
+                            <button onClick={() => simulateReply(t.id)} disabled={busy}
+                              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200 disabled:opacity-40 font-medium transition-colors">
+                              <Mail className="w-3 h-3" /> Inject Reply
+                            </button>
+                          )}
+                          <button onClick={() => forceAdvance(t.id)} disabled={busy}
+                            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-indigo-100 border border-indigo-300 text-indigo-800 hover:bg-indigo-200 disabled:opacity-40 font-medium transition-colors">
+                            <SkipForward className="w-3 h-3" /> Force Advance
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Completed */}
+            {doneTickets.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-bold text-foreground uppercase tracking-wider">Completed ({doneTickets.length})</p>
+                {doneTickets.map(t => (
+                  <div key={t.id} className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-emerald-200 bg-emerald-50">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span className="text-xs font-semibold text-emerald-900">S{(t.stageIndex ?? 0) + 1} — {t.stageName}</span>
+                    <span className="text-[10px] text-emerald-700 ml-auto font-mono">#{String(t.ticketNumber).padStart(4,'0')}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Footer ── */}
+        <div className="border-t border-border px-5 py-3 shrink-0 flex items-center justify-between bg-muted/20">
+          <p className="text-xs text-muted-foreground font-mono">ronaldo@mitiesoft.com ← info@stormbuddy.co</p>
+          <button onClick={onClose} className="text-xs px-3 py-1.5 rounded-lg border border-border text-foreground hover:bg-accent transition-colors font-medium">
+            Close
+          </button>
+        </div>
+      </div>
+    </>
+  )
+}
 // ── Lead Journey Drawer ────────────────────────────────────────────
 
 const JOURNEY_STATUS_COLORS: Record<string, string> = {

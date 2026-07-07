@@ -109,13 +109,8 @@ export class EmailService {
       return
     }
 
-    // Dev override: redirect ALL outgoing emails to a safe address
-    const devOverride = process.env.DEV_EMAIL_OVERRIDE
-    const originalTo = Array.isArray(params.to) ? params.to.join(', ') : params.to
-    const actualTo = devOverride ?? originalTo
-    const subject = devOverride
-      ? `[DEV → ${originalTo}] ${params.subject}`
-      : params.subject
+    const actualTo = Array.isArray(params.to) ? params.to.join(', ') : params.to
+    const subject = params.subject
 
     const transporter = await this.buildTransporter(params.tenantId)
     try {
@@ -126,7 +121,7 @@ export class EmailService {
         html: params.html,
         text: params.text,
       })
-      this.logger.log(`Email sent to ${actualTo}${devOverride ? ` (dev override — original: ${originalTo})` : ''}: ${params.subject}`)
+      this.logger.log(`Email sent to ${actualTo}: ${params.subject}`)
     } catch (err) {
       this.logger.error(`Email send failed: ${err}`)
       throw err

@@ -1,21 +1,16 @@
-import { Controller, Post, Param, UseGuards, Request, HttpCode, HttpStatus, BadRequestException } from '@nestjs/common'
+import {
+  Controller, Post, Get, Param, Body, UseGuards, Request,
+  HttpCode, HttpStatus, BadRequestException, Inject, forwardRef,
+} from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiParam } from '@nestjs/swagger'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { TicketProcessorScheduler } from './ticket-processor.scheduler'
 import { CrmLeadScannerScheduler } from './crm-lead-scanner.scheduler'
 import { EmailScannerScheduler } from '../integrations/email-scanner.scheduler'
+import { TestJourneyService } from './test-journey.service'
+import { ChatService } from '../chat/chat.service'
+import { PrismaService } from '../../common/prisma/prisma.service'
 
-/**
- * Operations Controller — manual triggers for background schedulers.
- *
- * Allows tenant users (and admins) to fire any background scheduler
- * on demand without waiting for the next cron tick.
- *
- * POST /api/v1/operations/run/crm-scan          → Import new CRM leads now
- * POST /api/v1/operations/run/process-tickets   → Wake agents for all pending tickets now
- * POST /api/v1/operations/run/flip-scheduled    → Re-open any SCHEDULED tickets whose date has passed
- * POST /api/v1/operations/run/escalation-check → Run no-response escalation check now
- */
 @ApiTags('Operations')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -25,46 +20,113 @@ export class OperationsController {
     private readonly ticketProcessor: TicketProcessorScheduler,
     private readonly crmScanner: CrmLeadScannerScheduler,
     private readonly emailScanner: EmailScannerScheduler,
+    private readonly testJourney: TestJourneyService,
+    @Inject(forwardRef(() => ChatService)) private readonly chat: ChatService,
+    private readonly prisma: PrismaService,
   ) {}
+
+  // ── Scheduler triggers ────────────────────────────────────────────────────
 
   @Post('run/:action')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Manually trigger a background scheduler action' })
-  @ApiParam({
-    name: 'action',
-    enum: ['crm-scan', 'process-tickets', 'flip-scheduled', 'escalation-check'],
-    description: 'Which scheduler to run immediately',
-  })
-  async runAction(@Param('action') action: string, @Request() _req: any) {
+  @ApiParam({ name: 'action', enum: ['crm-scan', 'process-tickets', 'flip-scheduled', 'escalation-check', 'email-scan', 'follow-up-check'] })
+  async runAction(@Param('action') action: string) {
     switch (action) {
       case 'crm-scan':
         await this.crmScanner.scanAllTenants()
-        return { ok: true, action, message: 'CRM lead scan triggered. Check tickets in a few seconds.' }
-
+        return { ok: true, action, message: 'CRM lead scan triggered.' }
       case 'process-tickets':
-        await this.ticketProcessor.processOpenTickets(true)  // force=true bypasses 4-hour IN_PROGRESS cooldown
+        await this.ticketProcessor.processOpenTickets(true)
         return { ok: true, action, message: 'Ticket processor triggered (force mode). All OPEN and IN_PROGRESS tickets are being actioned now.' }
-
       case 'flip-scheduled':
         await this.ticketProcessor.flipScheduledTickets()
-        return { ok: true, action, message: 'Scheduled ticket flip triggered. Any past-due SCHEDULED tickets are now OPEN.' }
-
+        return { ok: true, action, message: 'Scheduled ticket flip triggered.' }
       case 'escalation-check':
         await this.ticketProcessor.checkNoResponseEscalation()
-        return { ok: true, action, message: 'Escalation check triggered. Unacknowledged tickets will be escalated.' }
-
-      case 'email-scan':
-        await this.emailScanner.runEmailScan()
-        return { ok: true, action, message: 'Email inbox scanned. Any customer replies will have reopened their tickets.' }
-
+        return { ok: true, action, message: 'Escalation check triggered.' }
       case 'follow-up-check':
         await this.ticketProcessor.runFollowUpCheck()
-        return { ok: true, action, message: 'Follow-up check triggered. Overdue AWAITING_CUSTOMER tickets will receive a follow-up email.' }
-
+        return { ok: true, action, message: 'Follow-up check triggered.' }
+      case 'email-scan':
+        await this.emailScanner.runEmailScan()
+        return { ok: true, action, message: 'Email inbox scanned.' }
       default:
-        throw new BadRequestException(
-          `Unknown action "${action}". Valid options: crm-scan, process-tickets, flip-scheduled, escalation-check`,
-        )
+        throw new BadRequestException(`Unknown action "${action}".`)
+    }
+  }
+
+  // ── Dev Test Journey ──────────────────────────────────────────────────────
+
+  /** Start the fully automated 8-stage journey (same as node test-full-journey.js) */
+  @Post('test-journey/run-full')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '[DEV] Run full automated 8-stage journey — same as node test-full-journey.js' })
+  async runFullJourney(@Request() req: any) {
+    const tenantId: string = req.user?.tenantId
+    if (!tenantId) throw new BadRequestException('No tenant in auth context')
+    return this.testJourney.startFullJourney(tenantId)
+  }
+
+  /** Poll for live log entries */
+  @Get('test-journey/logs')
+  @ApiOperation({ summary: '[DEV] Get live log entries for the running test journey' })
+  getTestJourneyLogs(@Request() req: any) {
+    const tenantId: string = req.user?.tenantId
+    if (!tenantId) throw new BadRequestException('No tenant in auth context')
+    return {
+      status: this.testJourney.getStatus(tenantId),
+      logs: this.testJourney.getLogs(tenantId),
+    }
+  }
+
+  /** List current test journey tickets for step-by-step view */
+  @Get('test-journey/tickets')
+  @ApiOperation({ summary: '[DEV] List all test journey tickets' })
+  async getTestJourneyTickets(@Request() req: any): Promise<object[]> {
+    const tenantId: string = req.user?.tenantId
+    if (!tenantId) throw new BadRequestException('No tenant in auth context')
+    return this.testJourney.getJourneyTickets(tenantId)
+  }
+
+  /** Inject a simulated customer reply */
+  @Post('test-journey/reply/:ticketId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '[DEV] Inject a simulated customer reply' })
+  async simulateReply(
+    @Request() req: any,
+    @Param('ticketId') ticketId: string,
+    @Body() body: { reply?: string },
+  ) {
+    const tenantId: string = req.user?.tenantId
+    if (!tenantId) throw new BadRequestException('No tenant in auth context')
+    const result = await this.testJourney.simulateReply(tenantId, ticketId, body?.reply)
+    return { ok: true, result, message: `Reply injected → ${result}. Click "Wake Agents" to let the agent respond.` }
+  }
+
+  /** Force-complete a stage and trigger pipeline advance */
+  @Post('test-journey/advance/:ticketId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '[DEV] Force-complete a stage and trigger pipeline advance' })
+  async forceAdvance(@Request() req: any, @Param('ticketId') ticketId: string) {
+    const tenantId: string = req.user?.tenantId
+    if (!tenantId) throw new BadRequestException('No tenant in auth context')
+    const result = await this.testJourney.forceAdvance(tenantId, ticketId)
+
+    if (result.completingAgentId) {
+      const ticket = await this.prisma.activityTicket.findUnique({
+        where: { id: ticketId },
+        include: { assignedAgent: true },
+      }).catch(() => null)
+      if (ticket) {
+        this.chat.pipelineAdvance(tenantId, ticket as any, ticket.assignedAgent as any, result.note).catch(() => {})
+      }
+    }
+
+    return {
+      ok: true,
+      ...result,
+      message: `Stage ${result.stageIdx + 1} force-completed. Pipeline advance triggered — next stage ticket will appear shortly.`,
     }
   }
 }

@@ -32,7 +32,7 @@ function StatCard({ icon: Icon, label, value, sub, color = 'blue' }: {
     </div>
   )
 }
-
+// dfdf
 export function AnalyticsPage() {
   const { data: summary } = useQuery({
     queryKey: ['analytics-summary'],

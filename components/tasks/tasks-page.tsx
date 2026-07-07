@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { CheckCircle, Clock, AlertCircle, XCircle, Plus, Loader2 } from 'lucide-react'
+import { CheckCircle, Clock, AlertCircle, XCircle, Plus, Loader2, Trash2 } from 'lucide-react'
 
 const STATUS_CONFIG: Record<string, { label: string; icon: any; color: string }> = {
   PENDING: { label: 'Pending', icon: Clock, color: 'text-muted-foreground' },
@@ -25,6 +25,7 @@ export function TasksPage() {
   const qc = useQueryClient()
   const [filter, setFilter] = useState<string>('ALL')
   const [showCreate, setShowCreate] = useState(false)
+  const [showResetConfirm, setShowResetConfirm] = useState(false)
   const [newTask, setNewTask] = useState({ title: '', description: '', priority: 'MEDIUM' })
 
   const { data, isLoading } = useQuery({
@@ -52,6 +53,14 @@ export function TasksPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
   })
 
+  const resetMutation = useMutation({
+    mutationFn: () => api.delete('/tickets/reset/all'),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+      setShowResetConfirm(false)
+    },
+  })
+
   const tasks: any[] = Array.isArray(data) ? data : []
 
   return (
@@ -61,13 +70,58 @@ export function TasksPage() {
           <h1 className="text-xl font-semibold">Tasks</h1>
           <p className="text-sm text-muted-foreground">{tasks.length} total</p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-1.5 bg-primary text-primary-foreground px-3 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors"
-        >
-          <Plus className="w-4 h-4" /> New Task
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowResetConfirm(true)}
+            className="flex items-center gap-1.5 border border-destructive/50 text-destructive px-3 py-2 rounded-md text-sm hover:bg-destructive/10 transition-colors"
+            title="Dev only — remove all tickets"
+          >
+            <Trash2 className="w-4 h-4" /> Reset All
+          </button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-1.5 bg-primary text-primary-foreground px-3 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors"
+          >
+            <Plus className="w-4 h-4" /> New Task
+          </button>
+        </div>
       </div>
+
+      {/* Reset confirmation dialog */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-sm bg-card rounded-xl border border-border p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-destructive" />
+              </div>
+              <div>
+                <h2 className="font-semibold">Reset All Tickets</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">This will permanently delete every ticket for your workspace.</p>
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground rounded-md bg-destructive/5 border border-destructive/20 px-3 py-2">
+              {tasks.length} ticket{tasks.length !== 1 ? 's' : ''} will be deleted. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                disabled={resetMutation.isPending}
+                className="px-3 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => resetMutation.mutate()}
+                disabled={resetMutation.isPending}
+                className="px-3 py-2 bg-destructive text-destructive-foreground text-sm rounded-md hover:bg-destructive/90 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+              >
+                {resetMutation.isPending ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Deleting...</> : <><Trash2 className="w-3.5 h-3.5" /> Delete All</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create modal */}
       {showCreate && (

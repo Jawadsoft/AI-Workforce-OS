@@ -86,6 +86,12 @@ export class TicketsController {
     return this.service.update(req.user.tenantId, id, req.user.sub, req.user.name ?? 'User', dto)
   }
 
+  @Delete('reset/all')
+  @ApiOperation({ summary: 'Dev: delete ALL tickets for the tenant' })
+  resetAll(@Request() req: any) {
+    return this.service.resetAll(req.user.tenantId)
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a ticket' })
   remove(@Request() req: any, @Param('id') id: string) {

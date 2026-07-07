@@ -431,6 +431,13 @@ export class TicketsService {
     return { success: true }
   }
 
+  // ── Dev-only: delete ALL tickets for the tenant ─────────────────────
+
+  async resetAll(tenantId: string) {
+    const { count } = await this.prisma.activityTicket.deleteMany({ where: { tenantId } })
+    return { success: true, deleted: count }
+  }
+
   // ── Scheduled: check overdue follow-ups every 15 minutes ──────────
 
   @Cron(CronExpression.EVERY_10_MINUTES)

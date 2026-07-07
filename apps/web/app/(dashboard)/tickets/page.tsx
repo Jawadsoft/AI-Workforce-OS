@@ -6,7 +6,7 @@ import {
   Ticket, Plus, RefreshCw, Clock, AlertCircle,
   User, ChevronDown, ChevronUp, MessageSquare, Globe, Briefcase,
   ArrowRight, X, LayoutList, CheckCircle2, Play, Zap, Mail,
-  Route, ChevronRight, Send, FlaskConical, Terminal, SkipForward,
+  Route, ChevronRight, Send, FlaskConical, Terminal, SkipForward, Trash2,
 } from 'lucide-react'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -155,6 +155,8 @@ export default function TicketsPage() {
   const [journeyData, setJourneyData] = useState<LeadJourney | null>(null)
   const [journeyLoading, setJourneyLoading] = useState(false)
   const [showDevJourney, setShowDevJourney] = useState(false)
+  const [showResetConfirm, setShowResetConfirm] = useState(false)
+  const [resetting, setResetting] = useState(false)
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const [createForm, setCreateForm] = useState({
@@ -282,6 +284,17 @@ export default function TicketsPage() {
     load()
   }
 
+  async function resetAllTickets() {
+    setResetting(true)
+    try {
+      await api.delete('/tickets/reset/all')
+      setShowResetConfirm(false)
+      load()
+    } finally {
+      setResetting(false)
+    }
+  }
+
   async function openJourney(leadId: string) {
     setJourneyLeadId(leadId)
     setJourneyData(null)
@@ -359,6 +372,13 @@ export default function TicketsPage() {
               </span>
             </div>
           )}
+          <button
+            onClick={() => setShowResetConfirm(true)}
+            className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border border-destructive/40 text-destructive hover:bg-destructive/10 transition-colors"
+            title="Dev only — delete all tickets"
+          >
+            <Trash2 className="w-3.5 h-3.5" /> Reset All
+          </button>
           <button onClick={load} className="w-9 h-9 flex items-center justify-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
             <RefreshCw className="w-4 h-4" />
           </button>
@@ -646,6 +666,45 @@ export default function TicketsPage() {
       {/* Dev Test Journey Modal */}
       {showDevJourney && (
         <DevJourneyModal onClose={() => { setShowDevJourney(false); load() }} />
+      )}
+
+      {/* Reset All Confirmation */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm bg-card rounded-xl border border-border p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-destructive" />
+              </div>
+              <div>
+                <h2 className="font-semibold">Reset All Tickets</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">Permanently deletes every ticket in your workspace.</p>
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground rounded-md bg-destructive/5 border border-destructive/20 px-3 py-2">
+              <strong>{tickets.length}</strong> ticket{tickets.length !== 1 ? 's' : ''} will be deleted. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                disabled={resetting}
+                className="px-4 py-2 text-sm border border-border rounded-lg hover:bg-accent transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={resetAllTickets}
+                disabled={resetting}
+                className="px-4 py-2 bg-destructive text-destructive-foreground text-sm rounded-lg hover:bg-destructive/90 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+              >
+                {resetting
+                  ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Deleting…</>
+                  : <><Trash2 className="w-3.5 h-3.5" /> Delete All</>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

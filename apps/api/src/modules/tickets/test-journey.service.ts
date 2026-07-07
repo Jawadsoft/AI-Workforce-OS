@@ -386,7 +386,20 @@ export class TestJourneyService {
 
   // ── Manual step helpers (kept for the step-by-step panel) ─────────────────
 
-  async getJourneyTickets(tenantId: string) {
+  async getJourneyTickets(tenantId: string): Promise<Array<{
+    id: string
+    ticketNumber: number
+    status: string
+    stageIndex: number | null
+    stageName: string
+    assignedAgent: { id: string; name: string; role: string } | null
+    nextAction: string | null
+    followUpAt: Date | null
+    activityLog: unknown
+    createdAt: Date
+    updatedAt: Date
+    suggestedReply: string | null
+  }>> {
     const tickets = await this.prisma.activityTicket.findMany({
       where: {
         tenantId,
@@ -529,7 +542,7 @@ export class TestJourneyService {
         await this.wakeAgents()
         await this.sleep(3000)
 
-        ticket = await this.waitForNewTicket(tenantId, stage.idx, journeyStartTime, 55000)
+        ticket = await this.waitForNewTicket(tenantId, stage.idx, journeyStartTime, 25000)
         if (!ticket) {
           log('⚙️', 'CREATE', `Stage ${stage.idx} ticket not auto-created — creating manually`)
           const ag = byRole(stage.roleKeyword)
@@ -545,10 +558,11 @@ export class TestJourneyService {
       }
 
       // ── Wake agents and wait for initial response ─────────────────────────
-      log('⚡', 'WAKE', `Waking ${stage.roleKeyword} agent...`)
+      log('⚡', 'WAKE', `Waking ${stage.roleKeyword} agent... (cap 20s)`)
       await this.wakeAgents()
-      await this.sleep(4000)
-      const afterWake = await this.waitForStatus(ticket.id, ['AWAITING_CUSTOMER', 'IN_PROGRESS', 'COMPLETED'], 40000)
+      await this.sleep(2000)
+      log('⏳', 'WAIT', `Checking ticket status (up to 15s)...`)
+      const afterWake = await this.waitForStatus(ticket.id, ['AWAITING_CUSTOMER', 'IN_PROGRESS', 'COMPLETED'], 15000)
       if (afterWake) {
         log('✅', stage.roleKeyword.toUpperCase().slice(0, 12), `Status → ${afterWake.status}`)
       } else {
@@ -574,7 +588,7 @@ export class TestJourneyService {
         const afterReply = await this.waitForStatus(
           ticket.id,
           ['AWAITING_CUSTOMER', 'IN_PROGRESS', 'COMPLETED', 'SCHEDULED'],
-          40000,
+          15000,
         )
         if (afterReply) {
           log('✅', stage.roleKeyword.toUpperCase().slice(0, 12), `Responded. Status → ${afterReply.status}`)
@@ -767,17 +781,29 @@ export class TestJourneyService {
   private sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }
 
   private async wakeAgents() {
-    await this.ticketProcessor.processOpenTickets(true)
+    // Fire-and-forget: don't block the journey waiting for LLM responses.
+    // waitForStatus() will poll for the result; force-complete fires if agent is too slow.
+    this.ticketProcessor.processOpenTickets(true).catch(err =>
+      this.logger.warn(`[wakeAgents] background error: ${err?.message}`)
+    )
+    await this.sleep(3000)
   }
 
   private async waitForStatus(ticketId: string, targetStatuses: string[], timeoutMs: number) {
     const deadline = Date.now() + timeoutMs
+    let lastLog = Date.now()
     while (Date.now() < deadline) {
       const t = await this.prisma.activityTicket.findUnique({
         where: { id: ticketId },
         select: { status: true, activityLog: true, nextAction: true },
       })
       if (t && targetStatuses.includes(t.status)) return t
+      // Heartbeat every 8s so the log stays alive
+      if (Date.now() - lastLog >= 8000) {
+        const remaining = Math.round((deadline - Date.now()) / 1000)
+        this.logger.debug(`[waitForStatus] still waiting for ${targetStatuses.join('/')} on ${ticketId} (${remaining}s left)`)
+        lastLog = Date.now()
+      }
       await this.sleep(2000)
     }
     return null
@@ -785,6 +811,7 @@ export class TestJourneyService {
 
   private async waitForNewTicket(tenantId: string, stageIndex: number, afterTime: Date, timeoutMs: number) {
     const deadline = Date.now() + timeoutMs
+    let lastLog = Date.now()
     while (Date.now() < deadline) {
       const t = await this.prisma.activityTicket.findFirst({
         where: {
@@ -798,6 +825,11 @@ export class TestJourneyService {
         orderBy: { createdAt: 'desc' },
       })
       if (t) return t
+      if (Date.now() - lastLog >= 8000) {
+        const remaining = Math.round((deadline - Date.now()) / 1000)
+        this.logger.debug(`[waitForNewTicket] stage ${stageIndex} not created yet (${remaining}s left)`)
+        lastLog = Date.now()
+      }
       await this.sleep(2000)
     }
     return null
@@ -825,8 +857,8 @@ export class TestJourneyService {
       ? `Inspection confirmed for ${new Date(confirmedDate).toLocaleDateString('en-GB')} — send confirmation email, then update_ticket(COMPLETED).`
       : `Customer replied: "${body.slice(0, 120)}". Respond via contact_customer(contactEmail: "${TEST_CUSTOMER.email}"). When fully resolved, call update_ticket(COMPLETED).`
 
-    await this.prisma.activityTicket.update({
-      where: { id: ticket.id },
+    const { count } = await this.prisma.activityTicket.updateMany({
+      where: { id: ticket.id, status: { notIn: ['CANCELLED', 'COMPLETED'] } },
       data: {
         status: newStatus as any,
         followUpAt,
@@ -841,14 +873,18 @@ export class TestJourneyService {
         }] as any,
       },
     })
+    if (count === 0) {
+      this.logger.warn(`[injectReply] ticket ${ticket.id} was already completed/cancelled — skipping reply injection`)
+    }
     return newStatus
   }
 
   private async markComplete(ticketId: string, note: string) {
     const ticket = await this.prisma.activityTicket.findUnique({ where: { id: ticketId } })
-    const log = Array.isArray(ticket?.activityLog) ? ticket!.activityLog as any[] : []
-    await this.prisma.activityTicket.update({
-      where: { id: ticketId },
+    if (!ticket || ['COMPLETED', 'CANCELLED'].includes(ticket.status)) return
+    const log = Array.isArray(ticket.activityLog) ? ticket.activityLog as any[] : []
+    await this.prisma.activityTicket.updateMany({
+      where: { id: ticketId, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
       data: {
         status: 'COMPLETED',
         resolvedAt: new Date(),

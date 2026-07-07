@@ -11,9 +11,18 @@ importers:
       '@prisma/client':
         specifier: ^5.14.0
         version: 5.22.0(prisma@5.22.0)
+      '@tanstack/react-query':
+        specifier: ^5.100.14
+        version: 5.100.14(react@19.2.6)
+      lucide-react:
+        specifier: ^0.400.0
+        version: 0.400.0(react@19.2.6)
       pg:
         specifier: ^8.22.0
         version: 8.22.0
+      recharts:
+        specifier: ^2.15.4
+        version: 2.15.4(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -278,7 +287,7 @@ importers:
         specifier: ^1.1.2
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@tanstack/react-query':
-        specifier: ^5.45.0
+        specifier: ^5.100.14
         version: 5.100.14(react@19.2.6)
       axios:
         specifier: ^1.7.2

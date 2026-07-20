@@ -1503,6 +1503,7 @@ function DevJourneyModal({ onClose }: { onClose: () => void }) {
   const [tickets, setTickets]     = useState<DevJourneyTicket[]>([])
   const [msg, setMsg]             = useState<{ text: string; ok: boolean } | null>(null)
   const [replyOverrides, setReplyOverrides] = useState<Record<string, string>>({})
+  const [customerEmail, setCustomerEmail] = useState('')
   const logEndRef = useRef<HTMLDivElement>(null)
   const pollRef   = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -1534,7 +1535,9 @@ function DevJourneyModal({ onClose }: { onClose: () => void }) {
   const runFull = async () => {
     setBusy(true)
     try {
-      const res = await api.post('/operations/test-journey/run-full')
+      const payload: Record<string, string> = {}
+      if (customerEmail.trim()) payload.customerEmail = customerEmail.trim()
+      const res = await api.post('/operations/test-journey/run-full', payload)
       flash(res.data.message); setActiveTab('terminal')
     } catch (e: any) { flash(`Error: ${e?.response?.data?.message ?? e.message}`, false) }
     finally { setBusy(false) }
@@ -1598,7 +1601,7 @@ function DevJourneyModal({ onClose }: { onClose: () => void }) {
             </div>
             <div>
               <h2 className="font-bold text-sm text-foreground">Test Journey — Dev Panel</h2>
-              <p className="text-[11px] text-muted-foreground">Full 8-stage simulation · info@stormbuddy.co → ronaldo@mitiesoft.com</p>
+              <p className="text-[11px] text-muted-foreground">Full 22-stage simulation · {customerEmail.trim() ? `→ ${customerEmail.trim()}` : 'auto-detects lead from CRM'}</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -1611,6 +1614,14 @@ function DevJourneyModal({ onClose }: { onClose: () => void }) {
 
         {/* ── Toolbar ── */}
         <div className="px-4 py-2.5 border-b border-border bg-muted/30 flex items-center gap-2 shrink-0 flex-wrap">
+          <input
+            type="email"
+            placeholder="Lead email (leave blank to auto-detect from CRM)"
+            value={customerEmail}
+            onChange={e => setCustomerEmail(e.target.value)}
+            disabled={runStatus === 'running'}
+            className="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber-400 disabled:opacity-40"
+          />
           <button
             onClick={runFull}
             disabled={busy || runStatus === 'running'}

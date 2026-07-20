@@ -5,18 +5,10 @@ import { ChatService } from '../chat/chat.service'
 import { CrmService } from '../crm/crm.service'
 import * as nodemailer from 'nodemailer'
 
-// ── Customer constants ──────────────────────────────────────────────────────
-
-const TEST_CUSTOMER = {
-  name: 'Ronaldo (Test Journey)',
-  email: 'ronaldo@mitiesoft.com',
-  phone: '+1 917 265 8444',
-  address: '42 Oak Drive, Fort Worth, TX 76101',
-}
-
-// ── Insurance carrier (simulated) ─────────────────────────────────────────
-// Real SMTP mailbox used to send carrier approval/decision emails so they
-// appear in Ronaldo's inbox exactly as a real carrier would send them.
+// ── Simulated email mailboxes ──────────────────────────────────────────────
+// CARRIER: sends approval/decision emails FROM the insurance carrier TO the customer.
+// CUSTOMER_SMTP: sends claim/supplement emails FROM the customer TO the carrier.
+// Both use real SMTP so emails appear in actual inboxes during simulation.
 
 const CARRIER = {
   name: 'State Farm Insurance',
@@ -25,6 +17,15 @@ const CARRIER = {
   smtpPort: 587,
   smtpPass: 'paulp786@',
 }
+
+const CUSTOMER_SMTP = {
+  email: 'olise@mitiesoft.com',
+  smtpHost: 'send.one.com',
+  smtpPort: 587,
+  smtpPass: 'olise786@',
+}
+
+type JourneyCustomer = { name: string; email: string; phone: string; address: string }
 
 const CRM_DATE_FIELDS = ['inspectionDate', 'installationDate', 'materialDeliveryDate', 'stormEventDate'] as const
 
@@ -90,8 +91,12 @@ interface StageConfig {
   crmUpdate?: Record<string, any>
   // Document to attach to the job card (type + simulated filename)
   crmDocument?: { type: string; fileName: string }
-  // Email sent FROM the carrier TO the homeowner (real email via carrier SMTP)
-  carrierReply?: { subject: string; html: string }
+  // Email sent FROM the customer/contractor TO the carrier (claim/supplement submission).
+  // Defined as a factory so customer name/address are substituted at runtime.
+  customerToCarrier?: (customer: JourneyCustomer) => { subject: string; html: string }
+  // Email sent FROM the carrier TO the homeowner (approval/decision response).
+  // Defined as a factory so customer name/address are substituted at runtime.
+  carrierReply?: (customer: JourneyCustomer) => { subject: string; html: string }
 }
 
 const ALL_STAGES: StageConfig[] = [
@@ -190,11 +195,33 @@ const ALL_STAGES: StageConfig[] = [
     note: 'Claim submitted to carrier. Approval letter received. ACV: $24,500. RCV: $28,900. Claim ref: CLM-2026-TX-00847.',
     crmUpdate: { claimNumber: 'CLM-2026-TX-00847', acvAmount: 24500, rcvAmount: 28900, insuranceCarrier: 'State Farm' },
     crmDocument: { type: 'approval_letter', fileName: 'carrier-approval-CLM-2026-TX-00847.pdf' },
-    carrierReply: {
+    customerToCarrier: (c) => ({
+      subject: 'Roof Damage Claim Submission — Hail & Wind — April 12, 2026',
+      html: `
+        <p>Dear Claims Team,</p>
+        <p>Please find attached the roof damage claim for the property listed below. The damage was sustained during the hail and wind event on <strong>April 12, 2026</strong>.</p>
+        <table style="border-collapse:collapse;margin:16px 0">
+          <tr><td style="padding:4px 12px 4px 0"><strong>Homeowner:</strong></td><td>${c.name}</td></tr>
+          <tr><td style="padding:4px 12px 4px 0"><strong>Property Address:</strong></td><td>${c.address}</td></tr>
+          <tr><td style="padding:4px 12px 4px 0"><strong>Contact Email:</strong></td><td>${c.email}</td></tr>
+          <tr><td style="padding:4px 12px 4px 0"><strong>Contact Phone:</strong></td><td>${c.phone}</td></tr>
+          <tr><td style="padding:4px 12px 4px 0"><strong>Damage Type:</strong></td><td>Hail &amp; Wind</td></tr>
+          <tr><td style="padding:4px 12px 4px 0"><strong>Estimated Damage:</strong></td><td>$28,900.00</td></tr>
+          <tr><td style="padding:4px 12px 4px 0"><strong>Inspection Report:</strong></td><td>Attached (field-inspection-report.pdf)</td></tr>
+          <tr><td style="padding:4px 12px 4px 0"><strong>Storm Verification:</strong></td><td>NOAA Event confirmed — hail ≥ 1.0"</td></tr>
+        </table>
+        <p>Please process this claim at your earliest convenience. The homeowner is ready to proceed with repairs pending approval.</p>
+        <br>
+        <p>Regards,<br>
+        <strong>StormBuddi Roofing</strong><br>
+        ✉ ${CUSTOMER_SMTP.email}</p>
+      `,
+    }),
+    carrierReply: (c) => ({
       subject: 'Re: Roof Damage Claim — CLM-2026-TX-00847 — APPROVED',
       html: `
-        <p>Dear ${TEST_CUSTOMER.name},</p>
-        <p>We have completed our review of your roof damage claim submitted for the property at <strong>${TEST_CUSTOMER.address}</strong>.</p>
+        <p>Dear ${c.name},</p>
+        <p>We have completed our review of your roof damage claim submitted for the property at <strong>${c.address}</strong>.</p>
         <p>We are pleased to inform you that your claim has been <strong>approved</strong>.</p>
         <table style="border-collapse:collapse;margin:16px 0">
           <tr><td style="padding:4px 12px 4px 0"><strong>Claim Number:</strong></td><td>CLM-2026-TX-00847</td></tr>
@@ -212,7 +239,7 @@ const ALL_STAGES: StageConfig[] = [
         ${CARRIER.name}<br>
         📞 1-800-STATE-FARM | ✉ ${CARRIER.email}</p>
       `,
-    },
+    }),
   },
   {
     idx: 9,
@@ -222,10 +249,31 @@ const ALL_STAGES: StageConfig[] = [
     note: 'Supplement filed. Identified 12 underpaid line items. Total supplement: $8,400. Depreciation holdback: $4,400. Carrier reference: REF-TX-9876.',
     crmUpdate: { claimReferenceNumber: 'REF-TX-9876', depreciationHoldback: 4400 },
     crmDocument: { type: 'supplement', fileName: 'supplement-REF-TX-9876.pdf' },
-    carrierReply: {
+    customerToCarrier: (c) => ({
+      subject: 'Supplement Request — CLM-2026-TX-00847 — Additional Line Items',
+      html: `
+        <p>Dear Claims Team,</p>
+        <p>We are writing to request a supplement to claim <strong>CLM-2026-TX-00847</strong> for the property at <strong>${c.address}</strong> (homeowner: ${c.name}).</p>
+        <p>Upon conducting a detailed scope review, our estimator identified the following items that were missing or underpaid in the original settlement:</p>
+        <ul>
+          <li>Drip edge replacement — <strong>$1,200.00</strong></li>
+          <li>Ice &amp; water shield (full deck) — <strong>$1,800.00</strong></li>
+          <li>Pipe boot replacements × 4 — <strong>$640.00</strong></li>
+          <li>Additional labour (steep slope) — <strong>$2,100.00</strong></li>
+          <li>Gutter &amp; downspout replacement — <strong>$2,660.00</strong></li>
+        </ul>
+        <p><strong>Total supplement requested: $8,400.00</strong></p>
+        <p>Supporting documentation (revised Xactimate estimate and photo evidence) is attached. Please review and confirm your decision at your earliest convenience.</p>
+        <br>
+        <p>Regards,<br>
+        <strong>StormBuddi Roofing</strong><br>
+        ✉ ${CUSTOMER_SMTP.email}</p>
+      `,
+    }),
+    carrierReply: (c) => ({
       subject: 'Re: Supplement Request — CLM-2026-TX-00847 — Decision Issued',
       html: `
-        <p>Dear ${TEST_CUSTOMER.name},</p>
+        <p>Dear ${c.name},</p>
         <p>We have reviewed the supplement request submitted by your contractor for claim <strong>CLM-2026-TX-00847</strong>.</p>
         <p>After evaluation, we have approved the following additional items:</p>
         <ul>
@@ -245,7 +293,7 @@ const ALL_STAGES: StageConfig[] = [
         ${CARRIER.name}<br>
         📞 1-800-STATE-FARM | ✉ ${CARRIER.email}</p>
       `,
-    },
+    }),
   },
 
   // ── MATERIALS ────────────────────────────────────────────────────────────
@@ -410,19 +458,31 @@ export class TestJourneyService {
     return journeyStatus.get(tenantId) ?? 'idle'
   }
 
-  /** Start the full automated 22-stage journey in the background. Returns immediately. */
-  startFullJourney(tenantId: string) {
+  /** Start the full automated 22-stage journey in the background. Returns immediately.
+   *  @param customerOverride  Optional customer details. If omitted the lead is auto-detected
+   *                           from the CRM (most recent lead with a job ID).
+   */
+  startFullJourney(tenantId: string, customerOverride?: { email?: string; name?: string; phone?: string; address?: string }) {
     if (journeyStatus.get(tenantId) === 'running') {
       return { ok: false, message: 'A journey is already running. Wait for it to finish or click Stop.' }
+    }
+    // Build a partial customer from whatever was explicitly provided.
+    // Missing fields (including email) are resolved from CRM inside runFullJourney.
+    const email = customerOverride?.email?.trim() ?? ''
+    const partial: JourneyCustomer = {
+      email,
+      name:    customerOverride?.name?.trim()    || (email ? email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : ''),
+      phone:   customerOverride?.phone?.trim()   || '',
+      address: customerOverride?.address?.trim() || '',
     }
     journeyLogs.set(tenantId, [])
     journeyCancelRequested.set(tenantId, false)
     journeyStatus.set(tenantId, 'running')
-    this.log(tenantId, '🚀', 'START', `Full 22-stage pipeline journey — ${TEST_CUSTOMER.name} <${TEST_CUSTOMER.email}>`)
+    this.log(tenantId, '🚀', 'START', `Full 22-stage pipeline journey — resolving lead from CRM…`)
     this.log(tenantId, '📤', 'SMTP',  `Emails sent from info@stormbuddy.co`)
 
     setImmediate(() =>
-      this.runFullJourney(tenantId)
+      this.runFullJourney(tenantId, partial)
         .then(() => {
           journeyStatus.set(tenantId, journeyCancelRequested.get(tenantId) ? 'cancelled' : 'complete')
           journeyCancelRequested.delete(tenantId)
@@ -460,9 +520,9 @@ export class TestJourneyService {
     const tickets = await this.prisma.activityTicket.findMany({
       where: {
         tenantId,
-        contactEmail: TEST_CUSTOMER.email,
         status: { notIn: ['CANCELLED'] },
         createdAt: { gte: new Date(Date.now() - 6 * 60 * 60 * 1000) },
+        metadata: { path: ['testJourney'], equals: true },
       },
       include: { assignedAgent: true },
       orderBy: { ticketNumber: 'asc' },
@@ -509,9 +569,10 @@ export class TestJourneyService {
 
   // ── Full automated 22-stage journey ───────────────────────────────────────
 
-  private async runFullJourney(tenantId: string) {
+  private async runFullJourney(tenantId: string, customerInit: JourneyCustomer) {
     const t = tenantId
     const log = (icon: string, label: string, msg: string) => this.log(t, icon, label, msg)
+    let customer = { ...customerInit }
 
     // Load agents
     const agents = await this.prisma.agent.findMany({
@@ -526,11 +587,56 @@ export class TestJourneyService {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } })
     const playbookStages: any[] = (tenant?.settings as any)?.brain?.operationalPlaybook?.pipelineStages ?? []
 
+    // ── Resolve customer from CRM ──────────────────────────────────────────────
+    // If an email was provided: search for that specific lead and fill in any
+    // missing fields (name, phone, address) from CRM data.
+    // If no email was provided: fetch the most recent lead that has a job ID.
+    let autoJobId: string | null = null
+
+    try {
+      const query = customer.email || ''
+      const leads = await this.crm.searchLeads(tenantId, query)
+
+      let match: any
+      if (customer.email) {
+        match = leads?.find((l: any) => l.email?.toLowerCase() === customer.email.toLowerCase() && l.jobId)
+          ?? leads?.find((l: any) => l.email?.toLowerCase() === customer.email.toLowerCase())
+          ?? leads?.[0]
+      } else {
+        // No email provided — pick most recent lead with a job ID
+        match = leads
+          ?.filter((l: any) => l.email && l.jobId)
+          .sort((a: any, b: any) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))[0]
+          ?? leads?.find((l: any) => l.email)
+          ?? leads?.[0]
+      }
+
+      if (match) {
+        customer = {
+          name:    match.name    || customer.name    || match.email?.split('@')[0] || 'Customer',
+          email:   match.email   || customer.email,
+          phone:   match.phone   || customer.phone   || '',
+          address: match.address || customer.address || '',
+        }
+        autoJobId = match.jobId ?? null
+        log('🔍', 'CRM', `Lead: ${customer.name} <${customer.email}>${autoJobId ? ` · Job ${autoJobId}` : ''}`)
+      } else if (!customer.email) {
+        throw new Error('No leads found in CRM. Add a lead in Stormbuddy and try again.')
+      } else {
+        log('⚠️', 'CRM', `No Stormbuddy lead found for ${customer.email} — using provided details`)
+      }
+    } catch (e: any) {
+      if (!customer.email) throw e   // can't continue without any customer
+      log('⚠️', 'CRM', `CRM lookup failed: ${e.message} — using provided email`)
+    }
+
+    log('👤', 'CUSTOMER', `${customer.name} <${customer.email}>`)
+
     // Cancel ALL previous test journey tickets so waitForNewTicket only finds this run
     await this.prisma.activityTicket.updateMany({
       where: {
         tenantId,
-        contactEmail: TEST_CUSTOMER.email,
+        contactEmail: customer.email,
         status: { notIn: ['CANCELLED'] },
         metadata: { path: ['testJourney'], equals: true },
       },
@@ -560,60 +666,67 @@ export class TestJourneyService {
         ticket = await this.prisma.activityTicket.create({
           data: {
             tenantId,
-            title: `New lead — ${TEST_CUSTOMER.name} (Test Journey)`,
-            description: `Test journey lead.\nAddress: ${TEST_CUSTOMER.address}`,
+            title: `New lead — ${customer.name} (Test Journey)`,
+            description: `Test journey lead.\nAddress: ${customer.address}`,
             type: 'GENERAL', status: 'OPEN', priority: 'HIGH', source: 'INTERNAL',
-            contactRef: TEST_CUSTOMER.name, contactEmail: TEST_CUSTOMER.email, contactPhone: TEST_CUSTOMER.phone,
+            contactRef: customer.name, contactEmail: customer.email, contactPhone: customer.phone,
             assignedAgentId: charlie.id,
-            nextAction: 'Send outreach email to homeowner introducing free roof inspection offer.',
+            nextAction: `Send an outreach email to the homeowner at ${customer.email} introducing the free roof inspection offer. Use contact_customer(contactEmail: "${customer.email}") to send the email.`,
             followUpAt: new Date(Date.now() - 1000),
             metadata: { pipelineStageIndex: 0, pipelineStageName: 'Lead Qualification', crmLeadId, testJourney: true } as any,
-            activityLog: [{ agentName: 'System', agentId: 'system', action: 'TICKET_CREATED', note: `Test journey started. Customer: ${TEST_CUSTOMER.name} <${TEST_CUSTOMER.email}>`, timestamp: new Date().toISOString() }] as any,
+            activityLog: [{ agentName: 'System', agentId: 'system', action: 'TICKET_CREATED', note: `Test journey started. Customer: ${customer.name} <${customer.email}>`, timestamp: new Date().toISOString() }] as any,
           },
           include: { assignedAgent: { select: { id: true, name: true, role: true } } },
+        })
+        // Patch nextAction with the real ticket short ID so agent passes ticketId to contact_customer for email threading
+        await this.prisma.activityTicket.update({
+          where: { id: ticket.id },
+          data: { nextAction: `Send an outreach email to the homeowner at ${customer.email} introducing the free roof inspection offer. Use contact_customer(contactEmail: "${customer.email}", ticketId: "${ticket.id.slice(-6)}") to send the email.` },
         })
         log('📋', 'TICKET', `#${String(ticket.ticketNumber).padStart(4,'0')} created → ${charlie.name}`)
 
         // Resolve CRM job ID — used for all 22 stages
-        // Stormbuddy includes job_id directly on the lead record.
-        // Strategy 1: fetch lead by stored lead ID and read job_id from response
-        // Strategy 2: fallback — search leads by test customer email, read job_id from first match
+        // Priority: autoJobId resolved during auto-detect > getJobIdByLeadId > searchLeads fallback
         log('🔗', 'CRM', `Resolving job ID for test journey...`)
-        crmJobId = await this.crm.getJobIdByLeadId(tenantId, crmLeadId).catch(() => null)
 
-        if (!crmJobId) {
-          // Fake test lead ID — search by email to find real Stormbuddy lead and extract job_id
-          try {
-            const leads = await this.crm.searchLeads(tenantId, TEST_CUSTOMER.email)
-            const match = leads?.find((l: any) => l.jobId) ?? leads?.[0]
-            crmJobId = match?.jobId ?? null
-            if (crmJobId) log('🔗', 'CRM', `Job ID resolved via lead search (${match?.id}): ${crmJobId}`)
-          } catch { /* silent */ }
+        if (autoJobId) {
+          crmJobId = autoJobId
+          log('🔗', 'CRM', `Job ID from auto-detect: ${crmJobId}`)
         } else {
-          log('🔗', 'CRM', `Job ID resolved from lead ${crmLeadId}: ${crmJobId}`)
+          crmJobId = await this.crm.getJobIdByLeadId(tenantId, crmLeadId).catch(() => null)
+          if (!crmJobId) {
+            try {
+              const leads = await this.crm.searchLeads(tenantId, customer.email)
+              const match = leads?.find((l: any) => l.jobId) ?? leads?.[0]
+              crmJobId = match?.jobId ?? null
+              if (crmJobId) log('🔗', 'CRM', `Job ID resolved via lead search (${match?.id}): ${crmJobId}`)
+            } catch { /* silent */ }
+          } else {
+            log('🔗', 'CRM', `Job ID resolved from lead ${crmLeadId}: ${crmJobId}`)
+          }
         }
 
         if (!crmJobId) {
-          log('⚠️', 'CRM', `No job_id found for ${TEST_CUSTOMER.email} in Stormbuddy — CRM simulation will be skipped`)
+          log('⚠️', 'CRM', `No job_id found for ${customer.email} in Stormbuddy — CRM simulation will be skipped`)
         }
       } else {
         // Stages 1–21: wait for pipelineAdvance to create the ticket, or fall back
         await this.wakeAgents()
         await this.sleep(tenantId, 3000)
 
-        ticket = await this.waitForNewTicket(tenantId, stage.idx, journeyStartTime, 55000)
+        ticket = await this.waitForNewTicket(tenantId, stage.idx, journeyStartTime, 55000, customer.email)
         if (!ticket) {
           log('⚙️', 'CREATE', `Stage ${stage.idx} ticket not auto-created — creating manually`)
           const ag = byRole(stage.roleKeyword)
           ticket = await this.createFallbackTicket(
-            tenantId, stage.idx, stage.name, ag?.id,
+            tenantId, stage.idx, stage.name, customer, ag?.id,
             playbookStages[stage.idx]?.completion ?? `Complete ${stage.name}.`,
           )
           log('⚙️', 'TICKET', `#${String(ticket.ticketNumber).padStart(4,'0')} → ${ticket.assignedAgent?.name ?? ag?.name ?? '?'}`)
         } else {
           log('📋', 'TICKET', `#${String(ticket.ticketNumber).padStart(4,'0')} → ${ticket.assignedAgent?.name ?? '?'}`)
         }
-        await this.cancelDuplicatesForStage(tenantId, stage.idx, ticket.id)
+        await this.cancelDuplicatesForStage(tenantId, stage.idx, ticket.id, customer.email)
       }
 
       // ── Wake agents and wait for initial response ─────────────────────────
@@ -633,6 +746,13 @@ export class TestJourneyService {
         const fresh = await this.prisma.activityTicket.findUnique({ where: { id: ticket.id } })
         if (!fresh) continue
 
+        // Only inject if the agent has already responded (ticket is AWAITING_CUSTOMER).
+        // If it's still OPEN/IN_PROGRESS the first wake hasn't finished yet — wait a bit more.
+        if (fresh.status !== 'AWAITING_CUSTOMER' && fresh.status !== 'IN_PROGRESS') {
+          log('⏳', 'CUSTOMER', `Waiting for agent to send first email before injecting reply...`)
+          await this.sleep(tenantId, 5000)
+        }
+
         await this.injectReply(fresh, reply.body, reply.confirmedDate ?? null)
         log('📧', 'CUSTOMER', `Replied: "${reply.body.slice(0, 80)}${reply.body.length > 80 ? '...' : ''}"`)
 
@@ -640,17 +760,26 @@ export class TestJourneyService {
           log('📅', 'DATE', `Confirmed date: ${reply.confirmedDate}`)
         }
 
-        log('⚡', 'WAKE', `Waking agent to respond to customer...`)
-        await this.wakeAgents()
-        await this.sleep(tenantId, 4000)
-        const afterReply = await this.waitForStatus(
-          tenantId,
-          ticket.id,
-          ['AWAITING_CUSTOMER', 'IN_PROGRESS', 'COMPLETED', 'SCHEDULED'],
-          40000,
-        )
-        if (afterReply) {
-          log('✅', stage.roleKeyword.toUpperCase().slice(0, 12), `Responded. Status → ${afterReply.status}`)
+        // Only re-wake if the agent hasn't already moved the ticket on its own
+        const beforeReplyWake = await this.prisma.activityTicket.findUnique({
+          where: { id: ticket.id },
+          select: { status: true },
+        })
+        if (beforeReplyWake && ['COMPLETED', 'SCHEDULED', 'CANCELLED'].includes(beforeReplyWake.status)) {
+          log('ℹ️', 'WAKE', `Agent already resolved ticket (${beforeReplyWake.status}) — skipping reply wake`)
+        } else {
+          log('⚡', 'WAKE', `Waking agent to respond to customer...`)
+          await this.wakeAgents()
+          await this.sleep(tenantId, 4000)
+          const afterReply = await this.waitForStatus(
+            tenantId,
+            ticket.id,
+            ['AWAITING_CUSTOMER', 'IN_PROGRESS', 'COMPLETED', 'SCHEDULED'],
+            40000,
+          )
+          if (afterReply) {
+            log('✅', stage.roleKeyword.toUpperCase().slice(0, 12), `Responded. Status → ${afterReply.status}`)
+          }
         }
       }
 
@@ -683,9 +812,16 @@ export class TestJourneyService {
         log('🎯', stage.roleKeyword.toUpperCase().slice(0, 12), 'Completed autonomously!')
       }
 
-      // ── Carrier email — send real email from carrier to homeowner ────────
+      // ── Customer → Carrier email (claim/supplement submission) ──────────
+      if (stage.customerToCarrier) {
+        const cc = stage.customerToCarrier(customer)
+        await this.sendAsCustomer(cc.subject, cc.html, customer.name, log)
+      }
+
+      // ── Carrier → Customer email (approval/decision response) ────────────
       if (stage.carrierReply) {
-        await this.sendAsCarrier(stage.carrierReply.subject, stage.carrierReply.html, log)
+        const cr = stage.carrierReply(customer)
+        await this.sendAsCarrier(cr.subject, cr.html, customer.email, log)
       }
 
       // ── CRM simulation — write job card fields + tick checklist ──────────
@@ -722,7 +858,7 @@ export class TestJourneyService {
     const allTickets = await this.prisma.activityTicket.findMany({
       where: {
         tenantId,
-        contactEmail: TEST_CUSTOMER.email,
+        contactEmail: customer.email,
         createdAt: { gte: new Date(Date.now() - 12 * 60 * 60 * 1000) },
       },
       include: { assignedAgent: { select: { name: true } } },
@@ -739,16 +875,41 @@ export class TestJourneyService {
 
     const customerStages = ALL_STAGES.filter(s => s.replies.length > 0).map(s => `S${s.idx}`).join(', ')
     log('📤', 'EMAILS', `Real outreach emails sent for customer-facing stages: ${customerStages}`)
-    log('✉️', 'CHECK', `Check inbox: ${TEST_CUSTOMER.email}`)
+    log('✉️', 'CHECK', `Check inbox: ${customer.email}`)
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
 
+  /** Send a real email FROM the customer/contractor TO the insurance carrier.
+   *  Uses the customer SMTP mailbox so the email appears in the carrier's inbox
+   *  as a real claim submission or supplement request.
+   */
+  private async sendAsCustomer(subject: string, html: string, fromName: string, log: (icon: string, label: string, msg: string) => void) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: CUSTOMER_SMTP.smtpHost,
+        port: CUSTOMER_SMTP.smtpPort,
+        secure: false,
+        auth: { user: CUSTOMER_SMTP.email, pass: CUSTOMER_SMTP.smtpPass },
+        tls: { rejectUnauthorized: false },
+      })
+      await transporter.sendMail({
+        from: `"${fromName}" <${CUSTOMER_SMTP.email}>`,
+        to: CARRIER.email,
+        subject,
+        html,
+      })
+      log('📤', 'CLAIM', `Email sent: "${subject}" → ${CARRIER.email}`)
+    } catch (err: any) {
+      log('⚠️', 'CLAIM', `Failed to send claim email: ${err.message}`)
+    }
+  }
+
   /** Send a real email FROM the insurance carrier TO the homeowner.
-   *  Uses the carrier's own SMTP mailbox so the email appears in Ronaldo's
+   *  Uses the carrier's own SMTP mailbox so the email appears in the customer's
    *  inbox exactly as a real carrier approval/decision email would.
    */
-  private async sendAsCarrier(subject: string, html: string, log: (icon: string, label: string, msg: string) => void) {
+  private async sendAsCarrier(subject: string, html: string, toEmail: string, log: (icon: string, label: string, msg: string) => void) {
     try {
       const transporter = nodemailer.createTransport({
         host: CARRIER.smtpHost,
@@ -759,11 +920,11 @@ export class TestJourneyService {
       })
       await transporter.sendMail({
         from: `"${CARRIER.name}" <${CARRIER.email}>`,
-        to: TEST_CUSTOMER.email,
+        to: toEmail,
         subject,
         html,
       })
-      log('📨', 'CARRIER', `Email sent: "${subject}" → ${TEST_CUSTOMER.email}`)
+      log('📨', 'CARRIER', `Email sent: "${subject}" → ${toEmail}`)
     } catch (err: any) {
       log('⚠️', 'CARRIER', `Failed to send carrier email: ${err.message}`)
     }
@@ -855,11 +1016,11 @@ export class TestJourneyService {
     if (journeyCancelRequested.get(tenantId)) throw new JourneyCancelled()
   }
 
-  private async cancelActiveTestTickets(tenantId: string) {
+  private async cancelActiveTestTickets(tenantId: string, contactEmail?: string) {
     await this.prisma.activityTicket.updateMany({
       where: {
         tenantId,
-        contactEmail: TEST_CUSTOMER.email,
+        ...(contactEmail ? { contactEmail } : {}),
         status: { notIn: ['CANCELLED', 'COMPLETED'] },
         metadata: { path: ['testJourney'], equals: true },
       },
@@ -906,14 +1067,14 @@ export class TestJourneyService {
     return null
   }
 
-  private async waitForNewTicket(tenantId: string, stageIndex: number, afterTime: Date, timeoutMs: number) {
+  private async waitForNewTicket(tenantId: string, stageIndex: number, afterTime: Date, timeoutMs: number, contactEmail?: string) {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       this.assertNotCancelled(tenantId)
       const t = await this.prisma.activityTicket.findFirst({
         where: {
           tenantId,
-          contactEmail: TEST_CUSTOMER.email,
+          ...(contactEmail ? { contactEmail } : {}),
           status: { notIn: ['CANCELLED'] },
           createdAt: { gte: afterTime },
           metadata: { path: ['pipelineStageIndex'], equals: stageIndex },
@@ -928,11 +1089,11 @@ export class TestJourneyService {
   }
 
   /** Cancel any duplicate tickets for the same stage, keeping only the canonical one. */
-  private async cancelDuplicatesForStage(tenantId: string, stageIndex: number, keepId: string) {
+  private async cancelDuplicatesForStage(tenantId: string, stageIndex: number, keepId: string, contactEmail?: string) {
     await this.prisma.activityTicket.updateMany({
       where: {
         tenantId,
-        contactEmail: TEST_CUSTOMER.email,
+        ...(contactEmail ? { contactEmail } : {}),
         id: { not: keepId },
         status: { notIn: ['CANCELLED', 'COMPLETED'] },
         metadata: { path: ['pipelineStageIndex'], equals: stageIndex },
@@ -943,11 +1104,13 @@ export class TestJourneyService {
 
   private async injectReply(ticket: any, body: string, confirmedDate: string | null) {
     const log = Array.isArray(ticket.activityLog) ? ticket.activityLog : []
+    const contactEmail: string = ticket.contactEmail ?? ''
     const newStatus = confirmedDate ? 'SCHEDULED' : 'OPEN'
     const followUpAt = confirmedDate ? new Date(confirmedDate) : null
+    const ticketShortId = ticket.id.slice(-6)
     const nextAction = confirmedDate
-      ? `Inspection confirmed for ${new Date(confirmedDate).toLocaleDateString('en-GB')} — send confirmation email, then update_ticket(COMPLETED).`
-      : `Customer replied: "${body.slice(0, 120)}". Respond via contact_customer(contactEmail: "${TEST_CUSTOMER.email}"). When fully resolved, call update_ticket(COMPLETED).`
+      ? `Inspection confirmed for ${new Date(confirmedDate).toLocaleDateString('en-GB')} — send confirmation email via contact_customer(contactEmail: "${contactEmail}", ticketId: "${ticketShortId}"), then update_ticket(COMPLETED).`
+      : `Customer replied: "${body.slice(0, 120)}". Respond via contact_customer(contactEmail: "${contactEmail}", ticketId: "${ticketShortId}"). When fully resolved, call update_ticket(COMPLETED).`
 
     await this.prisma.activityTicket.update({
       where: { id: ticket.id },
@@ -988,13 +1151,20 @@ export class TestJourneyService {
     })
   }
 
-  private async createFallbackTicket(tenantId: string, stageIdx: number, stageName: string, agentId?: string, nextAction?: string) {
+  private async createFallbackTicket(
+    tenantId: string,
+    stageIdx: number,
+    stageName: string,
+    customer: JourneyCustomer,
+    agentId?: string,
+    nextAction?: string,
+  ) {
     return this.prisma.activityTicket.create({
       data: {
         tenantId,
-        title: `[Stage ${stageIdx + 1}] ${stageName} — ${TEST_CUSTOMER.name}`,
+        title: `[Stage ${stageIdx + 1}] ${stageName} — ${customer.name}`,
         type: 'GENERAL', status: 'OPEN', priority: 'HIGH', source: 'INTERNAL',
-        contactRef: TEST_CUSTOMER.name, contactEmail: TEST_CUSTOMER.email, contactPhone: TEST_CUSTOMER.phone,
+        contactRef: customer.name, contactEmail: customer.email, contactPhone: customer.phone,
         assignedAgentId: agentId,
         nextAction: nextAction ?? `Complete ${stageName}.`,
         followUpAt: new Date(Date.now() - 1000),

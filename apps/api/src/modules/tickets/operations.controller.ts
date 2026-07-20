@@ -58,14 +58,19 @@ export class OperationsController {
 
   // ── Dev Test Journey ──────────────────────────────────────────────────────
 
-  /** Start the fully automated 8-stage journey (same as node test-full-journey.js) */
+  /** Start the fully automated 22-stage journey (same as node test-full-journey.js) */
   @Post('test-journey/run-full')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: '[DEV] Run full automated 8-stage journey — same as node test-full-journey.js' })
-  async runFullJourney(@Request() req: any) {
+  @ApiOperation({ summary: '[DEV] Run full automated 22-stage journey — same as node test-full-journey.js' })
+  async runFullJourney(@Request() req: any, @Body() body?: { customerEmail?: string; customerName?: string; customerPhone?: string; customerAddress?: string }) {
     const tenantId: string = req.user?.tenantId
     if (!tenantId) throw new BadRequestException('No tenant in auth context')
-    return this.testJourney.startFullJourney(tenantId)
+    return this.testJourney.startFullJourney(tenantId, {
+      email:   body?.customerEmail,
+      name:    body?.customerName,
+      phone:   body?.customerPhone,
+      address: body?.customerAddress,
+    })
   }
 
   @Post('test-journey/stop')

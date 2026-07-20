@@ -210,7 +210,7 @@ const CRM_TOOL_DEFINITIONS = [
   },
   {
     name: 'contact_customer',
-    description: 'Send a message to a customer. For CRM/pipeline leads provide contactEmail directly. For widget/chat customers provide sessionId. Always pass contactEmail when you have it — do not pass sessionId for pipeline tickets.',
+    description: 'Send a message to a customer. For CRM/pipeline leads provide contactEmail directly. For widget/chat customers provide sessionId. Always pass contactEmail when you have it — do not pass sessionId for pipeline tickets. Pass ticketId to keep all emails in the same thread.',
     parameters: {
       type: 'object',
       properties: {
@@ -219,6 +219,7 @@ const CRM_TOOL_DEFINITIONS = [
         sessionId:    { type: 'string', description: 'Widget session ID — only for live website chat customers, not for CRM leads' },
         message:      { type: 'string', description: 'The message body to send to the customer' },
         subject:      { type: 'string', description: 'Email subject line (used when sending by email)' },
+        ticketId:     { type: 'string', description: 'The ticket ID this email relates to — ensures all emails thread together in the customer mailbox' },
       },
       required: ['message'],
     },
@@ -1225,11 +1226,11 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                 ``,
                 `INSTRUCTIONS:`,
                 `1. Action this task using your available tools (e.g. get_available_slots to find dates).`,
-                `2. Call update_ticket with ticketId "${ticketShortId}" to record your findings and set the correct status:`,
+                `2. If you need to email the customer, use contact_customer with contactEmail AND ticketId: "${ticketShortId}" so all emails stay in one thread.`,
+                `3. Call update_ticket with ticketId "${ticketShortId}" to record your findings and set the correct status:`,
                 `   • Started working on it → IN_PROGRESS`,
                 `   • Fully resolved (booking confirmed, estimate sent, done) → COMPLETED`,
-                `3. DO NOT create a new ticket — update the existing one (${ticketShortId}).`,
-                `4. DO NOT contact the customer directly — ${agent.name} will handle that.`,
+                `4. DO NOT create a new ticket — update the existing one (${ticketShortId}).`,
                 `5. Your response here will be automatically forwarded to ${agent.name}.`,
               ].filter(Boolean).join('\n')
 
@@ -1476,7 +1477,35 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
               params.contactEmail = effectiveEmail
               const recipientName = params.contactName || params.contactRef || 'there'
               const subject = params.subject || `Regarding your property — ${companyName}`
-              await this.email.send({
+
+              // ── Email threading: read prior thread messageId from ticket metadata ──
+              let emailTicketId = params.ticketId as string | undefined
+              let inReplyTo: string | undefined
+              let references: string | undefined
+              let existingTicketMeta: object | null = null
+              if (emailTicketId) {
+                // Support both full IDs and short 6-char suffix IDs
+                if (emailTicketId.length === 6) {
+                  const found = await this.prisma.activityTicket.findFirst({
+                    where: { tenantId, id: { endsWith: emailTicketId } },
+                    select: { id: true, metadata: true },
+                  }).catch(() => null)
+                  if (found) { emailTicketId = found.id; existingTicketMeta = (found.metadata as object | null) ?? null }
+                } else {
+                  const ticketForThread = await this.prisma.activityTicket.findUnique({
+                    where: { id: emailTicketId },
+                    select: { metadata: true },
+                  }).catch(() => null)
+                  existingTicketMeta = (ticketForThread?.metadata as object | null) ?? null
+                }
+                const threadMsgId = (existingTicketMeta as any)?.emailThreadId
+                if (threadMsgId) {
+                  inReplyTo = threadMsgId
+                  references = threadMsgId
+                }
+              }
+
+              const { messageId } = await this.email.send({
                 tenantId,
                 to: params.contactEmail as string,
                 subject,
@@ -1486,8 +1515,19 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                   <p style="color:#64748b;font-size:13px;margin-top:24px;">— ${companyName}</p>
                 </div>`,
                 text: `Hi ${recipientName},\n\n${params.message}\n\n— ${companyName}`,
+                inReplyTo,
+                references,
               })
               this.logger.log(`[contact_customer] Outbound email sent to ${params.contactEmail}`)
+
+              // ── Save the first messageId so all follow-up emails thread together ──
+              if (emailTicketId && messageId && !inReplyTo) {
+                const merged = { ...(existingTicketMeta ?? {}), emailThreadId: messageId }
+                await this.prisma.activityTicket.update({
+                  where: { id: emailTicketId },
+                  data: { metadata: merged },
+                }).catch(() => {/* non-critical */})
+              }
 
               return `✅ Email sent to ${params.contactEmail}: "${params.message}"`
             }
@@ -3420,7 +3460,7 @@ When chatting with the business owner/manager directly (in the internal chat thr
         assignedAgentId: nextAgent.id,
         // Use completion criteria as the actionable instruction (trigger is a condition, not a task)
         nextAction: nextStage.completion
-          ? `${nextStage.completion}. Contact the homeowner via contact_customer, then call update_ticket with the correct status (AWAITING_CUSTOMER after emailing, SCHEDULED when date is confirmed, COMPLETED when stage is fully done).`
+          ? `${nextStage.completion}. Contact the homeowner via contact_customer (pass ticketId for email threading), then call update_ticket with the correct status (AWAITING_CUSTOMER after emailing, SCHEDULED when date is confirmed, COMPLETED when stage is fully done).`
           : nextStage.trigger ?? `Begin stage: ${nextStage.name}`,
         metadata: {
           ...(ticket.metadata ?? {}),
@@ -3474,6 +3514,7 @@ When chatting with the business owner/manager directly (in the internal chat thr
           `{`,
           `  "contactEmail": "${contactEmail}",`,
           `  "contactName": "${contactName}",`,
+          `  "ticketId": "${newTicketShortId}",`,
           `  "subject": "${nextStage.name} — ${tenantName}",`,
           `  "message": "Hi ${contactName},\\n\\nI am ${nextAgent.name} from ${tenantName}. ${(nextStage.trigger ?? 'I am following up regarding your roofing project.').replace(/'/g, '')}\\n\\n${completionLC.includes('financing') ? 'I would like to walk you through your financing options and answer any questions.' : 'Could you please confirm your availability for the next step?'}\\n\\nBest regards,\\n${nextAgent.name}, ${tenantName}"`,
           `}`,
@@ -3575,6 +3616,13 @@ When chatting with the business owner/manager directly (in the internal chat thr
       ``,
       stageTaskBlock,
     ].filter(Boolean).join('\n')
+
+    // Stamp IN_PROGRESS before waking so the cron scheduler doesn't also pick up this ticket
+    // (processOpenTickets only fetches OPEN tickets in Tier 1 — this prevents duplicate email sends)
+    await this.prisma.activityTicket.update({
+      where: { id: newTicket.id },
+      data: { status: 'IN_PROGRESS', updatedAt: new Date() },
+    }).catch(() => {/* non-critical */})
 
     await this.autoWakeAgent(
       tenantId,

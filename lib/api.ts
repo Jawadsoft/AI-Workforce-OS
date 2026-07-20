@@ -32,6 +32,7 @@ api.interceptors.response.use(
   (response) => {
     if (response.data?.access_token) {
       const token = response.data.access_token
+      localStorage.setItem('access_token', token)
       document.cookie = `access_token=${token}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`
     }
     return response

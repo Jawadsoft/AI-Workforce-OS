@@ -132,15 +132,16 @@ export class TicketProcessorScheduler {
 
   @Cron('* * * * *')
   async processOpenTickets(force = false) {
-    const twoMinutesAgo  = new Date(Date.now() -  2 * 60 * 1000)
-    const fourHoursAgo   = new Date(Date.now() -  4 * 60 * 60 * 1000)
-    const sevenDaysAgo   = new Date(Date.now() -  7 * 24 * 60 * 60 * 1000)
-    const thirtyDaysAgo  = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-    const now            = new Date()
+    const twoMinutesAgo    = new Date(Date.now() -  2 * 60 * 1000)
+    const ninetySecondsAgo = new Date(Date.now() - 90 * 1000)
+    const fourHoursAgo     = new Date(Date.now() -  4 * 60 * 60 * 1000)
+    const sevenDaysAgo     = new Date(Date.now() -  7 * 24 * 60 * 60 * 1000)
+    const thirtyDaysAgo    = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+    const now              = new Date()
 
     // Two-tier fetch:
     // Tier 1 — OPEN tickets: never been woken, pick up within 7 days of creation.
-    // Tier 2 — IN_PROGRESS: 4-hour cooldown (bypassed when force=true from manual trigger).
+    // Tier 2 — IN_PROGRESS: 4-hour cooldown (force=true uses 90s minimum to prevent duplicate emails).
     // Tier 3 — ESCALATED: 2-min cooldown, up to 30 days old.
     //
     // SKIP: AWAITING_CUSTOMER, AWAITING_AGENT, SCHEDULED, COMPLETED, CANCELLED
@@ -163,14 +164,15 @@ export class TicketProcessorScheduler {
         orderBy: [{ priority: 'desc' }, { followUpAt: 'asc' }, { createdAt: 'asc' }],
         take: 10,
       }),
-      // IN_PROGRESS: 4-hour cooldown unless force=true (manual trigger bypasses cooldown)
-      // On forced runs raise the cap so all agents get a slot (not just the first 5 tickets)
+      // IN_PROGRESS: 4-hour cooldown normally; even with force=true keep a 90-second minimum
+      // so tickets that were just woken (e.g. by pipelineAdvance) are not immediately re-woken
+      // by a simultaneous processOpenTickets call — which would send duplicate emails.
       this.prisma.activityTicket.findMany({
         where: {
           status: 'IN_PROGRESS',
           assignedAgentId: { not: null },
           tenant: { isActive: true },
-          ...(force ? {} : { updatedAt: { lt: fourHoursAgo } }),
+          updatedAt: { lt: force ? ninetySecondsAgo : fourHoursAgo },
         },
         include: {
           assignedAgent: { select: { id: true, name: true, role: true, tenantId: true } },
@@ -282,12 +284,16 @@ export class TicketProcessorScheduler {
         const tenantName = (tenantSettings?.settings as any)?.brain?.companyName || 'our company'
         const customerName = ticket.contactRef || 'there'
 
-        // Pre-written email for first-contact outreach only (not for conversation replies)
+        // Pre-written email bodies — provided for all needsEmail stages so the agent never sends a blank email
+        const d1 = threeDaysFromNow
+        const d2 = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+        const d3 = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+        const phoneStr = ticket.contactPhone ? ` or call us at ${ticket.contactPhone}` : ''
         const prewrittenMessage = isInitialOutreach
-          ? `Hi ${customerName},\n\nMy name is from ${tenantName}. We noticed your property may have been affected by a recent storm in your area, and we would like to offer you a free roof inspection.\n\nThere is no cost or obligation — our specialist will assess any damage and walk you through your options, including how to file an insurance claim if needed.\n\nWould you be available for a quick call or visit? Please reply to this email${ticket.contactPhone ? ` or call us at ${ticket.contactPhone}` : ''} and we will arrange a convenient time.\n\nBest regards,\n${tenantName}`
+          ? `Hi ${customerName},\n\nMy name is from ${tenantName}. We noticed your property may have been affected by a recent storm in your area, and we would like to offer you a free roof inspection.\n\nThere is no cost or obligation — our specialist will assess any damage and walk you through your options, including how to file an insurance claim if needed.\n\nWould you be available for a quick call or visit? Please reply to this email${phoneStr} and we will arrange a convenient time.\n\nBest regards,\n${tenantName}`
           : stageIndex === 2
-            ? `Hi ${customerName},\n\nI am reaching out from ${tenantName} to confirm your upcoming roof inspection. Could you let me know which of the following dates works best for you?\n\n• ${threeDaysFromNow}\n• ${new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\n• ${new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\n\nPlease reply to this email${ticket.contactPhone ? ` or call us at ${ticket.contactPhone}` : ''}.\n\nBest regards,\n${tenantName}`
-            : ''
+            ? `Hi ${customerName},\n\nI am reaching out from ${tenantName} to confirm your upcoming roof inspection. Could you let me know which of the following dates works best for you?\n\n• ${d1}\n• ${d2}\n• ${d3}\n\nPlease reply to this email${phoneStr}.\n\nBest regards,\n${tenantName}`
+            : `Hi ${customerName},\n\nI am following up on your roofing project with ${tenantName}. We wanted to keep you informed on the progress and check if you have any questions at this stage.\n\nPlease reply to this email${phoneStr} and we will be happy to assist.\n\nBest regards,\n${tenantName}`
 
         const briefing = [
           `TICKET #${ticketNum}: "${ticket.title}"`,
@@ -300,11 +306,12 @@ export class TicketProcessorScheduler {
             `CONTEXT: ${ticket.nextAction || 'Customer replied to your previous email.'}`,
             ``,
             `YOUR TASK:`,
-            `1. Reply to the customer by calling contact_customer:`,
+            `1. Reply to the customer by calling contact_customer with EXACTLY these parameters:`,
             `{`,
             `  "contactEmail": "${effectiveEmail || ''}",`,
             `  "contactName": "${customerName}",`,
-            `  "subject": "Re: Your Roof Inspection — ${tenantName}",`,
+            `  "ticketId": "${ticketShortId}",`,
+            `  "subject": "Re: Free Roof Inspection — ${tenantName}",`,
             `  "message": "<write a helpful reply addressing their question or comment>"`,
             `}`,
             `DO NOT pass sessionId. Use contactEmail only.`,
@@ -319,7 +326,8 @@ export class TicketProcessorScheduler {
             `{`,
             `  "contactEmail": "${effectiveEmail || ''}",`,
             `  "contactName": "${customerName}",`,
-            `  "subject": "${isInitialOutreach ? `Free Roof Inspection — ${tenantName}` : `Roof Inspection Scheduling — ${tenantName}`}",`,
+            `  "ticketId": "${ticketShortId}",`,
+            `  "subject": "${isInitialOutreach ? `Free Roof Inspection — ${tenantName}` : stageIndex === 2 ? `Roof Inspection Scheduling — ${tenantName}` : `Project Update — ${tenantName}`}",`,
             `  "message": "${prewrittenMessage.replace(/\n/g, '\\n').replace(/"/g, '\\"')}"`,
             `}`,
             `IMPORTANT: Use contactEmail only. Do NOT pass sessionId.`,
@@ -335,7 +343,7 @@ export class TicketProcessorScheduler {
           ].join('\n') : needsSlots ? [
             `YOUR TASK:`,
             `1. Call get_available_slots`,
-            `2. Call contact_customer with: contactEmail="${effectiveEmail || ''}", contactName="${customerName}", message=list of available dates. Do NOT pass sessionId.`,
+            `2. Call contact_customer with: contactEmail="${effectiveEmail || ''}", contactName="${customerName}", ticketId="${ticketShortId}", message=list of available dates. Do NOT pass sessionId.`,
             `3. Only after email succeeds: call update_ticket(ticketId: "${ticketShortId}", status: "SCHEDULED")`,
           ].join('\n') : [
             `YOUR TASK: ${ticket.nextAction || 'Review and action this ticket'}`,

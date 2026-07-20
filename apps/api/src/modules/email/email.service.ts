@@ -102,11 +102,13 @@ export class EmailService {
     subject: string
     html: string
     text?: string
-  }): Promise<void> {
+    inReplyTo?: string
+    references?: string
+  }): Promise<{ messageId?: string }> {
     const cfg = await this.getSmtpConfig(params.tenantId)
     if (!cfg.user || !cfg.pass) {
       this.logger.warn('SMTP not configured — skipping email send')
-      return
+      return {}
     }
 
     const actualTo = Array.isArray(params.to) ? params.to.join(', ') : params.to
@@ -114,14 +116,17 @@ export class EmailService {
 
     const transporter = await this.buildTransporter(params.tenantId)
     try {
-      await transporter.sendMail({
+      const info = await transporter.sendMail({
         from: `"${cfg.fromName}" <${cfg.fromEmail}>`,
         to: actualTo,
         subject,
         html: params.html,
         text: params.text,
+        ...(params.inReplyTo ? { inReplyTo: params.inReplyTo } : {}),
+        ...(params.references ? { references: params.references } : {}),
       })
       this.logger.log(`Email sent to ${actualTo}: ${params.subject}`)
+      return { messageId: (info as any)?.messageId }
     } catch (err) {
       this.logger.error(`Email send failed: ${err}`)
       throw err

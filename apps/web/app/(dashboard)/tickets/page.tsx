@@ -6,7 +6,7 @@ import {
   Ticket, Plus, RefreshCw, Clock, AlertCircle,
   User, ChevronDown, ChevronUp, MessageSquare, Globe, Briefcase,
   ArrowRight, X, LayoutList, CheckCircle2, Play, Zap, Mail,
-  Route, ChevronRight, Send, FlaskConical, Terminal, SkipForward, Trash2,
+  Route, ChevronRight, Send, FlaskConical, Terminal, SkipForward, Trash2, Square,
 } from 'lucide-react'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -1497,7 +1497,7 @@ interface JourneyLogEntry {
 
 function DevJourneyModal({ onClose }: { onClose: () => void }) {
   const [logs, setLogs]           = useState<JourneyLogEntry[]>([])
-  const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle')
+  const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'error' | 'cancelled'>('idle')
   const [busy, setBusy]           = useState(false)
   const [activeTab, setActiveTab] = useState<'terminal' | 'tickets'>('terminal')
   const [tickets, setTickets]     = useState<DevJourneyTicket[]>([])
@@ -1540,6 +1540,17 @@ function DevJourneyModal({ onClose }: { onClose: () => void }) {
     finally { setBusy(false) }
   }
 
+  const stopJourney = async () => {
+    setBusy(true)
+    try {
+      const res = await api.post('/operations/test-journey/stop')
+      flash(res.data.message, res.data.ok !== false)
+      await fetchLogs()
+      await fetchTickets()
+    } catch (e: any) { flash(`Error: ${e?.response?.data?.message ?? e.message}`, false) }
+    finally { setBusy(false) }
+  }
+
   const simulateReply = async (ticketId: string) => {
     setBusy(true)
     try {
@@ -1561,10 +1572,10 @@ function DevJourneyModal({ onClose }: { onClose: () => void }) {
 
   const STATUS_DOT: Record<string, string> = {
     idle: 'text-muted-foreground', running: 'text-amber-500',
-    complete: 'text-emerald-600', error: 'text-red-500',
+    complete: 'text-emerald-600', error: 'text-red-500', cancelled: 'text-orange-500',
   }
   const STATUS_LABEL: Record<string, string> = {
-    idle: 'Idle', running: '● Running…', complete: '✓ Complete', error: '✕ Error',
+    idle: 'Idle', running: '● Running…', complete: '✓ Complete', error: '✕ Error', cancelled: '■ Stopped',
   }
 
   const activeTickets = tickets.filter(t => !['COMPLETED','CANCELLED'].includes(t.status))
@@ -1605,9 +1616,19 @@ function DevJourneyModal({ onClose }: { onClose: () => void }) {
             disabled={busy || runStatus === 'running'}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold transition-colors disabled:opacity-40"
           >
-            {busy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3 h-3" />}
+            {busy && runStatus !== 'running' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3 h-3" />}
             {runStatus === 'running' ? 'Running…' : 'Run Full Journey'}
           </button>
+          {runStatus === 'running' && (
+            <button
+              onClick={stopJourney}
+              disabled={busy}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold transition-colors disabled:opacity-40"
+            >
+              {busy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Square className="w-3 h-3 fill-current" />}
+              Stop Journey
+            </button>
+          )}
           <span className="text-[10px] text-muted-foreground hidden sm:block font-mono">node test-full-journey.js</span>
           <div className="flex gap-0.5 ml-auto">
             {devTabs.map(tabName => (
@@ -1720,6 +1741,11 @@ function DevJourneyModal({ onClose }: { onClose: () => void }) {
                 {runStatus === 'error' && (
                   <div className="mt-3 text-red-400 font-bold text-center text-xs py-2 border-t border-zinc-800">
                     ✕ Journey failed — check log above for the error
+                  </div>
+                )}
+                {runStatus === 'cancelled' && (
+                  <div className="mt-3 text-orange-400 font-bold text-center text-xs py-2 border-t border-zinc-800">
+                    ■ Journey stopped — open test tickets were cancelled
                   </div>
                 )}
                 <div ref={logEndRef} />

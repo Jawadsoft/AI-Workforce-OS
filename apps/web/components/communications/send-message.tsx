@@ -28,8 +28,11 @@ export function SendMessage() {
       setTo('')
       setMessage('')
       setMediaUrl('')
-    } catch {
-      toast.error('Failed to send message')
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { message?: string | string[] } }; message?: string }
+      const apiMsg = axiosErr.response?.data?.message
+      const messageText = Array.isArray(apiMsg) ? apiMsg.join(', ') : apiMsg || axiosErr.message || 'Failed to send message'
+      toast.error(messageText)
     } finally {
       setSending(false)
     }

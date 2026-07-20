@@ -7,6 +7,29 @@ import * as fs from 'fs'
 import * as path from 'path'
 
 async function bootstrap() {
+  // Bull/ioredis can crash the process when Redis is not running locally.
+  // Keep the API alive so features that do not need queues (auth, Twilio, etc.) still work.
+  const isRedisDown = (reason: unknown) => {
+    const msg = reason instanceof Error ? reason.message : String(reason)
+    const code = reason && typeof reason === 'object' && 'code' in reason ? String((reason as { code?: string }).code) : ''
+    return code === 'ECONNREFUSED' || msg.includes('6379') || msg.toLowerCase().includes('redis')
+  }
+  process.on('unhandledRejection', (reason) => {
+    if (isRedisDown(reason)) {
+      console.warn('[Redis] Connection failed — background queues unavailable. API will continue.')
+      return
+    }
+    console.error('Unhandled rejection:', reason)
+  })
+  process.on('uncaughtException', (err) => {
+    if (isRedisDown(err)) {
+      console.warn('[Redis] Connection failed — background queues unavailable. API will continue.')
+      return
+    }
+    console.error('Uncaught exception:', err)
+    process.exit(1)
+  })
+
   const port = process.env.PORT ?? 3001
   const useHttps = process.env.HTTPS === 'true'
 
@@ -23,6 +46,10 @@ async function bootstrap() {
   }
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, httpsOptions ? { httpsOptions } : {})
+
+  // Twilio webhooks POST application/x-www-form-urlencoded — ensure parsers are enabled
+  app.useBodyParser('urlencoded', { extended: true, limit: '2mb' })
+  app.useBodyParser('json', { limit: '2mb' })
 
   // Serve uploaded files (avatars, etc.) as static assets
   const uploadsDir = path.join(process.cwd(), 'uploads')

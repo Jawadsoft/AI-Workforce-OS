@@ -47,6 +47,18 @@ export class TwilioService {
       client: Twilio(accountSid, authToken),
       fromPhone: settings.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '',
       whatsappNumber: settings.twilioWhatsAppNumber || process.env.TWILIO_WHATSAPP_NUMBER || '',
+      accountSid,
+    }
+  }
+
+  /** Live check against Twilio API (Account SID + Auth Token). */
+  async verifyConnection(tenantId: string): Promise<{ status: string; friendlyName: string; accountSid: string }> {
+    const { client, accountSid } = await this.getClient(tenantId)
+    const account = await client.api.accounts(accountSid).fetch()
+    return {
+      status: account.status || 'active',
+      friendlyName: account.friendlyName || 'Twilio Account',
+      accountSid,
     }
   }
 

@@ -26,6 +26,48 @@ const CARRIER = {
   smtpPass: 'paulp786@',
 }
 
+const CRM_DATE_FIELDS = ['inspectionDate', 'installationDate', 'materialDeliveryDate', 'stormEventDate'] as const
+
+/** Normalize crmUpdate payload to match Stormbuddy /api/crm/update-job validation */
+function normalizeCrmFields(
+  stageIdx: number,
+  fields: Record<string, any>,
+  existingStageIndex?: number,
+): Record<string, any> {
+  const out = { ...fields }
+
+  // leadStatus is returned by get-job but is not writable via update-job (422: Invalid leadStatus value)
+  delete out.leadStatus
+
+  // Stormbuddy job card stages are 1-based; never regress an already-advanced job
+  const targetStage = stageIdx + 1
+  if (existingStageIndex === undefined || targetStage >= existingStageIndex) {
+    out.currentStageIndex = targetStage
+  } else {
+    delete out.currentStageIndex
+  }
+
+  for (const key of CRM_DATE_FIELDS) {
+    if (typeof out[key] === 'string' && out[key].includes('T')) {
+      out[key] = out[key].slice(0, 10)
+    }
+  }
+
+  if (out.damageSeverity === 'HIGH') out.damageSeverity = 'Severe'
+  if (out.damageType === 'Hail + Wind') out.damageType = 'Hail'
+
+  return out
+}
+
+function formatCrmError(e: any): string {
+  const status = e?.response?.status
+  const data = e?.response?.data
+  const detail = data?.message ?? data?.error
+    ?? (data?.errors ? JSON.stringify(data.errors) : null)
+    ?? (typeof data === 'string' ? data : data ? JSON.stringify(data) : null)
+  return detail ? `${e.message} — ${detail}` : e.message
+}
+
 // ── Unified 22-stage config ─────────────────────────────────────────────────
 // Each stage drives the full automated journey — no hardcoded stage blocks.
 
@@ -63,7 +105,7 @@ const ALL_STAGES: StageConfig[] = [
       { body: `That sounds great, I am fully on board. Let's move forward with the inspection. Looking forward to hearing from you.` },
     ],
     note: 'Lead qualified — customer confirmed interest. Advancing to Sales Consultation.',
-    crmUpdate: { leadStatus: 'Consultation Scheduled', currentStageIndex: 0 },
+    crmUpdate: { notes: 'Lead qualified — customer confirmed interest' },
   },
   {
     idx: 1,
@@ -73,7 +115,7 @@ const ALL_STAGES: StageConfig[] = [
       { body: `Thanks for explaining the financing options. The insurance claim assistance sounds exactly what I need. I'd like to proceed with the inspection. What are the next steps?` },
     ],
     note: 'Sales consultation done — homeowner agreed to financing and inspection. Moving to scheduling.',
-    crmUpdate: { leadStatus: 'Consultation Done', currentStageIndex: 1 },
+    crmUpdate: { notes: 'Sales consultation complete' },
   },
   {
     idx: 2,
@@ -84,7 +126,7 @@ const ALL_STAGES: StageConfig[] = [
     ],
     note: 'Inspection scheduled for 10 July 2026 at 10 AM.',
     isInspectionScheduling: true,
-    crmUpdate: { inspectionDate: '2026-07-10T10:00:00Z', currentStageIndex: 2 },
+    crmUpdate: { inspectionDate: '2026-07-10', notes: 'Inspection scheduled' },
   },
 
   // ── INSPECTION & VERIFICATION ────────────────────────────────────────────
@@ -94,7 +136,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Field Inspector',
     replies: [],
     note: 'Roof damage documented. Hail dents confirmed on 60% of surface, 3 skylights cracked, gutters bent. Damage severity: HIGH.',
-    crmUpdate: { damageSeverity: 'HIGH', hailSizeInches: 1.75, damageType: 'Hail + Wind', currentStageIndex: 3 },
+    crmUpdate: { damageSeverity: 'Severe', hailSizeInches: 1.75, damageType: 'Hail' },
     crmDocument: { type: 'inspection_report', fileName: 'inspection-report-2026-07-10.pdf' },
   },
   {
@@ -103,7 +145,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Storm',
     replies: [],
     note: 'NEXRAD confirmed 1.75" hail on 2026-04-12 over TX 76101. NOAA event ID: HAI-2026-TX-0412. Attached to claim file.',
-    crmUpdate: { noaaEventId: 'HAI-2026-TX-0412', stormEventDate: '2026-04-12', currentStageIndex: 4 },
+    crmUpdate: { noaaEventId: 'HAI-2026-TX-0412', stormEventDate: '2026-04-12' },
     crmDocument: { type: 'storm_verification', fileName: 'storm-verification-HAI-2026-TX-0412.pdf' },
   },
 
@@ -114,7 +156,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Estimat',
     replies: [],
     note: 'Estimate: $24,500 (full replacement). SOW prepared and sent to homeowner for e-signature. Contractor: ProRoof TX.',
-    crmUpdate: { estimateTotal: 24500, currentStageIndex: 5 },
+    crmUpdate: { estimateTotal: 24500 },
     crmDocument: { type: 'sow', fileName: 'scope-of-work-2026-07-11.pdf' },
   },
   {
@@ -125,7 +167,7 @@ const ALL_STAGES: StageConfig[] = [
       { body: `I am happy with the proposal. The pricing looks fair and the timeline works for me. I want to proceed. What do I need to sign?` },
     ],
     note: 'Proposal accepted by homeowner. Proceeding to contract signing.',
-    crmUpdate: { leadStatus: 'Proposal Accepted', currentStageIndex: 6 },
+    crmUpdate: { notes: 'Proposal accepted by homeowner' },
   },
   {
     idx: 7,
@@ -135,7 +177,7 @@ const ALL_STAGES: StageConfig[] = [
       { body: `I have signed the contract and transferred the deposit. Please go ahead and schedule everything. I am excited to get started!` },
     ],
     note: 'Contract signed by homeowner. Deposit received. Advancing to insurance claim.',
-    crmUpdate: { leadStatus: 'Contract Signed', depositPaid: 2000, currentStageIndex: 7 },
+    crmUpdate: { depositPaid: 2000, notes: 'Contract signed — deposit received' },
     crmDocument: { type: 'contract', fileName: 'contract-signed-2026-07-12.pdf' },
   },
 
@@ -146,7 +188,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Insurance',
     replies: [],
     note: 'Claim submitted to carrier. Approval letter received. ACV: $24,500. RCV: $28,900. Claim ref: CLM-2026-TX-00847.',
-    crmUpdate: { claimNumber: 'CLM-2026-TX-00847', acvAmount: 24500, rcvAmount: 28900, currentStageIndex: 8 },
+    crmUpdate: { claimNumber: 'CLM-2026-TX-00847', acvAmount: 24500, rcvAmount: 28900, insuranceCarrier: 'State Farm' },
     crmDocument: { type: 'approval_letter', fileName: 'carrier-approval-CLM-2026-TX-00847.pdf' },
     carrierReply: {
       subject: 'Re: Roof Damage Claim — CLM-2026-TX-00847 — APPROVED',
@@ -178,7 +220,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Insurance',
     replies: [],
     note: 'Supplement filed. Identified 12 underpaid line items. Total supplement: $8,400. Depreciation holdback: $4,400. Carrier reference: REF-TX-9876.',
-    crmUpdate: { claimReferenceNumber: 'REF-TX-9876', depreciationHoldback: 4400, currentStageIndex: 9 },
+    crmUpdate: { claimReferenceNumber: 'REF-TX-9876', depreciationHoldback: 4400 },
     crmDocument: { type: 'supplement', fileName: 'supplement-REF-TX-9876.pdf' },
     carrierReply: {
       subject: 'Re: Supplement Request — CLM-2026-TX-00847 — Decision Issued',
@@ -216,8 +258,7 @@ const ALL_STAGES: StageConfig[] = [
     ],
     note: 'Homeowner selected Owens Corning Duration shingles, Onyx Black. Material choice confirmed in writing.',
     crmUpdate: {
-      materialSpecs: { brand: 'Owens Corning', product: 'Duration', colour: 'Onyx Black', underlayment: 'WeatherLock' },
-      currentStageIndex: 10,
+      materialSpecs: { brand: 'Owens Corning', product: 'Duration', colour: 'Onyx Black' },
     },
   },
   {
@@ -226,7 +267,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Estimat',
     replies: [],
     note: 'Materials ordered from ABC Roofing Supply. PO#2026-TX-4481. Owens Corning Duration, Onyx Black, 28 squares. Delivery confirmed July 14.',
-    crmUpdate: { poNumber: 'PO-2026-TX-4481', materialDeliveryDate: '2026-07-14T10:00:00Z', currentStageIndex: 11 },
+    crmUpdate: { poNumber: 'PO-2026-TX-4481', materialDeliveryDate: '2026-07-14' },
   },
 
   // ── PERMITS & PRODUCTION ─────────────────────────────────────────────────
@@ -236,7 +277,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Compliance',
     replies: [],
     note: 'Permit #FW-2026-RFG-8847 issued by Fort Worth Municipal. Code compliance confirmed. Contractor ProRoof TX cleared to start.',
-    crmUpdate: { permitNumber: 'FW-2026-RFG-8847', currentStageIndex: 12 },
+    crmUpdate: { permitNumber: 'FW-2026-RFG-8847' },
     crmDocument: { type: 'permit', fileName: 'permit-FW-2026-RFG-8847.pdf' },
   },
   {
@@ -245,7 +286,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Operations',
     replies: [],
     note: 'Crew assigned: ProRoof TX (5-person team). Installation scheduled for July 15, 2026. Homeowner notified via email. Pre-job checklist complete.',
-    crmUpdate: { installationDate: '2026-07-15T08:00:00Z', leadStatus: 'Production Scheduled', currentStageIndex: 13 },
+    crmUpdate: { installationDate: '2026-07-15', notes: 'Production scheduled' },
   },
   {
     idx: 14,
@@ -253,7 +294,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Operations',
     replies: [],
     note: 'Roof fully installed on July 15, 2026. Old shingles removed, new Owens Corning Duration installed. All debris removed. 47 job photos uploaded.',
-    crmUpdate: { leadStatus: 'Installation Complete', currentStageIndex: 14 },
+    crmUpdate: { notes: 'Roof installation complete' },
   },
 
   // ── QUALITY & CLOSE ──────────────────────────────────────────────────────
@@ -264,7 +305,7 @@ const ALL_STAGES: StageConfig[] = [
     replies: [],
     note: 'QC inspection passed. Flashing properly sealed, ridge cap installed, gutters reattached. Zero punch list items. Job approved.',
     crmDocument: { type: 'qc_report', fileName: 'qc-report-2026-07-16.pdf' },
-    crmUpdate: { currentStageIndex: 15 },
+    crmUpdate: { notes: 'QC inspection passed' },
   },
   {
     idx: 16,
@@ -274,7 +315,7 @@ const ALL_STAGES: StageConfig[] = [
       { body: `The roof looks absolutely fantastic! I am very happy with the quality of work. The team was professional and cleaned up perfectly. Well done!` },
     ],
     note: 'Homeowner satisfied with completed roof. No punch list items. Signed off on completion.',
-    crmUpdate: { leadStatus: 'Job Accepted by Customer', currentStageIndex: 16 },
+    crmUpdate: { notes: 'Customer walkthrough complete — job accepted' },
   },
   {
     idx: 17,
@@ -283,7 +324,7 @@ const ALL_STAGES: StageConfig[] = [
     replies: [],
     note: 'Final invoice #INV-2026-TX-0847 sent to homeowner. Total: $28,900. Depreciation holdback noted: $4,400. Balance due from homeowner: $4,400.',
     crmDocument: { type: 'invoice', fileName: 'invoice-INV-2026-TX-0847.pdf' },
-    crmUpdate: { balanceOwing: 4400, currentStageIndex: 17 },
+    crmUpdate: { balanceOwing: 4400 },
   },
   {
     idx: 18,
@@ -293,7 +334,7 @@ const ALL_STAGES: StageConfig[] = [
       { body: `Payment sent! I transferred the full outstanding balance via bank transfer. Reference number: TXN-20260720-8847. Please confirm receipt.` },
     ],
     note: 'Full payment received. Bank transfer TXN-20260720-8847 confirmed. Receipt issued. Project financially closed.',
-    crmUpdate: { balanceOwing: 0, leadStatus: 'Payment Complete', currentStageIndex: 18 },
+    crmUpdate: { balanceOwing: 0, notes: 'Payment received in full' },
   },
   {
     idx: 19,
@@ -301,7 +342,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Insurance',
     replies: [],
     note: 'Owens Corning Platinum Protection warranty registered. Certificate #OC-2026-TX-8847 emailed to homeowner. 50-year material, 25-year workmanship.',
-    crmUpdate: { warrantyType: 'Owens Corning Platinum Protection — 50yr material + 25yr workmanship', currentStageIndex: 19 },
+    crmUpdate: { warrantyType: 'Manufacturer 25yr', notes: 'Owens Corning Platinum Protection registered' },
     crmDocument: { type: 'warranty_certificate', fileName: 'warranty-OC-2026-TX-8847.pdf' },
   },
   {
@@ -312,7 +353,7 @@ const ALL_STAGES: StageConfig[] = [
       { body: `I just left a 5-star review on Google — really happy with everything. Also, my neighbour the Garcias at 44 Oak Drive also need roof work, I gave them your number!` },
     ],
     note: '5-star Google review received. Referral logged: Garcia family, 44 Oak Drive, Fort Worth TX 76101. CRM updated.',
-    crmUpdate: { notes: 'Referral: Garcia family, 44 Oak Drive, Fort Worth TX 76101', currentStageIndex: 20 },
+    crmUpdate: { notes: 'Referral: Garcia family, 44 Oak Drive, Fort Worth TX 76101' },
   },
   {
     idx: 21,
@@ -320,7 +361,7 @@ const ALL_STAGES: StageConfig[] = [
     roleKeyword: 'Operations',
     replies: [],
     note: 'All tasks closed. Documents archived. CRM record marked CLOSED-WON. Job profitability: 34%. Project #2026-TX-8847 archived.',
-    crmUpdate: { leadStatus: 'CLOSED-WON', profitability: 8330, currentStageIndex: 21 },
+    crmUpdate: { profitability: 8330, notes: 'Project closeout complete' },
   },
 ]
 
@@ -333,10 +374,18 @@ export interface JourneyLogEntry {
   msg: string
 }
 
-type JourneyRunStatus = 'idle' | 'running' | 'complete' | 'error'
+type JourneyRunStatus = 'idle' | 'running' | 'complete' | 'error' | 'cancelled'
 
-const journeyLogs   = new Map<string, JourneyLogEntry[]>()
-const journeyStatus = new Map<string, JourneyRunStatus>()
+const journeyLogs            = new Map<string, JourneyLogEntry[]>()
+const journeyStatus          = new Map<string, JourneyRunStatus>()
+const journeyCancelRequested = new Map<string, boolean>()
+
+class JourneyCancelled extends Error {
+  constructor() {
+    super('Journey cancelled by user')
+    this.name = 'JourneyCancelled'
+  }
+}
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
@@ -364,17 +413,28 @@ export class TestJourneyService {
   /** Start the full automated 22-stage journey in the background. Returns immediately. */
   startFullJourney(tenantId: string) {
     if (journeyStatus.get(tenantId) === 'running') {
-      return { ok: false, message: 'A journey is already running. Wait for it to finish or check the log.' }
+      return { ok: false, message: 'A journey is already running. Wait for it to finish or click Stop.' }
     }
     journeyLogs.set(tenantId, [])
+    journeyCancelRequested.set(tenantId, false)
     journeyStatus.set(tenantId, 'running')
     this.log(tenantId, '🚀', 'START', `Full 22-stage pipeline journey — ${TEST_CUSTOMER.name} <${TEST_CUSTOMER.email}>`)
     this.log(tenantId, '📤', 'SMTP',  `Emails sent from info@stormbuddy.co`)
 
     setImmediate(() =>
       this.runFullJourney(tenantId)
-        .then(() => { journeyStatus.set(tenantId, 'complete') })
-        .catch(e => {
+        .then(() => {
+          journeyStatus.set(tenantId, journeyCancelRequested.get(tenantId) ? 'cancelled' : 'complete')
+          journeyCancelRequested.delete(tenantId)
+        })
+        .catch(async e => {
+          journeyCancelRequested.delete(tenantId)
+          if (e?.name === 'JourneyCancelled') {
+            await this.cancelActiveTestTickets(tenantId).catch(() => {})
+            this.log(tenantId, '🛑', 'STOP', 'Journey ended — open test tickets cancelled')
+            journeyStatus.set(tenantId, 'cancelled')
+            return
+          }
           this.log(tenantId, '❌', 'ERROR', e.message)
           this.logger.error(`[TestJourney] ${e.message}`, e.stack)
           journeyStatus.set(tenantId, 'error')
@@ -384,22 +444,19 @@ export class TestJourneyService {
     return { ok: true, message: 'Journey started in background. Poll /operations/test-journey/logs for live updates.' }
   }
 
+  /** Request stop of a running journey. Takes effect between stages / during waits. */
+  stopFullJourney(tenantId: string) {
+    if (journeyStatus.get(tenantId) !== 'running') {
+      return { ok: false, message: 'No journey is currently running.' }
+    }
+    journeyCancelRequested.set(tenantId, true)
+    this.log(tenantId, '🛑', 'STOP', 'Stop requested — ending journey…')
+    return { ok: true, message: 'Journey stop requested. It will end shortly.' }
+  }
+
   // ── Manual step helpers (kept for the step-by-step panel) ─────────────────
 
-  async getJourneyTickets(tenantId: string): Promise<Array<{
-    id: string
-    ticketNumber: number
-    status: string
-    stageIndex: number | null
-    stageName: string
-    assignedAgent: { id: string; name: string; role: string } | null
-    nextAction: string | null
-    followUpAt: Date | null
-    activityLog: unknown
-    createdAt: Date
-    updatedAt: Date
-    suggestedReply: string | null
-  }>> {
+  async getJourneyTickets(tenantId: string) {
     const tickets = await this.prisma.activityTicket.findMany({
       where: {
         tenantId,
@@ -489,6 +546,8 @@ export class TestJourneyService {
 
     // ── Main loop: iterate all 22 stages ─────────────────────────────────────
     for (const stage of ALL_STAGES) {
+      this.assertNotCancelled(tenantId)
+
       const stageLabel = `STAGE ${stage.idx}`
       log('─────', stageLabel, `─ ${stage.name} (${stage.roleKeyword}) ` + '─'.repeat(Math.max(0, 42 - stage.name.length)))
 
@@ -540,9 +599,9 @@ export class TestJourneyService {
       } else {
         // Stages 1–21: wait for pipelineAdvance to create the ticket, or fall back
         await this.wakeAgents()
-        await this.sleep(3000)
+        await this.sleep(tenantId, 3000)
 
-        ticket = await this.waitForNewTicket(tenantId, stage.idx, journeyStartTime, 25000)
+        ticket = await this.waitForNewTicket(tenantId, stage.idx, journeyStartTime, 55000)
         if (!ticket) {
           log('⚙️', 'CREATE', `Stage ${stage.idx} ticket not auto-created — creating manually`)
           const ag = byRole(stage.roleKeyword)
@@ -558,11 +617,10 @@ export class TestJourneyService {
       }
 
       // ── Wake agents and wait for initial response ─────────────────────────
-      log('⚡', 'WAKE', `Waking ${stage.roleKeyword} agent... (cap 20s)`)
+      log('⚡', 'WAKE', `Waking ${stage.roleKeyword} agent...`)
       await this.wakeAgents()
-      await this.sleep(2000)
-      log('⏳', 'WAIT', `Checking ticket status (up to 15s)...`)
-      const afterWake = await this.waitForStatus(ticket.id, ['AWAITING_CUSTOMER', 'IN_PROGRESS', 'COMPLETED'], 15000)
+      await this.sleep(tenantId, 4000)
+      const afterWake = await this.waitForStatus(tenantId, ticket.id, ['AWAITING_CUSTOMER', 'IN_PROGRESS', 'COMPLETED'], 40000)
       if (afterWake) {
         log('✅', stage.roleKeyword.toUpperCase().slice(0, 12), `Status → ${afterWake.status}`)
       } else {
@@ -584,11 +642,12 @@ export class TestJourneyService {
 
         log('⚡', 'WAKE', `Waking agent to respond to customer...`)
         await this.wakeAgents()
-        await this.sleep(4000)
+        await this.sleep(tenantId, 4000)
         const afterReply = await this.waitForStatus(
+          tenantId,
           ticket.id,
           ['AWAITING_CUSTOMER', 'IN_PROGRESS', 'COMPLETED', 'SCHEDULED'],
-          15000,
+          40000,
         )
         if (afterReply) {
           log('✅', stage.roleKeyword.toUpperCase().slice(0, 12), `Responded. Status → ${afterReply.status}`)
@@ -604,13 +663,19 @@ export class TestJourneyService {
           data: { status: 'SCHEDULED', followUpAt: new Date(Date.now() - 60000) },
         })
         log('⚙️', 'DATE', 'Inspection date moved to NOW for testing — flipScheduledTickets will advance to Field Inspector')
+
+        // CRM update must run before continue — otherwise inspectionDate never reaches Stormbuddy
+        if (crmJobId) {
+          await this.simulateCrmActions(tenantId, crmJobId, stage, playbookStages, log)
+        }
+
         await this.ticketProcessor.flipScheduledTickets()
-        await this.sleep(3000)
+        await this.sleep(tenantId, 3000)
         continue  // pipelineAdvance handled internally by flipScheduledTickets
       }
 
       // ── Force-complete if agent did not finish autonomously ───────────────
-      const finalCheck = await this.waitForStatus(ticket.id, ['COMPLETED'], 5000)
+      const finalCheck = await this.waitForStatus(tenantId, ticket.id, ['COMPLETED'], 5000)
       if (!finalCheck) {
         await this.markComplete(ticket.id, stage.note)
         log('⚙️', 'FORCE', `Forced COMPLETED: ${stage.note.slice(0, 80)}`)
@@ -641,9 +706,14 @@ export class TestJourneyService {
             (ticketFull.assignedAgent ?? { id: 'system', name: 'System', role: '' }) as any,
             stage.note,
           )
-          await this.sleep(3000)
+          await this.sleep(tenantId, 3000)
         }
       }
+    }
+
+    if (journeyCancelRequested.get(tenantId)) {
+      await this.cancelActiveTestTickets(tenantId)
+      throw new JourneyCancelled()
     }
 
     // ── Final summary ─────────────────────────────────────────────────────────
@@ -716,8 +786,10 @@ export class TestJourneyService {
     const crmLabel = `CRM S${stage.idx}`
 
     // 1. Fetch job card
+    let existingStageIndex: number | undefined
     try {
       const card = await this.crm.getJobCard(tenantId, jobId)
+      existingStageIndex = card.currentStageIndex
       log('📂', crmLabel, `Job card read — status: ${card.leadStatus ?? '—'} | stage: ${card.currentStageIndex ?? '—'}`)
     } catch (e: any) {
       log('⚠️', crmLabel, `crm_get_job failed: ${e.message} — skipping CRM simulation for this stage`)
@@ -744,10 +816,11 @@ export class TestJourneyService {
     // 3. Write stage results back to job card
     if (stage.crmUpdate) {
       try {
-        const res = await this.crm.updateJobCard(tenantId, jobId, stage.crmUpdate)
-        log('💾', crmLabel, `Job card updated: ${res.updatedFields?.join(', ') ?? Object.keys(stage.crmUpdate).join(', ')}`)
+        const fields = normalizeCrmFields(stage.idx, stage.crmUpdate, existingStageIndex)
+        const res = await this.crm.updateJobCard(tenantId, jobId, fields)
+        log('💾', crmLabel, `Job card updated: ${res.updatedFields?.join(', ') ?? Object.keys(fields).join(', ')}`)
       } catch (e: any) {
-        log('⚠️', crmLabel, `crm_update_job failed: ${e.message}`)
+        log('⚠️', crmLabel, `crm_update_job failed: ${formatCrmError(e)}`)
       }
     }
 
@@ -765,7 +838,7 @@ export class TestJourneyService {
         })
         log('📎', crmLabel, `Document attached: ${stage.crmDocument.fileName} (id: ${res.documentId})`)
       } catch (e: any) {
-        log('⚠️', crmLabel, `crm_attach_document failed: ${e.message}`)
+        log('⚠️', crmLabel, `crm_attach_document failed: ${formatCrmError(e)}`)
       }
     }
   }
@@ -778,41 +851,65 @@ export class TestJourneyService {
     this.logger.log(`[TestJourney] ${icon} [${label}] ${msg}`)
   }
 
-  private sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }
-
-  private async wakeAgents() {
-    // Fire-and-forget: don't block the journey waiting for LLM responses.
-    // waitForStatus() will poll for the result; force-complete fires if agent is too slow.
-    this.ticketProcessor.processOpenTickets(true).catch(err =>
-      this.logger.warn(`[wakeAgents] background error: ${err?.message}`)
-    )
-    await this.sleep(3000)
+  private assertNotCancelled(tenantId: string) {
+    if (journeyCancelRequested.get(tenantId)) throw new JourneyCancelled()
   }
 
-  private async waitForStatus(ticketId: string, targetStatuses: string[], timeoutMs: number) {
+  private async cancelActiveTestTickets(tenantId: string) {
+    await this.prisma.activityTicket.updateMany({
+      where: {
+        tenantId,
+        contactEmail: TEST_CUSTOMER.email,
+        status: { notIn: ['CANCELLED', 'COMPLETED'] },
+        metadata: { path: ['testJourney'], equals: true },
+      },
+      data: { status: 'CANCELLED' },
+    })
+  }
+
+  private sleep(tenantId: string, ms: number) {
+    const step = 400
+    return new Promise<void>((resolve, reject) => {
+      let remaining = ms
+      const tick = () => {
+        if (journeyCancelRequested.get(tenantId)) {
+          reject(new JourneyCancelled())
+          return
+        }
+        if (remaining <= 0) {
+          resolve()
+          return
+        }
+        const wait = Math.min(step, remaining)
+        remaining -= wait
+        setTimeout(tick, wait)
+      }
+      tick()
+    })
+  }
+
+  private async wakeAgents() {
+    await this.ticketProcessor.processOpenTickets(true)
+  }
+
+  private async waitForStatus(tenantId: string, ticketId: string, targetStatuses: string[], timeoutMs: number) {
     const deadline = Date.now() + timeoutMs
-    let lastLog = Date.now()
     while (Date.now() < deadline) {
+      this.assertNotCancelled(tenantId)
       const t = await this.prisma.activityTicket.findUnique({
         where: { id: ticketId },
         select: { status: true, activityLog: true, nextAction: true },
       })
       if (t && targetStatuses.includes(t.status)) return t
-      // Heartbeat every 8s so the log stays alive
-      if (Date.now() - lastLog >= 8000) {
-        const remaining = Math.round((deadline - Date.now()) / 1000)
-        this.logger.debug(`[waitForStatus] still waiting for ${targetStatuses.join('/')} on ${ticketId} (${remaining}s left)`)
-        lastLog = Date.now()
-      }
-      await this.sleep(2000)
+      await this.sleep(tenantId, 2000)
     }
     return null
   }
 
   private async waitForNewTicket(tenantId: string, stageIndex: number, afterTime: Date, timeoutMs: number) {
     const deadline = Date.now() + timeoutMs
-    let lastLog = Date.now()
     while (Date.now() < deadline) {
+      this.assertNotCancelled(tenantId)
       const t = await this.prisma.activityTicket.findFirst({
         where: {
           tenantId,
@@ -825,12 +922,7 @@ export class TestJourneyService {
         orderBy: { createdAt: 'desc' },
       })
       if (t) return t
-      if (Date.now() - lastLog >= 8000) {
-        const remaining = Math.round((deadline - Date.now()) / 1000)
-        this.logger.debug(`[waitForNewTicket] stage ${stageIndex} not created yet (${remaining}s left)`)
-        lastLog = Date.now()
-      }
-      await this.sleep(2000)
+      await this.sleep(tenantId, 2000)
     }
     return null
   }
@@ -857,8 +949,8 @@ export class TestJourneyService {
       ? `Inspection confirmed for ${new Date(confirmedDate).toLocaleDateString('en-GB')} — send confirmation email, then update_ticket(COMPLETED).`
       : `Customer replied: "${body.slice(0, 120)}". Respond via contact_customer(contactEmail: "${TEST_CUSTOMER.email}"). When fully resolved, call update_ticket(COMPLETED).`
 
-    const { count } = await this.prisma.activityTicket.updateMany({
-      where: { id: ticket.id, status: { notIn: ['CANCELLED', 'COMPLETED'] } },
+    await this.prisma.activityTicket.update({
+      where: { id: ticket.id },
       data: {
         status: newStatus as any,
         followUpAt,
@@ -873,18 +965,14 @@ export class TestJourneyService {
         }] as any,
       },
     })
-    if (count === 0) {
-      this.logger.warn(`[injectReply] ticket ${ticket.id} was already completed/cancelled — skipping reply injection`)
-    }
     return newStatus
   }
 
   private async markComplete(ticketId: string, note: string) {
     const ticket = await this.prisma.activityTicket.findUnique({ where: { id: ticketId } })
-    if (!ticket || ['COMPLETED', 'CANCELLED'].includes(ticket.status)) return
-    const log = Array.isArray(ticket.activityLog) ? ticket.activityLog as any[] : []
-    await this.prisma.activityTicket.updateMany({
-      where: { id: ticketId, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+    const log = Array.isArray(ticket?.activityLog) ? ticket!.activityLog as any[] : []
+    await this.prisma.activityTicket.update({
+      where: { id: ticketId },
       data: {
         status: 'COMPLETED',
         resolvedAt: new Date(),

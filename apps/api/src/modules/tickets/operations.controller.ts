@@ -68,6 +68,15 @@ export class OperationsController {
     return this.testJourney.startFullJourney(tenantId)
   }
 
+  @Post('test-journey/stop')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '[DEV] Stop a running test journey' })
+  stopFullJourney(@Request() req: any) {
+    const tenantId: string = req.user?.tenantId
+    if (!tenantId) throw new BadRequestException('No tenant in auth context')
+    return this.testJourney.stopFullJourney(tenantId)
+  }
+
   /** Poll for live log entries */
   @Get('test-journey/logs')
   @ApiOperation({ summary: '[DEV] Get live log entries for the running test journey' })

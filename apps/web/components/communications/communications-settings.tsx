@@ -93,11 +93,35 @@ export function CommunicationsSettings() {
     setTesting(true)
     setTestResult(null)
     try {
+      // Persist form credentials first so the API can read them (or fall back to .env)
+      const payload: Record<string, string> = {}
+      Object.entries(settings).forEach(([k, v]) => {
+        if (v) payload[k] = v
+      })
+      if (Object.keys(payload).length) {
+        await api.put('/communications/settings', payload)
+      }
+
       const res = await api.post('/communications/test-connection')
       setTestResult(`Connected: ${res.data.friendlyName} (${res.data.status})`)
       toast.success('Twilio connection verified!')
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Connection failed'
+      const axiosErr = err as {
+        message?: string
+        code?: string
+        response?: { data?: { message?: string | string[] }; status?: number }
+      }
+      let message = 'Connection failed'
+      if (!axiosErr.response) {
+        message =
+          'Cannot reach API (Network Error). Start the backend on port 3001, then retry.'
+      } else if (Array.isArray(axiosErr.response.data?.message)) {
+        message = axiosErr.response.data.message.join(', ')
+      } else if (typeof axiosErr.response.data?.message === 'string') {
+        message = axiosErr.response.data.message
+      } else if (axiosErr.message) {
+        message = axiosErr.message
+      }
       setTestResult(message)
       toast.error('Connection test failed')
     } finally {
@@ -113,10 +137,40 @@ export function CommunicationsSettings() {
     )
   }
 
-  const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+  // Local API base (browser → Nest). For Twilio webhooks use a public tunnel URL.
+  const apiBase =
+    process.env.NEXT_PUBLIC_API_URL ||
+    (typeof window !== 'undefined'
+      ? `${window.location.protocol}//${window.location.hostname}:3001/api/v1`
+      : 'http://localhost:3001/api/v1')
+  // Set NEXT_PUBLIC_WEBHOOK_BASE=https://xxxx.ngrok-free.app/api/v1 when using ngrok
+  const webhookBase = (process.env.NEXT_PUBLIC_WEBHOOK_BASE || apiBase).replace(/\/$/, '')
+  const hasValidTenant = Boolean(tenantId)
+  const hasAgents = agents.length > 0
 
   return (
     <div className="space-y-8 max-w-3xl">
+      {(!hasValidTenant || !hasAgents) && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-1">
+          <p className="font-semibold">Inbound WhatsApp checklist</p>
+          {!hasValidTenant && (
+            <p>Tenant ID is missing — log in again so webhook URLs include a real <code className="font-mono">tenantId</code>.</p>
+          )}
+          {!hasAgents && (
+            <p>
+              This tenant has <strong>no AI agents</strong>. Platform Admin is empty — use a company tenant
+              (e.g. Stormbuddy) that already has agents, or create an agent under <strong>AI Workforce</strong>, then
+              paste that tenant&apos;s WhatsApp webhook URL into Twilio Sandbox settings.
+            </p>
+          )}
+          <p className="text-amber-800/90">
+            Twilio cannot call <code className="font-mono">localhost</code>. Set{' '}
+            <code className="font-mono">NEXT_PUBLIC_WEBHOOK_BASE</code> to your ngrok HTTPS URL +{' '}
+            <code className="font-mono">/api/v1</code>, restart the web app, then copy the WhatsApp webhook below.
+          </p>
+        </div>
+      )}
+
       {/* Twilio Credentials */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-3">
@@ -217,34 +271,47 @@ export function CommunicationsSettings() {
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100">
           <h3 className="font-semibold text-gray-900">Twilio Webhook URLs</h3>
-          <p className="text-sm text-gray-500">Configure these in your Twilio console for each phone number</p>
+          <p className="text-sm text-gray-500">
+            Paste into Twilio Sandbox / phone number → When a message comes in (HTTP POST).
+            {webhookBase.includes('localhost') && (
+              <span className="block mt-1 text-amber-600">
+                Showing localhost — Twilio needs a public URL. Use ngrok and set NEXT_PUBLIC_WEBHOOK_BASE.
+              </span>
+            )}
+          </p>
+          {hasValidTenant && (
+            <p className="text-xs text-gray-500 mt-1 font-mono">tenantId={tenantId}</p>
+          )}
         </div>
         <div className="p-6 space-y-3">
           {[
-            { label: 'SMS Inbound', url: `/communications/sms/inbound?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}`, method: 'HTTP POST' },
-            { label: 'WhatsApp Inbound', url: `/communications/whatsapp/inbound?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}`, method: 'HTTP POST' },
-            { label: 'Voice Inbound', url: `/communications/voice/inbound?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}`, method: 'HTTP POST' },
-            { label: 'Voice Gather (mid-call)', url: `/communications/voice/gather?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}`, method: 'HTTP POST' },
-          ].map((item) => (
-            <div key={item.label} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-              <div className="min-w-0 flex-1">
-                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">{item.label}</span>
-                <div className="mt-0.5 font-mono text-xs text-gray-800 truncate">
-                  {apiBase}{item.url}
+            { label: 'SMS Inbound', path: `/communications/sms/inbound?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}` },
+            { label: 'WhatsApp Inbound', path: `/communications/whatsapp/inbound?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}` },
+            { label: 'Voice Inbound', path: `/communications/voice/inbound?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}` },
+            { label: 'Voice Gather (mid-call)', path: `/communications/voice/gather?tenantId=${tenantId ?? '{YOUR_TENANT_ID}'}` },
+          ].map((item) => {
+            const fullUrl = `${webhookBase}${item.path}`
+            return (
+              <div key={item.label} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                <div className="min-w-0 flex-1">
+                  <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">{item.label}</span>
+                  <div className="mt-0.5 font-mono text-xs text-gray-800 break-all">
+                    {fullUrl}
+                  </div>
                 </div>
+                <span className="shrink-0 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">HTTP POST</span>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(fullUrl)
+                    toast.success('Copied!')
+                  }}
+                  className="shrink-0 text-xs text-gray-400 hover:text-gray-700 px-2 py-1 border border-gray-200 rounded hover:bg-white transition-colors"
+                >
+                  Copy
+                </button>
               </div>
-              <span className="shrink-0 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">{item.method}</span>
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(`${apiBase}${item.url}`)
-                  toast.success('Copied!')
-                }}
-                className="shrink-0 text-xs text-gray-400 hover:text-gray-700 px-2 py-1 border border-gray-200 rounded hover:bg-white transition-colors"
-              >
-                Copy
-              </button>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
 

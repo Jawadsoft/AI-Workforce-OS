@@ -227,11 +227,20 @@ export class StormBuddiConnector implements CRMConnector {
   }
 
   async updateJobCard(jobId: string, fields: Partial<CRMJobCard>): Promise<{ success: boolean; updatedFields: string[] }> {
-    const { data } = await this.httpCrm.post(`/update-job/${jobId}`, { fields })
-    const d = data?.data ?? data
-    return {
-      success: d.success ?? true,
-      updatedFields: d.updatedFields ?? d.updated_fields ?? Object.keys(fields),
+    try {
+      const { data } = await this.httpCrm.post(`/update-job/${jobId}`, { fields })
+      const d = data?.data ?? data
+      return {
+        success: d.success ?? true,
+        updatedFields: d.updatedFields ?? d.updated_fields ?? Object.keys(fields),
+      }
+    } catch (err: any) {
+      const status = err?.response?.status
+      const body = err?.response?.data
+      const detail = body?.message ?? body?.error
+        ?? (body?.errors ? JSON.stringify(body.errors) : null)
+        ?? (typeof body === 'string' ? body : body ? JSON.stringify(body) : err.message)
+      throw new Error(`CRM update-job failed (${status ?? 'network'}): ${detail}`)
     }
   }
 

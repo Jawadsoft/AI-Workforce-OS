@@ -27,39 +27,57 @@ export class CommunicationsController {
   @Post('sms/inbound')
   @HttpCode(200)
   async smsInbound(@Query('tenantId') tenantId: string, @Req() req: Request, @Res() res: Response) {
-    const body = req.body as Record<string, string>
-    const replyText = await this.comms.handleInboundSms({
-      tenantId,
-      from: body.From || '',
-      to: body.To || '',
-      body: body.Body || '',
-      twilioSid: body.MessageSid || '',
-    })
     res.set('Content-Type', 'text/xml')
-    res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${this.escapeXml(replyText)}</Message></Response>`)
+    try {
+      const body = (req.body || {}) as Record<string, string>
+      const result = await this.comms.handleInboundSms({
+        tenantId: tenantId || '',
+        from: body.From || '',
+        to: body.To || '',
+        body: body.Body || '',
+        twilioSid: body.MessageSid || '',
+      })
+      res.send(this.buildMessageTwiml(result.reply, result.sentViaApi))
+    } catch (err) {
+      console.error('[sms/inbound]', err)
+      res.send(this.buildMessageTwiml('Thank you for your message. We will get back to you shortly.', false))
+    }
   }
 
   /** POST /communications/whatsapp/inbound?tenantId=xxx */
   @Post('whatsapp/inbound')
   @HttpCode(200)
   async whatsappInbound(@Query('tenantId') tenantId: string, @Req() req: Request, @Res() res: Response) {
-    const body = req.body as Record<string, string>
-    const mediaUrls: string[] = []
-    const numMedia = parseInt(body.NumMedia || '0')
-    for (let i = 0; i < numMedia; i++) {
-      if (body[`MediaUrl${i}`]) mediaUrls.push(body[`MediaUrl${i}`])
-    }
-
-    const replyText = await this.comms.handleInboundWhatsApp({
-      tenantId,
-      from: body.From || '',
-      to: body.To || '',
-      body: body.Body || '',
-      twilioSid: body.MessageSid || '',
-      mediaUrls,
-    })
     res.set('Content-Type', 'text/xml')
-    res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${this.escapeXml(replyText)}</Message></Response>`)
+    try {
+      const body = (req.body || {}) as Record<string, string>
+      const mediaUrls: string[] = []
+      const numMedia = parseInt(body.NumMedia || '0', 10)
+      for (let i = 0; i < numMedia; i++) {
+        if (body[`MediaUrl${i}`]) mediaUrls.push(body[`MediaUrl${i}`])
+      }
+
+      const result = await this.comms.handleInboundWhatsApp({
+        tenantId: tenantId || '',
+        from: body.From || '',
+        to: body.To || '',
+        body: body.Body || body.ButtonText || body.ButtonPayload || '',
+        twilioSid: body.MessageSid || '',
+        mediaUrls,
+      })
+      res.send(this.buildMessageTwiml(result.reply, result.sentViaApi))
+    } catch (err) {
+      console.error('[whatsapp/inbound]', err)
+      res.send(this.buildMessageTwiml('Thank you for your message. We will get back to you shortly.', false))
+    }
+  }
+
+  /** Empty <Response/> when already sent via Twilio REST (avoids duplicate WhatsApp/SMS). */
+  private buildMessageTwiml(reply: string, sentViaApi: boolean): string {
+    if (sentViaApi) {
+      return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+    }
+    return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${this.escapeXml(reply)}</Message></Response>`
   }
 
   /** POST /communications/voice/inbound?tenantId=xxx */

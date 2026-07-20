@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common'
+import { BadRequestException, Injectable, Logger } from '@nestjs/common'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
 import { BrainService } from '../brain/brain.service'
@@ -21,13 +21,14 @@ export class CommunicationsService {
   // INBOUND: SMS / WhatsApp → AI agent reply
   // ──────────────────────────────────────────────
 
+  /** Result for Twilio webhooks: prefer REST send + empty TwiML to avoid double replies. */
   async handleInboundSms(params: {
     tenantId: string
     from: string
     to: string
     body: string
     twilioSid: string
-  }): Promise<string> {
+  }): Promise<{ reply: string; sentViaApi: boolean }> {
     return this.handleInboundMessage({ ...params, channel: 'SMS' })
   }
 
@@ -38,8 +39,14 @@ export class CommunicationsService {
     body: string
     twilioSid: string
     mediaUrls?: string[]
-  }): Promise<string> {
+  }): Promise<{ reply: string; sentViaApi: boolean }> {
     return this.handleInboundMessage({ ...params, channel: 'WHATSAPP' })
+  }
+
+  /** Drop whatsapp: prefix; keep digits/+ for CRM / conversation keys. */
+  private normalizePhone(raw: string): string {
+    if (!raw) return ''
+    return raw.replace(/^whatsapp:/i, '').trim()
   }
 
   private async handleInboundMessage(params: {
@@ -50,8 +57,33 @@ export class CommunicationsService {
     channel: 'SMS' | 'WHATSAPP'
     twilioSid: string
     mediaUrls?: string[]
-  }) {
-    const { tenantId, from, body, channel, twilioSid } = params
+  }): Promise<{ reply: string; sentViaApi: boolean }> {
+    const tenantId = (params.tenantId || '').trim()
+    if (!tenantId) {
+      this.logger.warn('Inbound message missing tenantId query param')
+      return {
+        reply: 'Thank you for your message. We will get back to you shortly.',
+        sentViaApi: false,
+      }
+    }
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true, settings: true },
+    })
+    if (!tenant) {
+      this.logger.warn(`Inbound message for unknown tenantId=${tenantId}`)
+      return {
+        reply: 'Thank you for your message. We will get back to you shortly.',
+        sentViaApi: false,
+      }
+    }
+
+    const from = this.normalizePhone(params.from)
+    const to = this.normalizePhone(params.to)
+    const body = (params.body || '').trim() || '[empty message]'
+    const channel = params.channel
+    const twilioSid = params.twilioSid
 
     const agent = await this.pickChannelAgent(tenantId, channel)
 
@@ -59,15 +91,18 @@ export class CommunicationsService {
       tenantId,
       channel,
       from,
-      to: params.to,
+      to,
       body,
       twilioSid,
       agentId: agent?.id,
     })
 
     if (!agent) {
-      const fallback = 'Thank you for your message. An agent will be in touch shortly.'
-      return fallback
+      this.logger.warn(`No ACTIVE agent for tenant=${tenantId} channel=${channel}`)
+      return {
+        reply: 'Thank you for your message. An agent will be in touch shortly.',
+        sentViaApi: false,
+      }
     }
 
     const conversation = await this.getOrCreatePhoneConversation(tenantId, from, channel, agent.id)
@@ -80,15 +115,9 @@ export class CommunicationsService {
       },
     })
 
-    // Build brain context from tenant settings
-    const tenantData = await this.prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: { settings: true },
-    })
-    const mergedSettings = { ...(tenantData?.settings as Record<string, unknown> || {}) }
+    const mergedSettings = { ...(tenant.settings as Record<string, unknown> || {}) }
     const brainCtx = this.brain.buildAgentContext(mergedSettings)
 
-    // Optionally fetch CRM context by caller phone
     let crmBlock = ''
     try {
       const crmCtx = await this.crmContext.fetchContext(tenantId, { phone: from })
@@ -98,21 +127,26 @@ export class CommunicationsService {
     const agentPrompt = agent.prompt || ''
     const channelHint = channel === 'SMS'
       ? 'You are communicating via SMS. Keep replies concise (under 160 characters).'
-      : 'You are communicating via WhatsApp. You can use a slightly longer reply if needed.'
+      : 'You are communicating via WhatsApp. Keep replies short and helpful (2–4 sentences).'
     const systemPrompt = `${agentPrompt}\n\n${brainCtx}${crmBlock}\n\n${channelHint}`
 
-    // Fetch recent conversation history
     const history = await this.prisma.message.findMany({
       where: { conversationId: conversation.id },
       orderBy: { createdAt: 'asc' },
       take: 20,
     })
     const historyForAI = history.map((m) => ({
-      role: m.role === 'USER' ? 'user' : 'assistant' as 'user' | 'assistant',
+      role: (m.role === 'USER' ? 'user' : 'assistant') as 'user' | 'assistant',
       content: m.content,
     }))
 
-    const aiReply = await this.ai.chat(systemPrompt, historyForAI)
+    let aiReply =
+      'Thank you for your message. We have received it and will follow up shortly.'
+    try {
+      aiReply = await this.ai.chat(systemPrompt, historyForAI)
+    } catch (err) {
+      this.logger.warn(`AI chat failed for inbound ${channel}: ${err}`)
+    }
 
     await this.prisma.message.create({
       data: {
@@ -128,14 +162,14 @@ export class CommunicationsService {
       data: { updatedAt: new Date() },
     })
 
-    // Send reply via Twilio (swallowed if credentials not set)
+    // Prefer REST send so we log OUTBOUND; return empty TwiML to Twilio to avoid a second reply.
     try {
       await this.sendReply(tenantId, channel, from, aiReply, agent.id, conversation.id)
+      return { reply: aiReply, sentViaApi: true }
     } catch (err) {
-      this.logger.warn(`Twilio send failed (credentials not set?): ${err}`)
+      this.logger.warn(`Twilio REST send failed after inbound — falling back to TwiML Message: ${err}`)
+      return { reply: aiReply, sentViaApi: false }
     }
-
-    return aiReply
   }
 
   // ──────────────────────────────────────────────
@@ -235,10 +269,20 @@ export class CommunicationsService {
     agentId?: string
     mediaUrls?: string[]
   }) {
-    if (params.channel === 'SMS') {
-      await this.twilio.sendSms({ tenantId: params.tenantId, to: params.to, body: params.message, agentId: params.agentId })
-    } else {
-      await this.twilio.sendWhatsApp({ tenantId: params.tenantId, to: params.to, body: params.message, mediaUrl: params.mediaUrls, agentId: params.agentId })
+    try {
+      if (params.channel === 'SMS') {
+        await this.twilio.sendSms({ tenantId: params.tenantId, to: params.to, body: params.message, agentId: params.agentId })
+      } else {
+        await this.twilio.sendWhatsApp({ tenantId: params.tenantId, to: params.to, body: params.message, mediaUrl: params.mediaUrls, agentId: params.agentId })
+      }
+      return { success: true }
+    } catch (err) {
+      const twilioMsg =
+        err && typeof err === 'object' && 'message' in err
+          ? String((err as { message: string }).message)
+          : 'Failed to send message'
+      this.logger.warn(`sendCustomNotification failed: ${twilioMsg}`)
+      throw new BadRequestException(twilioMsg)
     }
   }
 
@@ -287,11 +331,13 @@ export class CommunicationsService {
   }
 
   async testConnection(tenantId: string) {
-    const settings = await this.getSettings(tenantId)
-    if (!settings.twilioAccountSid && !process.env.TWILIO_ACCOUNT_SID) {
-      throw new Error('Twilio credentials not configured')
+    try {
+      return await this.twilio.verifyConnection(tenantId)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Twilio connection failed'
+      this.logger.warn(`Twilio testConnection failed: ${message}`)
+      throw new BadRequestException(message)
     }
-    return { status: 'active', friendlyName: 'Twilio Account (credentials set)' }
   }
 
   // ──────────────────────────────────────────────

@@ -586,8 +586,18 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
           where: { id: post.id },
           data: { scheduledAt: retry, errorMessage: `Rate limited — retrying at ${retry.toISOString()}` },
         })
+      } else if (status === 403 && msg.toLowerCase().includes('permission')) {
+        // Missing pages_manage_posts permission — mark as draft so it can be published
+        // manually from the Facebook Page once App Review is approved.
+        await this.prisma.socialPost.update({
+          where: { id: post.id },
+          data: {
+            status: 'draft',
+            errorMessage: `Auto-publish requires pages_manage_posts permission (pending Meta App Review). Post is ready — publish manually from your Facebook Page.`,
+          },
+        })
       } else if (status === 401 || status === 403) {
-        // Auth error — pause account, notify
+        // Other auth error — pause account, notify
         await this.prisma.socialAccount.update({
           where: { id: post.socialAccount.id },
           data: { isActive: false },
@@ -774,7 +784,7 @@ Return only the JSON array.`
   private async publishToFacebook(account: any, content: string, imageUrl?: string) {
     const { accessToken, pageId } = account
     if (!accessToken || !pageId) throw new Error('Facebook credentials not configured')
-    const url = `https://graph.facebook.com/v19.0/${pageId}/feed`
+    const url = `https://graph.facebook.com/v21.0/${pageId}/feed`
     const body: any = { message: content, access_token: accessToken }
     if (imageUrl) body.link = imageUrl
     const res = await fetch(url, {
@@ -791,14 +801,14 @@ Return only the JSON array.`
     const { accessToken, pageId } = account
     // Step 1: create media container
     const mediaRes = await fetch(
-      `https://graph.facebook.com/v19.0/${pageId}/media?image_url=${encodeURIComponent(imageUrl)}&caption=${encodeURIComponent(content)}&access_token=${accessToken}`,
+      `https://graph.facebook.com/v21.0/${pageId}/media?image_url=${encodeURIComponent(imageUrl)}&caption=${encodeURIComponent(content)}&access_token=${accessToken}`,
       { method: 'POST' },
     )
     if (!mediaRes.ok) throw new Error(`Instagram media create error: ${await mediaRes.text()}`)
     const { id: creationId } = await mediaRes.json()
     // Step 2: publish
     const publishRes = await fetch(
-      `https://graph.facebook.com/v19.0/${pageId}/media_publish?creation_id=${creationId}&access_token=${accessToken}`,
+      `https://graph.facebook.com/v21.0/${pageId}/media_publish?creation_id=${creationId}&access_token=${accessToken}`,
       { method: 'POST' },
     )
     if (!publishRes.ok) throw new Error(`Instagram publish error: ${await publishRes.text()}`)
@@ -855,25 +865,25 @@ Return only the JSON array.`
 
     // Exchange code → short-lived token
     const tokenRes = await fetch(
-      `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`,
+      `https://graph.facebook.com/v21.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`,
     )
     if (!tokenRes.ok) throw new Error(`Facebook token exchange failed: ${await tokenRes.text()}`)
     const { access_token: shortToken } = await tokenRes.json()
 
     // Exchange short → long-lived page token
     const longRes = await fetch(
-      `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortToken}`,
+      `https://graph.facebook.com/v21.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortToken}`,
     )
     if (!longRes.ok) throw new Error(`Facebook long-lived token failed: ${await longRes.text()}`)
     const { access_token: userToken } = await longRes.json()
 
     // Get the user's Pages (pick first one)
     const pagesRes = await fetch(
-      `https://graph.facebook.com/v19.0/me/accounts?access_token=${userToken}`,
+      `https://graph.facebook.com/v21.0/me/accounts?access_token=${userToken}`,
     )
     if (!pagesRes.ok) throw new Error(`Facebook Pages fetch failed: ${await pagesRes.text()}`)
     const { data: pages } = await pagesRes.json()
-    if (!pages?.length) throw new Error('No Facebook Pages found. Make sure your app has pages_manage_posts permission.')
+    if (!pages?.length) throw new Error('No Facebook Pages found. Make sure your account manages at least one Facebook Page and that pages_show_list permission was granted.')
 
     // Use first page (most tenants only have one business page)
     const page = pages[0]
@@ -897,12 +907,12 @@ Return only the JSON array.`
 
     // Also link Instagram Business Account if present on first page
     const igRes = await fetch(
-      `https://graph.facebook.com/v19.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`,
+      `https://graph.facebook.com/v21.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`,
     )
     const igData = await igRes.json()
     if (igData.instagram_business_account) {
       const igId = igData.instagram_business_account.id
-      const igInfoRes = await fetch(`https://graph.facebook.com/v19.0/${igId}?fields=name,username&access_token=${page.access_token}`)
+      const igInfoRes = await fetch(`https://graph.facebook.com/v21.0/${igId}?fields=name,username&access_token=${page.access_token}`)
       const igInfo = igInfoRes.ok ? await igInfoRes.json() : {}
       await this.prisma.socialAccount.upsert({
         where: { tenantId_platform: { tenantId, platform: 'instagram' } },

@@ -792,8 +792,18 @@ Return only the JSON array.`
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
-    if (!res.ok) throw new Error(`Facebook API error: ${await res.text()}`)
-    return res.json()
+    const json = await res.json()
+    // Facebook Graph API returns HTTP 200 even for errors — check the body.
+    // Error code 200 = permission error (requires pages_manage_posts).
+    if (json?.error) {
+      const fbErr = json.error
+      const isPermission = fbErr.code === 200 || (fbErr.message ?? '').toLowerCase().includes('permission')
+      const err: any = new Error(`Facebook API error (#${fbErr.code}): ${fbErr.message}`)
+      if (isPermission) err.status = 403
+      throw err
+    }
+    if (!res.ok) throw new Error(`Facebook API error: ${JSON.stringify(json)}`)
+    return json
   }
 
   private async publishToInstagram(account: any, content: string, imageUrl?: string) {

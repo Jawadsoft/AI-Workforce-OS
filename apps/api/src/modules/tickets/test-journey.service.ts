@@ -3,6 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service'
 import { TicketProcessorScheduler } from './ticket-processor.scheduler'
 import { ChatService } from '../chat/chat.service'
 import { CrmService } from '../crm/crm.service'
+import { AIService } from '../../ai/ai.service'
 import * as nodemailer from 'nodemailer'
 
 // ── Simulated email mailboxes ──────────────────────────────────────────────
@@ -73,8 +74,9 @@ function formatCrmError(e: any): string {
 // Each stage drives the full automated journey — no hardcoded stage blocks.
 
 interface StageReply {
-  body: string
-  confirmedDate?: string  // Only for inspection scheduling
+  body: string            // Fallback text used if LLM is unavailable or for confirmedDate stages
+  persona?: string        // When set, LLM generates a contextual reply using this as extra context
+  confirmedDate?: string  // When set, skip LLM and always use hardcoded body (exact date is required)
 }
 
 interface StageConfig {
@@ -93,10 +95,10 @@ interface StageConfig {
   crmDocument?: { type: string; fileName: string }
   // Email sent FROM the customer/contractor TO the carrier (claim/supplement submission).
   // Defined as a factory so customer name/address are substituted at runtime.
-  customerToCarrier?: (customer: JourneyCustomer) => { subject: string; html: string }
+  customerToCarrier?: (customer: JourneyCustomer, jobId?: string | null) => { subject: string; html: string }
   // Email sent FROM the carrier TO the homeowner (approval/decision response).
   // Defined as a factory so customer name/address are substituted at runtime.
-  carrierReply?: (customer: JourneyCustomer) => { subject: string; html: string }
+  carrierReply?: (customer: JourneyCustomer, jobId?: string | null) => { subject: string; html: string }
 }
 
 const ALL_STAGES: StageConfig[] = [
@@ -106,8 +108,8 @@ const ALL_STAGES: StageConfig[] = [
     name: 'Lead Qualification',
     roleKeyword: 'Lead Qualification',
     replies: [
-      { body: `Hi, thanks for reaching out! Yes, I noticed some damage on my roof after the storm last week. I'm definitely interested in the free inspection. Can you tell me more about the process and what to expect?` },
-      { body: `That sounds great, I am fully on board. Let's move forward with the inspection. Looking forward to hearing from you.` },
+      { body: `Hi, thanks for reaching out! Yes, I noticed some damage on my roof after the storm last week. I'm definitely interested in the free inspection. Can you tell me more about the process and what to expect?`, persona: `You just received an outreach email about a free roof inspection. You noticed roof damage after a recent storm and are interested, but want to know more about how the process works and what to expect.` },
+      { body: `That sounds great, I am fully on board. Let's move forward with the inspection. Looking forward to hearing from you.`, persona: `The roofing company has answered your questions about the inspection process. You are satisfied with their answers and ready to move forward.` },
     ],
     note: 'Lead qualified — customer confirmed interest. Advancing to Sales Consultation.',
     crmUpdate: { notes: 'Lead qualified — customer confirmed interest' },
@@ -117,7 +119,7 @@ const ALL_STAGES: StageConfig[] = [
     name: 'Sales Consultation',
     roleKeyword: 'Sales',
     replies: [
-      { body: `Thanks for explaining the financing options. The insurance claim assistance sounds exactly what I need. I'd like to proceed with the inspection. What are the next steps?` },
+      { body: `Thanks for explaining the financing options. The insurance claim assistance sounds exactly what I need. I'd like to proceed with the inspection. What are the next steps?`, persona: `The sales agent has explained financing options and the insurance claim assistance process. You are convinced this is the right approach and want to proceed with the inspection.` },
     ],
     note: 'Sales consultation done — homeowner agreed to financing and inspection. Moving to scheduling.',
     crmUpdate: { notes: 'Sales consultation complete' },
@@ -169,7 +171,7 @@ const ALL_STAGES: StageConfig[] = [
     name: 'Proposal Presentation',
     roleKeyword: 'Sales',
     replies: [
-      { body: `I am happy with the proposal. The pricing looks fair and the timeline works for me. I want to proceed. What do I need to sign?` },
+      { body: `I am happy with the proposal. The pricing looks fair and the timeline works for me. I want to proceed. What do I need to sign?`, persona: `You have just reviewed the roofing proposal. The pricing is fair, the warranty is good, and the timeline works for you. You want to move forward and know what the next steps are.` },
     ],
     note: 'Proposal accepted by homeowner. Proceeding to contract signing.',
     crmUpdate: { notes: 'Proposal accepted by homeowner' },
@@ -179,7 +181,7 @@ const ALL_STAGES: StageConfig[] = [
     name: 'Contract Signing',
     roleKeyword: 'Executive',
     replies: [
-      { body: `I have signed the contract and transferred the deposit. Please go ahead and schedule everything. I am excited to get started!` },
+      { body: `I have signed the contract and transferred the deposit. Please go ahead and schedule everything. I am excited to get started!`, persona: `You have received the contract and deposit invoice. You have signed the contract electronically and paid the deposit. You are excited to get the work started.` },
     ],
     note: 'Contract signed by homeowner. Deposit received. Advancing to insurance claim.',
     crmUpdate: { depositPaid: 2000, notes: 'Contract signed — deposit received' },
@@ -195,8 +197,8 @@ const ALL_STAGES: StageConfig[] = [
     note: 'Claim submitted to carrier. Approval letter received. ACV: $24,500. RCV: $28,900. Claim ref: CLM-2026-TX-00847.',
     crmUpdate: { claimNumber: 'CLM-2026-TX-00847', acvAmount: 24500, rcvAmount: 28900, insuranceCarrier: 'State Farm' },
     crmDocument: { type: 'approval_letter', fileName: 'carrier-approval-CLM-2026-TX-00847.pdf' },
-    customerToCarrier: (c) => ({
-      subject: 'Roof Damage Claim Submission — Hail & Wind — April 12, 2026',
+    customerToCarrier: (c, jobId) => ({
+      subject: `Roof Damage Claim Submission — Hail & Wind — April 12, 2026${jobId ? ` [Job #${jobId}]` : ''}`,
       html: `
         <p>Dear Claims Team,</p>
         <p>Please find attached the roof damage claim for the property listed below. The damage was sustained during the hail and wind event on <strong>April 12, 2026</strong>.</p>
@@ -217,8 +219,8 @@ const ALL_STAGES: StageConfig[] = [
         ✉ ${CUSTOMER_SMTP.email}</p>
       `,
     }),
-    carrierReply: (c) => ({
-      subject: 'Re: Roof Damage Claim — CLM-2026-TX-00847 — APPROVED',
+    carrierReply: (c, jobId) => ({
+      subject: `Re: Roof Damage Claim — CLM-2026-TX-00847 — APPROVED${jobId ? ` [Job #${jobId}]` : ''}`,
       html: `
         <p>Dear ${c.name},</p>
         <p>We have completed our review of your roof damage claim submitted for the property at <strong>${c.address}</strong>.</p>
@@ -249,8 +251,8 @@ const ALL_STAGES: StageConfig[] = [
     note: 'Supplement filed. Identified 12 underpaid line items. Total supplement: $8,400. Depreciation holdback: $4,400. Carrier reference: REF-TX-9876.',
     crmUpdate: { claimReferenceNumber: 'REF-TX-9876', depreciationHoldback: 4400 },
     crmDocument: { type: 'supplement', fileName: 'supplement-REF-TX-9876.pdf' },
-    customerToCarrier: (c) => ({
-      subject: 'Supplement Request — CLM-2026-TX-00847 — Additional Line Items',
+    customerToCarrier: (c, jobId) => ({
+      subject: `Supplement Request — CLM-2026-TX-00847 — Additional Line Items${jobId ? ` [Job #${jobId}]` : ''}`,
       html: `
         <p>Dear Claims Team,</p>
         <p>We are writing to request a supplement to claim <strong>CLM-2026-TX-00847</strong> for the property at <strong>${c.address}</strong> (homeowner: ${c.name}).</p>
@@ -270,8 +272,8 @@ const ALL_STAGES: StageConfig[] = [
         ✉ ${CUSTOMER_SMTP.email}</p>
       `,
     }),
-    carrierReply: (c) => ({
-      subject: 'Re: Supplement Request — CLM-2026-TX-00847 — Decision Issued',
+    carrierReply: (c, jobId) => ({
+      subject: `Re: Supplement Request — CLM-2026-TX-00847 — Decision Issued${jobId ? ` [Job #${jobId}]` : ''}`,
       html: `
         <p>Dear ${c.name},</p>
         <p>We have reviewed the supplement request submitted by your contractor for claim <strong>CLM-2026-TX-00847</strong>.</p>
@@ -302,7 +304,7 @@ const ALL_STAGES: StageConfig[] = [
     name: 'Material Selection',
     roleKeyword: 'Estimat',
     replies: [
-      { body: `I will go with the Owens Corning Duration shingles in Onyx Black. That colour looks great with our house. Please proceed with ordering.` },
+      { body: `I will go with the Owens Corning Duration shingles in Onyx Black. That colour looks great with our house. Please proceed with ordering.`, persona: `The estimator has sent you material options to choose from. You have looked at shingle colours and decided on a style. Confirm your selection and tell them to go ahead with ordering.` },
     ],
     note: 'Homeowner selected Owens Corning Duration shingles, Onyx Black. Material choice confirmed in writing.',
     crmUpdate: {
@@ -360,7 +362,7 @@ const ALL_STAGES: StageConfig[] = [
     name: 'Customer Walkthrough',
     roleKeyword: 'Sales',
     replies: [
-      { body: `The roof looks absolutely fantastic! I am very happy with the quality of work. The team was professional and cleaned up perfectly. Well done!` },
+      { body: `The roof looks absolutely fantastic! I am very happy with the quality of work. The team was professional and cleaned up perfectly. Well done!`, persona: `The roofing crew just finished the installation and you did a walkthrough. The work looks great — clean, professional, exactly what was scoped. Express your satisfaction and sign off on the completion.` },
     ],
     note: 'Homeowner satisfied with completed roof. No punch list items. Signed off on completion.',
     crmUpdate: { notes: 'Customer walkthrough complete — job accepted' },
@@ -379,7 +381,7 @@ const ALL_STAGES: StageConfig[] = [
     name: 'Payment Collection',
     roleKeyword: 'Executive',
     replies: [
-      { body: `Payment sent! I transferred the full outstanding balance via bank transfer. Reference number: TXN-20260720-8847. Please confirm receipt.` },
+      { body: `Payment sent! I transferred the full outstanding balance via bank transfer. Reference number: TXN-20260720-8847. Please confirm receipt.`, persona: `You received the final invoice for the roof repair. The total due from you is the depreciation holdback balance. Confirm you have made the payment and ask them to confirm receipt.` },
     ],
     note: 'Full payment received. Bank transfer TXN-20260720-8847 confirmed. Receipt issued. Project financially closed.',
     crmUpdate: { balanceOwing: 0, notes: 'Payment received in full' },
@@ -398,7 +400,7 @@ const ALL_STAGES: StageConfig[] = [
     name: 'Review & Referral Request',
     roleKeyword: 'Sales',
     replies: [
-      { body: `I just left a 5-star review on Google — really happy with everything. Also, my neighbour the Garcias at 44 Oak Drive also need roof work, I gave them your number!` },
+      { body: `I just left a 5-star review on Google — really happy with everything. Also, my neighbour the Garcias at 44 Oak Drive also need roof work, I gave them your number!`, persona: `The roofing company has asked you for a Google review and if you know anyone who needs roof work. You are happy with the service and will leave a review. You may mention a neighbour or friend who also has a damaged roof.` },
     ],
     note: '5-star Google review received. Referral logged: Garcia family, 44 Oak Drive, Fort Worth TX 76101. CRM updated.',
     crmUpdate: { notes: 'Referral: Garcia family, 44 Oak Drive, Fort Worth TX 76101' },
@@ -444,6 +446,7 @@ export class TestJourneyService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly crm: CrmService,
+    private readonly ai: AIService,
     @Inject(forwardRef(() => TicketProcessorScheduler)) private readonly ticketProcessor: TicketProcessorScheduler,
     @Inject(forwardRef(() => ChatService)) private readonly chat: ChatService,
   ) {}
@@ -550,9 +553,22 @@ export class TestJourneyService {
     if (!ticket) throw new Error('Ticket not found')
     const stageIdx = (ticket.metadata as any)?.pipelineStageIndex ?? 0
     const stageCfg = ALL_STAGES.find(s => s.idx === stageIdx)
-    const reply = replyBody ?? stageCfg?.replies[0]?.body ?? 'Sounds good, please proceed.'
-    const confirmedDate = stageCfg?.replies[0]?.confirmedDate
-    return this.injectReply(ticket, reply, confirmedDate ?? null)
+    const stageReply = stageCfg?.replies[0]
+    const confirmedDate = stageReply?.confirmedDate
+
+    // If caller didn't provide a body and this stage has a persona, generate via LLM
+    let body = replyBody ?? stageReply?.body ?? 'Sounds good, please proceed.'
+    if (!replyBody && stageReply?.persona && !confirmedDate) {
+      const customer: JourneyCustomer = {
+        name:    ticket.contactRef   ?? 'Homeowner',
+        email:   ticket.contactEmail ?? '',
+        phone:   ticket.contactPhone ?? '',
+        address: (ticket.metadata as any)?.propertyAddress ?? ticket.title ?? '',
+      }
+      body = await this.generateCustomerReply(customer, stageCfg?.name ?? `Stage ${stageIdx}`, stageReply.persona, body)
+    }
+
+    return this.injectReply(ticket, body, confirmedDate ?? null)
   }
 
   async forceAdvance(tenantId: string, ticketId: string) {
@@ -649,6 +665,9 @@ export class TestJourneyService {
 
     // CRM job ID resolved from lead ID — shared across all 22 stages
     let crmJobId: string | null = null
+    // Email thread anchor (first outgoing messageId) — inherited by all stage tickets so
+    // every customer email chains into one thread in their inbox
+    let journeyEmailThreadId: string | null = null
 
     // ── Main loop: iterate all 22 stages ─────────────────────────────────────
     for (const stage of ALL_STAGES) {
@@ -708,6 +727,12 @@ export class TestJourneyService {
 
         if (!crmJobId) {
           log('⚠️', 'CRM', `No job_id found for ${customer.email} in Stormbuddy — CRM simulation will be skipped`)
+        } else {
+          // Persist crmJobId in ticket metadata so all pipeline stages can stamp it in email subjects
+          await this.prisma.activityTicket.update({
+            where: { id: ticket.id },
+            data: { metadata: { ...((ticket.metadata as any) ?? {}), crmJobId } },
+          }).catch(() => {})
         }
       } else {
         // Stages 1–21: wait for pipelineAdvance to create the ticket, or fall back
@@ -721,9 +746,21 @@ export class TestJourneyService {
           ticket = await this.createFallbackTicket(
             tenantId, stage.idx, stage.name, customer, ag?.id,
             playbookStages[stage.idx]?.completion ?? `Complete ${stage.name}.`,
+            journeyEmailThreadId ?? undefined,
           )
           log('⚙️', 'TICKET', `#${String(ticket.ticketNumber).padStart(4,'0')} → ${ticket.assignedAgent?.name ?? ag?.name ?? '?'}`)
         } else {
+          // Ensure emailThreadId is present on pipelineAdvance-created tickets too
+          // (pipelineAdvance spreads metadata, so it should be there — but patch if missing)
+          if (journeyEmailThreadId) {
+            const tMeta = (ticket.metadata as any) ?? {}
+            if (!tMeta.emailThreadId) {
+              await this.prisma.activityTicket.update({
+                where: { id: ticket.id },
+                data: { metadata: { ...tMeta, emailThreadId: journeyEmailThreadId } },
+              }).catch(() => {})
+            }
+          }
           log('📋', 'TICKET', `#${String(ticket.ticketNumber).padStart(4,'0')} → ${ticket.assignedAgent?.name ?? '?'}`)
         }
         await this.cancelDuplicatesForStage(tenantId, stage.idx, ticket.id, customer.email)
@@ -740,6 +777,19 @@ export class TestJourneyService {
         log('⚠️', stage.roleKeyword.toUpperCase().slice(0, 12), 'No status change yet — injecting customer data next')
       }
 
+      // ── Capture emailThreadId for future stages ───────────────────────────
+      if (!journeyEmailThreadId) {
+        const freshMeta = await this.prisma.activityTicket.findUnique({
+          where: { id: ticket.id },
+          select: { metadata: true },
+        }).catch(() => null)
+        const threadId = (freshMeta?.metadata as any)?.emailThreadId
+        if (threadId) {
+          journeyEmailThreadId = threadId
+          log('🔗', 'THREAD', `Email thread anchor captured: ${threadId.slice(0, 30)}...`)
+        }
+      }
+
       // ── Inject customer replies (for customer-facing stages) ──────────────
       for (let ri = 0; ri < stage.replies.length; ri++) {
         const reply = stage.replies[ri]
@@ -753,8 +803,21 @@ export class TestJourneyService {
           await this.sleep(tenantId, 5000)
         }
 
-        await this.injectReply(fresh, reply.body, reply.confirmedDate ?? null)
-        log('📧', 'CUSTOMER', `Replied: "${reply.body.slice(0, 80)}${reply.body.length > 80 ? '...' : ''}"`)
+        // Generate an LLM-based reply when persona is defined AND this reply doesn't
+        // require a specific confirmedDate (exact dates must remain hardcoded).
+        let replyBody = reply.body
+        if (reply.persona && !reply.confirmedDate) {
+          log('🤖', 'CUSTOMER', `Generating LLM reply for ${stage.name}...`)
+          replyBody = await this.generateCustomerReply(
+            customer,
+            stage.name,
+            reply.persona,
+            reply.body,
+          )
+        }
+
+        await this.injectReply(fresh, replyBody, reply.confirmedDate ?? null)
+        log('📧', 'CUSTOMER', `Replied: "${replyBody.slice(0, 80)}${replyBody.length > 80 ? '...' : ''}"`)
 
         if (reply.confirmedDate) {
           log('📅', 'DATE', `Confirmed date: ${reply.confirmedDate}`)
@@ -813,15 +876,17 @@ export class TestJourneyService {
       }
 
       // ── Customer → Carrier email (claim/supplement submission) ──────────
+      let customerToCarrierMsgId: string | undefined
       if (stage.customerToCarrier) {
-        const cc = stage.customerToCarrier(customer)
-        await this.sendAsCustomer(cc.subject, cc.html, customer.name, log)
+        const cc = stage.customerToCarrier(customer, crmJobId)
+        customerToCarrierMsgId = await this.sendAsCustomer(cc.subject, cc.html, customer.name, log)
       }
 
       // ── Carrier → Customer email (approval/decision response) ────────────
       if (stage.carrierReply) {
-        const cr = stage.carrierReply(customer)
-        await this.sendAsCarrier(cr.subject, cr.html, customer.email, log)
+        const cr = stage.carrierReply(customer, crmJobId)
+        // Thread the carrier reply to the customer's submission using In-Reply-To
+        await this.sendAsCarrier(cr.subject, cr.html, customer.email, log, customerToCarrierMsgId)
       }
 
       // ── CRM simulation — write job card fields + tick checklist ──────────
@@ -884,7 +949,7 @@ export class TestJourneyService {
    *  Uses the customer SMTP mailbox so the email appears in the carrier's inbox
    *  as a real claim submission or supplement request.
    */
-  private async sendAsCustomer(subject: string, html: string, fromName: string, log: (icon: string, label: string, msg: string) => void) {
+  private async sendAsCustomer(subject: string, html: string, fromName: string, log: (icon: string, label: string, msg: string) => void): Promise<string | undefined> {
     try {
       const transporter = nodemailer.createTransport({
         host: CUSTOMER_SMTP.smtpHost,
@@ -893,23 +958,32 @@ export class TestJourneyService {
         auth: { user: CUSTOMER_SMTP.email, pass: CUSTOMER_SMTP.smtpPass },
         tls: { rejectUnauthorized: false },
       })
-      await transporter.sendMail({
+      const info = await transporter.sendMail({
         from: `"${fromName}" <${CUSTOMER_SMTP.email}>`,
         to: CARRIER.email,
         subject,
         html,
       })
       log('📤', 'CLAIM', `Email sent: "${subject}" → ${CARRIER.email}`)
+      const msgId = (info as any)?.messageId
+      this.appendToSentFolder({
+        smtpHost: CUSTOMER_SMTP.smtpHost, smtpUser: CUSTOMER_SMTP.email, smtpPass: CUSTOMER_SMTP.smtpPass,
+        from: `"${fromName}" <${CUSTOMER_SMTP.email}>`, to: CARRIER.email, subject, html,
+        messageId: msgId,
+      }).catch(() => {})
+      return msgId
     } catch (err: any) {
       log('⚠️', 'CLAIM', `Failed to send claim email: ${err.message}`)
+      return undefined
     }
   }
 
   /** Send a real email FROM the insurance carrier TO the homeowner.
    *  Uses the carrier's own SMTP mailbox so the email appears in the customer's
    *  inbox exactly as a real carrier approval/decision email would.
+   *  Pass inReplyTo (messageId of the customer's claim email) to thread correctly.
    */
-  private async sendAsCarrier(subject: string, html: string, toEmail: string, log: (icon: string, label: string, msg: string) => void) {
+  private async sendAsCarrier(subject: string, html: string, toEmail: string, log: (icon: string, label: string, msg: string) => void, inReplyTo?: string) {
     try {
       const transporter = nodemailer.createTransport({
         host: CARRIER.smtpHost,
@@ -918,15 +992,101 @@ export class TestJourneyService {
         auth: { user: CARRIER.email, pass: CARRIER.smtpPass },
         tls: { rejectUnauthorized: false },
       })
-      await transporter.sendMail({
+      const info = await transporter.sendMail({
         from: `"${CARRIER.name}" <${CARRIER.email}>`,
         to: toEmail,
         subject,
         html,
+        ...(inReplyTo ? { headers: { 'In-Reply-To': inReplyTo, 'References': inReplyTo } } : {}),
       })
-      log('📨', 'CARRIER', `Email sent: "${subject}" → ${toEmail}`)
+      log('📨', 'CARRIER', `Email sent: "${subject}" → ${toEmail}${inReplyTo ? ' (threaded)' : ''}`)
+      this.appendToSentFolder({
+        smtpHost: CARRIER.smtpHost, smtpUser: CARRIER.email, smtpPass: CARRIER.smtpPass,
+        from: `"${CARRIER.name}" <${CARRIER.email}>`, to: toEmail, subject, html,
+        messageId: (info as any)?.messageId,
+        inReplyTo,
+      }).catch(() => {})
     } catch (err: any) {
       log('⚠️', 'CARRIER', `Failed to send carrier email: ${err.message}`)
+    }
+  }
+
+  /**
+   * Append a sent message to the IMAP Sent folder of the sending account.
+   * Non-blocking — call with .catch(() => {}) so failures never affect delivery.
+   */
+  private async appendToSentFolder(params: {
+    smtpHost: string
+    smtpUser: string
+    smtpPass: string
+    from: string
+    to: string
+    subject: string
+    html: string
+    messageId?: string
+    inReplyTo?: string
+    references?: string
+  }): Promise<void> {
+    const { ImapFlow } = await import('imapflow')
+
+    // Derive IMAP host from SMTP host (same logic as email.service.ts)
+    let imapHost = params.smtpHost
+    if (/^smtp\.office365\.com$/i.test(imapHost))      { imapHost = 'outlook.office365.com' }
+    else if (/^smtp\.gmail\.com$/i.test(imapHost))     { imapHost = 'imap.gmail.com' }
+    else if (/^smtp\./i.test(imapHost))                { imapHost = imapHost.replace(/^smtp\./i, 'imap.') }
+    else if (/^send\./i.test(imapHost))                { imapHost = imapHost.replace(/^send\./i, 'imap.') }
+
+    const client = new ImapFlow({
+      host: imapHost, port: 993, secure: true,
+      auth: { user: params.smtpUser, pass: params.smtpPass },
+      logger: false,
+      tls: { rejectUnauthorized: false },
+      connectionTimeout: 8000, greetingTimeout: 5000, socketTimeout: 10000,
+    })
+    client.on('error', () => {})
+    try {
+      await client.connect()
+      const mailboxes = await client.list()
+      const sentFolder = mailboxes.find(m =>
+        m.flags.has('\\Sent') ||
+        /^(\[Gmail\]\/Sent Mail|Sent Items|Sent Messages|Sent|INBOX\.Sent)$/i.test(m.path),
+      )
+      const folder = sentFolder?.path ?? 'Sent Items'
+      const boundary = `b_${Date.now()}`
+      const plain = params.html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+      const raw = [
+        `From: ${params.from}`,
+        `To: ${params.to}`,
+        `Subject: ${params.subject}`,
+        `Date: ${new Date().toUTCString()}`,
+        `MIME-Version: 1.0`,
+        `Content-Type: multipart/alternative; boundary="${boundary}"`,
+        ...(params.messageId  ? [`Message-ID: ${params.messageId}`]  : []),
+        ...(params.inReplyTo  ? [`In-Reply-To: ${params.inReplyTo}`]  : []),
+        ...(params.references  ? [`References: ${params.references}`]  : []),
+        ``,
+        `--${boundary}`,
+        `Content-Type: text/plain; charset=utf-8`,
+        `Content-Transfer-Encoding: 7bit`,
+        ``,
+        plain,
+        ``,
+        `--${boundary}`,
+        `Content-Type: text/html; charset=utf-8`,
+        `Content-Transfer-Encoding: 7bit`,
+        ``,
+        params.html,
+        ``,
+        `--${boundary}--`,
+      ].join('\r\n')
+      try {
+        await client.append(folder, Buffer.from(raw), ['\\Seen'])
+        this.logger.log(`[appendToSent] ✅ Saved to "${folder}" on ${imapHost}`)
+      } catch (e: any) {
+        if (!e.message?.includes('BigInt')) throw e
+      }
+    } finally {
+      try { await client.logout() } catch {}
     }
   }
 
@@ -1102,6 +1262,52 @@ export class TestJourneyService {
     })
   }
 
+  /**
+   * Generate a realistic homeowner reply using the LLM.
+   * The customer persona is grounded in the journey customer's details and the current
+   * pipeline stage so responses are contextually appropriate and vary on every run.
+   * If the LLM call fails for any reason, falls back to the provided hardcoded `fallback`.
+   */
+  private async generateCustomerReply(
+    customer: JourneyCustomer,
+    stageName: string,
+    stagePersona: string,
+    fallback: string,
+  ): Promise<string> {
+    try {
+      const systemPrompt = [
+        `You are roleplaying as ${customer.name}, a homeowner at ${customer.address}.`,
+        `Your roof was damaged by a hail and wind storm in April 2026.`,
+        `You have home insurance with State Farm and you are working with a roofing company to repair it.`,
+        `You are cooperative, occasionally ask brief realistic questions, and use casual but polite language.`,
+        `You reply like a real person sending an email — not a formal business letter.`,
+        ``,
+        `CURRENT PIPELINE STAGE: ${stageName}`,
+        `SITUATION: ${stagePersona}`,
+        ``,
+        `Write ONLY the email reply body (2–5 sentences).`,
+        `Do NOT include Subject:, From:, To:, or sign-off.`,
+        `Sound natural and human — vary your wording, avoid generic filler phrases.`,
+      ].join('\n')
+
+      const reply = await this.ai.chat(
+        systemPrompt,
+        [{ role: 'user', content: `Write your reply to the roofing company's latest email.` }],
+        undefined,
+        { temperature: 0.85, maxTokens: 200 },
+      )
+
+      const clean = reply.trim()
+      if (clean.length > 10) {
+        this.logger.log(`[Journey] LLM customer reply (${stageName}): "${clean.slice(0, 80)}..."`)
+        return clean
+      }
+    } catch (err: any) {
+      this.logger.warn(`[Journey] LLM customer reply failed (${stageName}), using fallback: ${err.message}`)
+    }
+    return fallback
+  }
+
   private async injectReply(ticket: any, body: string, confirmedDate: string | null) {
     const log = Array.isArray(ticket.activityLog) ? ticket.activityLog : []
     const contactEmail: string = ticket.contactEmail ?? ''
@@ -1128,7 +1334,77 @@ export class TestJourneyService {
         }] as any,
       },
     })
+
+    // ── Send a real email from the customer's SMTP to the contractor's inbox ──
+    // This closes the bidirectional loop: the contractor's inbox actually receives
+    // the customer reply, mirrors what a real homeowner response looks like.
+    const toEmail = await this.resolveContractorEmail(ticket.tenantId)
+    if (toEmail && CUSTOMER_SMTP.email && CUSTOMER_SMTP.smtpPass) {
+      // Retrieve thread anchor from ticket metadata so the reply chains correctly
+      const threadMsgId = (ticket.metadata as any)?.emailThreadId
+      const injectJobId  = (ticket.metadata as any)?.crmJobId
+      const injectLeadId = ticket.leadId ?? (ticket.metadata as any)?.crmLeadId
+      const injectJobRef = injectJobId  ? ` [Job #${injectJobId}]`
+                         : injectLeadId ? ` [Lead #${injectLeadId}]`
+                         : ''
+      const subject = `Re: Free Roof Inspection${injectJobRef}`
+      const htmlBody = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto"><p>${body.replace(/\n/g, '<br>')}</p></div>`
+      try {
+        const transporter = nodemailer.createTransport({
+          host: CUSTOMER_SMTP.smtpHost,
+          port: CUSTOMER_SMTP.smtpPort,
+          secure: false,
+          auth: { user: CUSTOMER_SMTP.email, pass: CUSTOMER_SMTP.smtpPass },
+          tls: { rejectUnauthorized: false },
+        })
+        const replyInfo = await transporter.sendMail({
+          from: `"${ticket.contactRef ?? 'Customer'}" <${CUSTOMER_SMTP.email}>`,
+          to: toEmail,
+          subject,
+          html: htmlBody,
+          text: body,
+          ...(threadMsgId ? { inReplyTo: threadMsgId, references: threadMsgId } : {}),
+        })
+        this.logger.log(`[injectReply] Real reply sent from ${CUSTOMER_SMTP.email} → ${toEmail}`)
+        this.appendToSentFolder({
+          smtpHost: CUSTOMER_SMTP.smtpHost, smtpUser: CUSTOMER_SMTP.email, smtpPass: CUSTOMER_SMTP.smtpPass,
+          from: `"${ticket.contactRef ?? 'Customer'}" <${CUSTOMER_SMTP.email}>`,
+          to: toEmail, subject, html: htmlBody,
+          messageId: (replyInfo as any)?.messageId,
+          ...(threadMsgId ? { inReplyTo: threadMsgId, references: threadMsgId } : {}),
+        }).catch(() => {})
+      } catch (e: any) {
+        this.logger.warn(`[injectReply] Real reply SMTP failed (non-critical): ${e.message}`)
+      }
+    }
+
     return newStatus
+  }
+
+  /** Look up the contractor's outbound email address from the tenant's SMTP settings. */
+  private async resolveContractorEmail(tenantId: string): Promise<string | null> {
+    try {
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { settings: true },
+      })
+      const s = (tenant?.settings as Record<string, string>) || {}
+      if (s.smtpFromEmail) return s.smtpFromEmail
+      if (s.smtpUser)      return s.smtpUser
+
+      // Fall back to ConnectedAccount email
+      const account = await this.prisma.connectedAccount.findFirst({
+        where: { tenantId, provider: 'imap', status: 'active' },
+        orderBy: { createdAt: 'desc' },
+        select: { accountEmail: true },
+      })
+      if (account?.accountEmail) return account.accountEmail
+
+      // Fall back to .env
+      return process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || null
+    } catch {
+      return null
+    }
   }
 
   private async markComplete(ticketId: string, note: string) {
@@ -1158,6 +1434,7 @@ export class TestJourneyService {
     customer: JourneyCustomer,
     agentId?: string,
     nextAction?: string,
+    emailThreadId?: string,
   ) {
     return this.prisma.activityTicket.create({
       data: {
@@ -1168,7 +1445,12 @@ export class TestJourneyService {
         assignedAgentId: agentId,
         nextAction: nextAction ?? `Complete ${stageName}.`,
         followUpAt: new Date(Date.now() - 1000),
-        metadata: { pipelineStageIndex: stageIdx, pipelineStageName: stageName, testJourney: true } as any,
+        metadata: {
+          pipelineStageIndex: stageIdx,
+          pipelineStageName: stageName,
+          testJourney: true,
+          ...(emailThreadId ? { emailThreadId } : {}),
+        } as any,
         activityLog: [{ agentName: 'System', agentId: 'system', action: 'PIPELINE_ADVANCED', note: `Fallback ticket for Stage ${stageIdx}.`, timestamp: new Date().toISOString() }] as any,
       },
       include: { assignedAgent: { select: { id: true, name: true, role: true } } },

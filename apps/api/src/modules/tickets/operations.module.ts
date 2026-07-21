@@ -6,6 +6,7 @@ import { TestJourneyService } from './test-journey.service'
 import { PrismaModule } from '../../common/prisma/prisma.module'
 import { ChatModule } from '../chat/chat.module'
 import { CrmModule } from '../crm/crm.module'
+import { AIModule } from '../../ai/ai.module'
 
 /**
  * Standalone module for the OperationsController.
@@ -15,6 +16,7 @@ import { CrmModule } from '../crm/crm.module'
   imports: [
     PrismaModule,
     CrmModule,
+    AIModule,
     forwardRef(() => TicketProcessorModule),
     forwardRef(() => IntegrationsModule),
     forwardRef(() => ChatModule),

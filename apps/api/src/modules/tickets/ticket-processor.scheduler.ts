@@ -283,6 +283,15 @@ export class TicketProcessorScheduler {
         const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
         const tenantName = (tenantSettings?.settings as any)?.brain?.companyName || 'our company'
         const customerName = ticket.contactRef || 'there'
+        const agentFirstName = ticket.assignedAgent?.name?.split(' ')[0] || tenantName
+        // Append job/lead ID to subject so every email in the thread carries the reference
+        const crmJobId  = (ticket.metadata as any)?.crmJobId
+        const crmLeadId = ticket.leadId ?? (ticket.metadata as any)?.crmLeadId
+        const jobRef    = crmJobId  ? `[Job #${crmJobId}]`
+                        : crmLeadId ? `[Lead #${crmLeadId}]`
+                        : ''
+        const baseSubject = `Free Roof Inspection — ${tenantName}${jobRef ? ' ' + jobRef : ''}`
+        const reSubject   = `Re: Free Roof Inspection — ${tenantName}${jobRef ? ' ' + jobRef : ''}`
 
         // Pre-written email bodies — provided for all needsEmail stages so the agent never sends a blank email
         const d1 = threeDaysFromNow
@@ -290,10 +299,10 @@ export class TicketProcessorScheduler {
         const d3 = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
         const phoneStr = ticket.contactPhone ? ` or call us at ${ticket.contactPhone}` : ''
         const prewrittenMessage = isInitialOutreach
-          ? `Hi ${customerName},\n\nMy name is from ${tenantName}. We noticed your property may have been affected by a recent storm in your area, and we would like to offer you a free roof inspection.\n\nThere is no cost or obligation — our specialist will assess any damage and walk you through your options, including how to file an insurance claim if needed.\n\nWould you be available for a quick call or visit? Please reply to this email${phoneStr} and we will arrange a convenient time.\n\nBest regards,\n${tenantName}`
+          ? `Hi ${customerName},\n\nMy name is ${agentFirstName} from ${tenantName}. We noticed your property may have been affected by a recent storm in your area, and we would like to offer you a free roof inspection.\n\nThere is no cost or obligation — our specialist will assess any damage and walk you through your options, including how to file an insurance claim if needed.\n\nWould you be available for a quick call or visit? Please reply to this email${phoneStr} and we will arrange a convenient time.\n\nBest regards,\n${agentFirstName}\n${tenantName}`
           : stageIndex === 2
-            ? `Hi ${customerName},\n\nI am reaching out from ${tenantName} to confirm your upcoming roof inspection. Could you let me know which of the following dates works best for you?\n\n• ${d1}\n• ${d2}\n• ${d3}\n\nPlease reply to this email${phoneStr}.\n\nBest regards,\n${tenantName}`
-            : `Hi ${customerName},\n\nI am following up on your roofing project with ${tenantName}. We wanted to keep you informed on the progress and check if you have any questions at this stage.\n\nPlease reply to this email${phoneStr} and we will be happy to assist.\n\nBest regards,\n${tenantName}`
+            ? `Hi ${customerName},\n\nThis is ${agentFirstName} from ${tenantName}. I am reaching out to confirm your upcoming roof inspection. Could you let me know which of the following dates works best for you?\n\n• ${d1}\n• ${d2}\n• ${d3}\n\nPlease reply to this email${phoneStr}.\n\nBest regards,\n${agentFirstName}\n${tenantName}`
+            : `Hi ${customerName},\n\nThis is ${agentFirstName} from ${tenantName} with an update on your roofing project. I wanted to make sure you have everything you need at this stage and answer any questions you may have.\n\nPlease reply to this email${phoneStr} and I will be happy to assist.\n\nBest regards,\n${agentFirstName}\n${tenantName}`
 
         const briefing = [
           `TICKET #${ticketNum}: "${ticket.title}"`,
@@ -311,7 +320,7 @@ export class TicketProcessorScheduler {
             `  "contactEmail": "${effectiveEmail || ''}",`,
             `  "contactName": "${customerName}",`,
             `  "ticketId": "${ticketShortId}",`,
-            `  "subject": "Re: Free Roof Inspection — ${tenantName}",`,
+            `  "subject": "${reSubject}",`,
             `  "message": "<write a helpful reply addressing their question or comment>"`,
             `}`,
             `DO NOT pass sessionId. Use contactEmail only.`,
@@ -327,7 +336,7 @@ export class TicketProcessorScheduler {
             `  "contactEmail": "${effectiveEmail || ''}",`,
             `  "contactName": "${customerName}",`,
             `  "ticketId": "${ticketShortId}",`,
-            `  "subject": "${isInitialOutreach ? `Free Roof Inspection — ${tenantName}` : stageIndex === 2 ? `Roof Inspection Scheduling — ${tenantName}` : `Project Update — ${tenantName}`}",`,
+            `  "subject": "${isInitialOutreach ? baseSubject : reSubject}",`,
             `  "message": "${prewrittenMessage.replace(/\n/g, '\\n').replace(/"/g, '\\"')}"`,
             `}`,
             `IMPORTANT: Use contactEmail only. Do NOT pass sessionId.`,

@@ -1478,26 +1478,58 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
               const recipientName = params.contactName || params.contactRef || 'there'
               const subject = params.subject || `Regarding your property — ${companyName}`
 
-              // ── Email threading: read prior thread messageId from ticket metadata ──
-              let emailTicketId = params.ticketId as string | undefined
+              // ── Email threading: resolve ticket (agent-provided or auto-detected) ──
+              // Agent passes ticketId when it follows briefing instructions.
+              // If omitted (LLMs sometimes drop optional params), auto-detect the most
+              // recent active ticket for this contactEmail so threading never silently breaks.
+              let rawTicketId = params.ticketId as string | undefined
+              let emailTicketId: string | undefined
               let inReplyTo: string | undefined
               let references: string | undefined
               let existingTicketMeta: object | null = null
-              if (emailTicketId) {
-                // Support both full IDs and short 6-char suffix IDs
-                if (emailTicketId.length === 6) {
-                  const found = await this.prisma.activityTicket.findFirst({
-                    where: { tenantId, id: { endsWith: emailTicketId } },
+
+              // Resolve ticketId → full DB id + metadata
+              const resolveTicketForThread = async (id: string) => {
+                if (id.length <= 8) {
+                  // Short ID suffix lookup
+                  return this.prisma.activityTicket.findFirst({
+                    where: { tenantId, id: { endsWith: id } },
                     select: { id: true, metadata: true },
                   }).catch(() => null)
-                  if (found) { emailTicketId = found.id; existingTicketMeta = (found.metadata as object | null) ?? null }
-                } else {
-                  const ticketForThread = await this.prisma.activityTicket.findUnique({
-                    where: { id: emailTicketId },
-                    select: { metadata: true },
-                  }).catch(() => null)
-                  existingTicketMeta = (ticketForThread?.metadata as object | null) ?? null
                 }
+                const t = await this.prisma.activityTicket.findUnique({
+                  where: { id },
+                  select: { id: true, metadata: true },
+                }).catch(() => null)
+                return t
+              }
+
+              if (rawTicketId) {
+                const found = await resolveTicketForThread(rawTicketId)
+                if (found) { emailTicketId = found.id; existingTicketMeta = (found.metadata as object | null) ?? null }
+              }
+
+              // Auto-detect: if agent didn't pass ticketId (or lookup failed), find the
+              // most recent active ticket for this email address — guarantees threading
+              // even when the LLM omits the optional param.
+              if (!emailTicketId && effectiveEmail) {
+                const autoTicket = await this.prisma.activityTicket.findFirst({
+                  where: {
+                    tenantId,
+                    contactEmail: effectiveEmail,
+                    status: { notIn: ['CANCELLED', 'COMPLETED'] },
+                  },
+                  orderBy: { updatedAt: 'desc' },
+                  select: { id: true, metadata: true },
+                }).catch(() => null)
+                if (autoTicket) {
+                  emailTicketId = autoTicket.id
+                  existingTicketMeta = (autoTicket.metadata as object | null) ?? null
+                  this.logger.log(`[contact_customer] ticketId auto-detected: ${emailTicketId.slice(-6)} for ${effectiveEmail}`)
+                }
+              }
+
+              if (existingTicketMeta) {
                 const threadMsgId = (existingTicketMeta as any)?.emailThreadId
                 if (threadMsgId) {
                   inReplyTo = threadMsgId
@@ -1510,23 +1542,25 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                 to: params.contactEmail as string,
                 subject,
                 html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto">
-                  <p>Hi ${recipientName},</p>
                   <p>${(params.message as string).replace(/\n/g, '<br>')}</p>
                   <p style="color:#64748b;font-size:13px;margin-top:24px;">— ${companyName}</p>
                 </div>`,
-                text: `Hi ${recipientName},\n\n${params.message}\n\n— ${companyName}`,
+                text: `${params.message}\n\n— ${companyName}`,
                 inReplyTo,
                 references,
               })
-              this.logger.log(`[contact_customer] Outbound email sent to ${params.contactEmail}`)
+              this.logger.log(`[contact_customer] Outbound email sent to ${params.contactEmail}${inReplyTo ? ' (threaded)' : ' (new thread)'}`)
 
-              // ── Save the first messageId so all follow-up emails thread together ──
+              // ── Save the first messageId as the thread anchor ──────────────────
+              // Only set on the first email (no prior inReplyTo) — all follow-ups will
+              // inherit this anchor and use it as their In-Reply-To header.
               if (emailTicketId && messageId && !inReplyTo) {
                 const merged = { ...(existingTicketMeta ?? {}), emailThreadId: messageId }
                 await this.prisma.activityTicket.update({
                   where: { id: emailTicketId },
                   data: { metadata: merged },
                 }).catch(() => {/* non-critical */})
+                this.logger.log(`[contact_customer] Thread anchor saved: ${messageId?.slice(0, 30)} on ticket ${emailTicketId.slice(-6)}`)
               }
 
               return `✅ Email sent to ${params.contactEmail}: "${params.message}"`
@@ -3439,6 +3473,16 @@ When chatting with the business owner/manager directly (in the internal chat thr
     }
 
     const now = new Date()
+
+    // Fresh metadata read: the ticket object passed in was fetched BEFORE the agent sent its
+    // outbound email, so ticket.metadata may not yet contain emailThreadId. Re-fetch now to
+    // get the latest metadata (including emailThreadId saved by contact_customer handler).
+    const freshTicketMeta = await this.prisma.activityTicket.findUnique({
+      where: { id: ticket.id },
+      select: { metadata: true },
+    }).catch(() => null)
+    const latestMeta = freshTicketMeta?.metadata ?? ticket.metadata ?? {}
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const newTicket = await (this.prisma.activityTicket.create as any)({
       data: {
@@ -3458,12 +3502,11 @@ When chatting with the business owner/manager directly (in the internal chat thr
         contactPhone: ticket.contactPhone,
         leadId: ticket.leadId ?? (ticket.metadata as any)?.crmLeadId ?? undefined,
         assignedAgentId: nextAgent.id,
-        // Use completion criteria as the actionable instruction (trigger is a condition, not a task)
         nextAction: nextStage.completion
           ? `${nextStage.completion}. Contact the homeowner via contact_customer (pass ticketId for email threading), then call update_ticket with the correct status (AWAITING_CUSTOMER after emailing, SCHEDULED when date is confirmed, COMPLETED when stage is fully done).`
           : nextStage.trigger ?? `Begin stage: ${nextStage.name}`,
         metadata: {
-          ...(ticket.metadata ?? {}),
+          ...(latestMeta as object),
           pipelineStageIndex: nextStageIndex,
           pipelineStageName: nextStage.name,
           previousTicketId: ticket.id,
@@ -3490,6 +3533,14 @@ When chatting with the business owner/manager directly (in the internal chat thr
     const contactPhone = (newTicket as any).contactPhone ?? ticket.contactPhone ?? null
     const tenantRec = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true, settings: true } })
     const tenantName = (tenantRec?.settings as any)?.brain?.companyName || tenantRec?.name || 'our company'
+    // Build a job/lead reference tag so every email subject carries a traceable ID
+    const _paMeta     = (latestMeta as any) ?? {}
+    const _paJobId    = _paMeta.crmJobId
+    const _paLeadId   = newTicket.leadId ?? _paMeta.crmLeadId
+    const _paJobRef   = _paJobId  ? ` [Job #${_paJobId}]`
+                      : _paLeadId ? ` [Lead #${_paLeadId}]`
+                      : ''
+    const paReSubject = `Re: Free Roof Inspection — ${tenantName}${_paJobRef}`
 
     // A stage needs homeowner email contact only when its completion criteria explicitly involves
     // communicating with the homeowner. Internal work stages (Field Inspection, Insurance Analysis,
@@ -3515,7 +3566,7 @@ When chatting with the business owner/manager directly (in the internal chat thr
           `  "contactEmail": "${contactEmail}",`,
           `  "contactName": "${contactName}",`,
           `  "ticketId": "${newTicketShortId}",`,
-          `  "subject": "${nextStage.name} — ${tenantName}",`,
+          `  "subject": "${paReSubject}",`,
           `  "message": "Hi ${contactName},\\n\\nI am ${nextAgent.name} from ${tenantName}. ${(nextStage.trigger ?? 'I am following up regarding your roofing project.').replace(/'/g, '')}\\n\\n${completionLC.includes('financing') ? 'I would like to walk you through your financing options and answer any questions.' : 'Could you please confirm your availability for the next step?'}\\n\\nBest regards,\\n${nextAgent.name}, ${tenantName}"`,
           `}`,
           ``,

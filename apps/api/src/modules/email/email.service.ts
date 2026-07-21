@@ -3,6 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service'
 import * as nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
 import { decrypt } from '../integrations/crypto.util'
+import { ImapFlow } from 'imapflow'
 
 export interface SmtpConfig {
   host: string
@@ -126,10 +127,134 @@ export class EmailService {
         ...(params.references ? { references: params.references } : {}),
       })
       this.logger.log(`Email sent to ${actualTo}: ${params.subject}`)
-      return { messageId: (info as any)?.messageId }
+      const messageId = (info as any)?.messageId
+
+      // Save a copy to the Sent folder via IMAP (non-blocking — does not affect delivery)
+      this.appendToSent(cfg, {
+        from: `"${cfg.fromName}" <${cfg.fromEmail}>`,
+        to: actualTo,
+        subject,
+        html: params.html,
+        text: params.text,
+        messageId,
+        inReplyTo: params.inReplyTo,
+        references: params.references,
+      }).catch(e => this.logger.warn(`[EmailService] Sent-folder append failed (non-critical): ${e.message}`))
+
+      return { messageId }
     } catch (err) {
       this.logger.error(`Email send failed: ${err}`)
       throw err
+    }
+  }
+
+  /**
+   * Appends the sent message to the IMAP Sent folder so it appears in the
+   * sender's mailbox. Uses the same IMAP host/credentials derived from SMTP config.
+   * Completely non-blocking — failures are logged but never thrown.
+   */
+  private async appendToSent(
+    cfg: SmtpConfig,
+    msg: {
+      from: string
+      to: string
+      subject: string
+      html: string
+      text?: string
+      messageId?: string
+      inReplyTo?: string
+      references?: string
+    },
+  ): Promise<void> {
+    // Derive IMAP host from SMTP host — handle known providers and generic patterns
+    let imapHost = cfg.host
+    if (/^smtp\.office365\.com$/i.test(imapHost)) {
+      imapHost = 'outlook.office365.com'
+    } else if (/^smtp\.gmail\.com$/i.test(imapHost)) {
+      imapHost = 'imap.gmail.com'
+    } else if (/^smtp\./i.test(imapHost)) {
+      // smtp.example.com → imap.example.com
+      imapHost = imapHost.replace(/^smtp\./i, 'imap.')
+    } else if (/^send\./i.test(imapHost)) {
+      // send.one.com (one.com / IONOS) → imap.one.com
+      imapHost = imapHost.replace(/^send\./i, 'imap.')
+    } else if (/^mail\./i.test(imapHost)) {
+      // mail.example.com → keep as-is (many providers use mail.* for both SMTP and IMAP)
+    }
+    // Otherwise keep the host as-is and try port 993
+
+    const imapPort = 993  // IMAP SSL always on 993
+
+    const client = new ImapFlow({
+      host: imapHost,
+      port: imapPort,
+      secure: true,
+      auth: { user: cfg.user, pass: cfg.pass },
+      logger: false,
+      tls: { rejectUnauthorized: false },
+      connectionTimeout: 8000,
+      greetingTimeout: 5000,
+      socketTimeout: 10000,
+    })
+    client.on('error', (err: Error) => {
+      this.logger.warn(`[appendToSent] IMAP error event: ${err.message}`)
+    })
+
+    try {
+      await client.connect()
+
+      // Find Sent folder — providers use different names
+      const mailboxes = await client.list()
+      const sentFolder = mailboxes.find(m =>
+        m.flags.has('\\Sent') ||
+        /^(\[Gmail\]\/Sent Mail|Sent Items|Sent Messages|Sent|INBOX\.Sent)$/i.test(m.path),
+      )
+      const folder = sentFolder?.path ?? 'Sent Items'
+
+      // Build raw RFC 2822 message
+      const boundary = `boundary_${Date.now()}`
+      const plainText = msg.text ?? msg.html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+      const now = new Date().toUTCString()
+      const rawMessage = [
+        `From: ${msg.from}`,
+        `To: ${msg.to}`,
+        `Subject: ${msg.subject}`,
+        `Date: ${now}`,
+        `MIME-Version: 1.0`,
+        `Content-Type: multipart/alternative; boundary="${boundary}"`,
+        ...(msg.messageId  ? [`Message-ID: ${msg.messageId}`]  : []),
+        ...(msg.inReplyTo  ? [`In-Reply-To: ${msg.inReplyTo}`]  : []),
+        ...(msg.references  ? [`References: ${msg.references}`]  : []),
+        ``,
+        `--${boundary}`,
+        `Content-Type: text/plain; charset=utf-8`,
+        `Content-Transfer-Encoding: 7bit`,
+        ``,
+        plainText,
+        ``,
+        `--${boundary}`,
+        `Content-Type: text/html; charset=utf-8`,
+        `Content-Transfer-Encoding: 7bit`,
+        ``,
+        msg.html,
+        ``,
+        `--${boundary}--`,
+      ].join('\r\n')
+
+      try {
+        await client.append(folder, Buffer.from(rawMessage), ['\\Seen'])
+        this.logger.log(`[appendToSent] ✅ Saved to "${folder}" on ${imapHost}`)
+      } catch (appendErr: any) {
+        // ImapFlow v1.4+ may throw a BigInt serialization error even though the
+        // APPEND succeeded on the server — treat it as success.
+        if (appendErr.message?.includes('BigInt')) {
+          this.logger.log(`[appendToSent] ✅ Saved (BigInt warning suppressed)`)
+        } else {
+          throw appendErr
+        }
+      }
+    } finally {
+      try { await client.logout() } catch {}
     }
   }
 

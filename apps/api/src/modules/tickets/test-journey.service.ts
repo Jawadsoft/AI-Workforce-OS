@@ -1333,8 +1333,8 @@ export class TestJourneyService {
       ? `Inspection confirmed for ${new Date(confirmedDate).toLocaleDateString('en-GB')} — send confirmation email via contact_customer(contactEmail: "${contactEmail}", ticketId: "${ticketShortId}"), then update_ticket(COMPLETED).`
       : `Customer replied: "${body.slice(0, 120)}". Respond via contact_customer(contactEmail: "${contactEmail}", ticketId: "${ticketShortId}"). When fully resolved, call update_ticket(COMPLETED).`
 
-    await this.prisma.activityTicket.update({
-      where: { id: ticket.id },
+    const count = await this.prisma.activityTicket.updateMany({
+      where: { id: ticket.id, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
       data: {
         status: newStatus as any,
         followUpAt,
@@ -1349,6 +1349,10 @@ export class TestJourneyService {
         }] as any,
       },
     })
+    if (count.count === 0) {
+      this.logger.warn(`[Journey] injectReply: ticket ${ticket.id.slice(-6)} was already COMPLETED or CANCELLED — skipping reply injection`)
+      return newStatus
+    }
 
     // ── Send a real email from the customer's SMTP to the contractor's inbox ──
     // This closes the bidirectional loop: the contractor's inbox actually receives
@@ -1424,9 +1428,19 @@ export class TestJourneyService {
 
   private async markComplete(ticketId: string, note: string) {
     const ticket = await this.prisma.activityTicket.findUnique({ where: { id: ticketId } })
-    const log = Array.isArray(ticket?.activityLog) ? ticket!.activityLog as any[] : []
-    await this.prisma.activityTicket.update({
-      where: { id: ticketId },
+    if (!ticket) {
+      this.logger.warn(`[Journey] markComplete: ticket ${ticketId.slice(-6)} not found — already cancelled or deleted`)
+      return
+    }
+    if (ticket.status === 'COMPLETED' || ticket.status === 'CANCELLED') {
+      this.logger.warn(`[Journey] markComplete: ticket ${ticketId.slice(-6)} already ${ticket.status} — skipping`)
+      return
+    }
+    const log = Array.isArray(ticket.activityLog) ? ticket.activityLog as any[] : []
+    // Use updateMany with a status guard to prevent crash if the ticket was
+    // cancelled between the findUnique check and this update (race condition).
+    await this.prisma.activityTicket.updateMany({
+      where: { id: ticketId, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
       data: {
         status: 'COMPLETED',
         resolvedAt: new Date(),

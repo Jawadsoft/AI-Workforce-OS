@@ -82,6 +82,15 @@ export class OperationsController {
     return this.testJourney.stopFullJourney(tenantId)
   }
 
+  @Post('test-journey/reset')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '[DEV] Force-reset a stuck journey — clears in-memory state and cancels open test tickets' })
+  forceResetJourney(@Request() req: any) {
+    const tenantId: string = req.user?.tenantId
+    if (!tenantId) throw new BadRequestException('No tenant in auth context')
+    return this.testJourney.forceResetJourney(tenantId)
+  }
+
   /** Poll for live log entries */
   @Get('test-journey/logs')
   @ApiOperation({ summary: '[DEV] Get live log entries for the running test journey' })

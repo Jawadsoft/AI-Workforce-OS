@@ -1554,6 +1554,17 @@ function DevJourneyModal({ onClose }: { onClose: () => void }) {
     finally { setBusy(false) }
   }
 
+  const forceResetJourney = async () => {
+    setBusy(true)
+    try {
+      const res = await api.post('/operations/test-journey/reset')
+      flash(res.data.message, res.data.ok !== false)
+      await fetchLogs()
+      await fetchTickets()
+    } catch (e: any) { flash(`Error: ${e?.response?.data?.message ?? e.message}`, false) }
+    finally { setBusy(false) }
+  }
+
   const simulateReply = async (ticketId: string) => {
     setBusy(true)
     try {
@@ -1638,6 +1649,17 @@ function DevJourneyModal({ onClose }: { onClose: () => void }) {
             >
               {busy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Square className="w-3 h-3 fill-current" />}
               Stop Journey
+            </button>
+          )}
+          {(runStatus === 'running' || logs.length > 0) && (
+            <button
+              onClick={forceResetJourney}
+              disabled={busy}
+              title="Force-clear stuck journey state and cancel all open test tickets"
+              className="flex items-center gap-1.5 text-xs px-2 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-semibold transition-colors disabled:opacity-40"
+            >
+              <RefreshCw className="w-3 h-3" />
+              Force Reset
             </button>
           )}
           <span className="text-[10px] text-muted-foreground hidden sm:block font-mono">node test-full-journey.js</span>

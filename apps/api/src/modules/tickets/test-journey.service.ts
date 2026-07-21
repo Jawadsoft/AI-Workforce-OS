@@ -517,6 +517,21 @@ export class TestJourneyService {
     return { ok: true, message: 'Journey stop requested. It will end shortly.' }
   }
 
+  /**
+   * Force-reset the in-memory journey state for a tenant.
+   * Use when the journey is stuck in "agents processing…" and Stop has no effect.
+   * Also cancels any open test tickets in the database.
+   */
+  async forceResetJourney(tenantId: string) {
+    journeyCancelRequested.set(tenantId, true)
+    journeyStatus.set(tenantId, 'idle')
+    journeyLogs.set(tenantId, [])
+    journeyCancelRequested.delete(tenantId)
+    await this.cancelActiveTestTickets(tenantId).catch(() => {})
+    this.logger.warn(`[TestJourney] Force-reset applied for tenant ${tenantId}`)
+    return { ok: true, message: 'Journey state reset. All open test tickets cancelled. Ready to run again.' }
+  }
+
   // ── Manual step helpers (kept for the step-by-step panel) ─────────────────
 
   async getJourneyTickets(tenantId: string) {

@@ -10,6 +10,7 @@
     "sourceMap": true,
     "rootDir": "./src",
     "outDir": "./dist",
+    "baseUrl": "./",
     "incremental": true,
     "skipLibCheck": true,
     "strictNullChecks": false,
@@ -18,7 +19,7 @@
     "forceConsistentCasingInFileNames": false,
     "noFallthroughCasesInSwitch": false,
     "paths": {
-      "@ai-workforce/types": ["./../../packages/types/src"]
+      "@ai-workforce/types": ["../../packages/types/src"]
     }
   }
 }

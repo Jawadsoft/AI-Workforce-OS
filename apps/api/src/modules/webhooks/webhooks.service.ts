@@ -1,4 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common'
+import { Injectable, Logger, UnauthorizedException, BadRequestException } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
+import { createHmac, timingSafeEqual } from 'crypto'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
 import { CrmContextService } from '../crm/crm-context.service'
@@ -50,7 +52,96 @@ export class WebhooksService {
     private readonly crmCtx: CrmContextService,
     private readonly brain: BrainService,
     private readonly chat: ChatService,
+    private readonly config: ConfigService,
   ) {}
+
+  // ── Meta / Facebook webhook verification + events ───────────────
+
+  /**
+   * Meta sends GET ?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...
+   * Respond with the challenge string when the verify token matches.
+   */
+  verifyMetaSubscription(mode?: string, verifyToken?: string, challenge?: string): string {
+    const expected = this.config.get<string>('META_WEBHOOK_VERIFY_TOKEN')
+      || this.config.get<string>('FACEBOOK_WEBHOOK_VERIFY_TOKEN')
+      || ''
+
+    if (!expected) {
+      this.logger.error('META_WEBHOOK_VERIFY_TOKEN is not configured')
+      throw new BadRequestException('Meta webhook verify token is not configured on the server')
+    }
+
+    if (mode === 'subscribe' && verifyToken && verifyToken === expected && challenge) {
+      this.logger.log('Meta webhook verified successfully')
+      return challenge
+    }
+
+    this.logger.warn(`Meta webhook verification failed (mode=${mode})`)
+    throw new UnauthorizedException('Meta webhook verification failed')
+  }
+
+  /**
+   * Optional HMAC check using FACEBOOK_APP_SECRET and X-Hub-Signature-256.
+   * Skipped when app secret or header is missing (some Meta AI agent flows omit it).
+   */
+  assertMetaSignature(rawBody: Buffer | string | undefined, signatureHeader?: string) {
+    const appSecret = this.config.get<string>('FACEBOOK_APP_SECRET') || ''
+    if (!appSecret || !signatureHeader) return
+
+    const raw = typeof rawBody === 'string' ? Buffer.from(rawBody) : rawBody
+    if (!raw?.length) return
+
+    const expected = 'sha256=' + createHmac('sha256', appSecret).update(raw).digest('hex')
+    const provided = signatureHeader.trim()
+    try {
+      const a = Buffer.from(expected)
+      const b = Buffer.from(provided)
+      if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        throw new UnauthorizedException('Invalid Meta webhook signature')
+      }
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err
+      throw new UnauthorizedException('Invalid Meta webhook signature')
+    }
+  }
+
+  async handleMetaEvent(payload: Record<string, any>): Promise<{ received: boolean; object?: string; entries?: number }> {
+    const object = payload?.object
+    const entries = Array.isArray(payload?.entry) ? payload.entry : []
+    this.logger.log(`Meta webhook event object=${object ?? 'unknown'} entries=${entries.length}`)
+
+    for (const entry of entries) {
+      const pageId = entry?.id ? String(entry.id) : undefined
+      if (pageId) {
+        const account = await this.prisma.socialAccount.findFirst({
+          where: { pageId, platform: { in: ['facebook', 'instagram'] }, isActive: true },
+          select: { tenantId: true, accountName: true, platform: true },
+        })
+        if (account) {
+          this.logger.log(
+            `Meta event matched ${account.platform} page "${account.accountName}" tenant=${account.tenantId}`,
+          )
+        } else {
+          this.logger.debug(`Meta event for pageId=${pageId} — no linked SocialAccount`)
+        }
+      }
+
+      // Messenger-style messaging events (if subscribed)
+      const messaging = entry?.messaging
+      if (Array.isArray(messaging) && messaging.length) {
+        this.logger.log(`Meta messaging events: ${messaging.length}`)
+      }
+
+      // Feed / comments / other change fields
+      const changes = entry?.changes
+      if (Array.isArray(changes) && changes.length) {
+        this.logger.log(`Meta change fields: ${changes.map((c: any) => c?.field).filter(Boolean).join(', ') || changes.length}`)
+      }
+    }
+
+    // Acknowledge immediately — Meta requires a fast 200 response
+    return { received: true, object, entries: entries.length }
+  }
 
   // ── Called when a CRM webhook event arrives ───────────────────────
 

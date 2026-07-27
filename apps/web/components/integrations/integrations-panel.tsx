@@ -65,6 +65,9 @@ interface ScanResult {
   scanned: number
   accounts: number
   results: ScanItem[]
+  fetched?: number
+  skipped?: number
+  errors?: string[]
 }
 
 interface AgentOption {
@@ -157,7 +160,9 @@ function ScanResultModal({
               <CheckCheck className="w-4 h-4 text-green-500" />
             )}
             <h2 className="text-sm font-semibold">
-              {scanning ? 'Scanning emails…' : `Scan Complete — ${result?.scanned ?? 0} email${result?.scanned !== 1 ? 's' : ''} processed`}
+              {scanning
+                ? 'Scanning emails…'
+                : `Scan Complete — ${result?.scanned ?? 0} new · ${result?.skipped ?? 0} already processed · ${result?.fetched ?? 0} fetched`}
             </h2>
           </div>
           {!scanning && (
@@ -187,11 +192,32 @@ function ScanResultModal({
             </div>
           )}
 
+          {!scanning && result && (result.errors?.length ?? 0) > 0 && (
+            <div className="mx-3 my-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-800 px-3 py-2 space-y-1">
+              <p className="text-xs font-medium text-red-700 dark:text-red-400">Scan errors</p>
+              {result.errors!.map((e, i) => (
+                <p key={i} className="text-xs text-red-600 dark:text-red-400">{e}</p>
+              ))}
+            </div>
+          )}
+
           {!scanning && result?.scanned === 0 && (
-            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
+            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2 px-4 text-center">
               <Mail className="w-8 h-8" />
-              <p className="text-sm font-medium">No new emails to process</p>
-              <p className="text-xs">All inbox emails are already up to date.</p>
+              <p className="text-sm font-medium">
+                {(result.errors?.length ?? 0) > 0
+                  ? 'Scan could not process emails'
+                  : (result.skipped ?? 0) > 0
+                  ? 'No new emails to process'
+                  : 'No emails found in inbox'}
+              </p>
+              <p className="text-xs">
+                {(result.errors?.length ?? 0) > 0
+                  ? 'Check the connection error above — credentials, IMAP host/port, or SSL may be wrong.'
+                  : (result.skipped ?? 0) > 0
+                  ? `Fetched ${result.fetched ?? 0} email(s); ${result.skipped} already processed. Send a fresh test email and scan again.`
+                  : 'Checked unread mail and the last 14 days of inbox. Make sure the account is connected and has messages in INBOX.'}
+              </p>
             </div>
           )}
 
@@ -350,7 +376,8 @@ export function IntegrationsPanel() {
       fetchRules()
     } catch (err: any) {
       const msg = err?.response?.data?.message
-      toast.error(Array.isArray(msg) ? msg.join(', ') : (msg || 'Failed to connect account'))
+      const errText = Array.isArray(msg) ? msg.join(', ') : (msg || 'Failed to connect account')
+      toast.error(errText, { duration: 6000, description: 'Check your email, password, IMAP host and port. For Gmail use an App Password.' })
     } finally {
       setImapSaving(false)
     }
@@ -368,8 +395,9 @@ export function IntegrationsPanel() {
       await api.delete(`/integrations/accounts/${id}`)
       setAccounts(prev => prev.filter(a => a.id !== id))
       toast.success('Account disconnected')
-    } catch {
-      toast.error('Failed to disconnect account')
+    } catch (err: any) {
+      const msg = err?.response?.data?.message
+      toast.error(Array.isArray(msg) ? msg.join(', ') : (msg || 'Failed to disconnect account'))
     }
   }
 
@@ -387,8 +415,6 @@ export function IntegrationsPanel() {
       setScanning(false)
     }
   }
-
-  const googleAccounts = accounts.filter(a => a.provider === 'google')
 
   return (
     <div className="space-y-6">
@@ -412,7 +438,7 @@ export function IntegrationsPanel() {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="font-medium">Connected Email Accounts</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">Connect Gmail to let agents read and respond to your emails</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Connect an account so agents can read and respond to your emails</p>
           </div>
           {accounts.length > 0 && (
             <button
@@ -432,7 +458,8 @@ export function IntegrationsPanel() {
           </div>
         ) : (
           <div className="space-y-3">
-            {googleAccounts.map(account => (
+            {/* Show ALL connected accounts — Google, Microsoft, and IMAP */}
+            {accounts.map(account => (
               <AccountCard
                 key={account.id}
                 account={account}

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Brain, Building2, Key, Mail, Bell, Shield, Code2, Plug2 } from 'lucide-react'
+import { Brain, Building2, Key, Mail, Bell, Shield, Code2, Plug2, Loader2, Save } from 'lucide-react'
 import { BrainPanel } from '@/components/brain/brain-panel'
 import { IntegrationsPanel } from '@/components/integrations/integrations-panel'
 import { api } from '@/lib/api'
@@ -91,31 +91,107 @@ export function SettingsTabs() {
   )
 }
 
-// ?? Company ????????????????????????????????????????????????????????????????????
+// ── Company ───────────────────────────────────────────────────────────────────
 
 function CompanySettings() {
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({
+    companyName: '',
+    website: '',
+    email: '',
+    phone: '',
+    address: '',
+    tagline: '',
+    licenseNumber: '',
+  })
+
+  useEffect(() => {
+    api.get('/tenants/settings')
+      .then(r => {
+        const s = r.data?.settings ?? {}
+        const brand = s.brand ?? {}
+        setForm({
+          companyName: r.data?.name ?? brand.companyName ?? '',
+          website:     brand.website ?? s.website ?? '',
+          email:       brand.email ?? s.email ?? '',
+          phone:       brand.phone ?? s.phone ?? '',
+          address:     brand.address ?? s.address ?? '',
+          tagline:     brand.tagline ?? s.tagline ?? '',
+          licenseNumber: brand.licenseNumber ?? s.licenseNumber ?? '',
+        })
+      })
+      .catch(() => toast.error('Failed to load company settings'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await api.patch('/tenants/settings', {
+        brand: {
+          companyName:   form.companyName,
+          website:       form.website,
+          email:         form.email,
+          phone:         form.phone,
+          address:       form.address,
+          tagline:       form.tagline,
+          licenseNumber: form.licenseNumber,
+        },
+      })
+      toast.success('Company profile saved')
+    } catch {
+      toast.error('Failed to save company profile')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const field = (key: keyof typeof form, label: string, placeholder: string, type = 'text') => (
+    <div key={key}>
+      <label className="text-sm font-medium">{label}</label>
+      <input
+        type={type}
+        value={form[key]}
+        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        placeholder={placeholder}
+        disabled={loading}
+        className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground disabled:opacity-50"
+      />
+    </div>
+  )
+
   return (
-    <div className="rounded-lg border border-border p-6 space-y-4">
-      <h2 className="font-semibold">Company Profile</h2>
-      <div className="space-y-3">
-        {[
-          { label: 'Company Name', placeholder: 'Acme Roofing Inc.' },
-          { label: 'Website', placeholder: 'https://acmeroofing.com' },
-          { label: 'Primary Contact Email', placeholder: 'hello@acmeroofing.com' },
-          { label: 'Phone Number', placeholder: '+1 (555) 000-0000' },
-        ].map(({ label, placeholder }) => (
-          <div key={label}>
-            <label className="text-sm font-medium">{label}</label>
-            <input
-              placeholder={placeholder}
-              className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
-            />
-          </div>
-        ))}
-        <button className="bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors">
-          Save changes
-        </button>
+    <div className="rounded-lg border border-border p-6 space-y-5">
+      <div>
+        <h2 className="font-semibold">Company Profile</h2>
+        <p className="text-sm text-muted-foreground mt-0.5">This information appears on generated documents, emails, and client-facing pages.</p>
       </div>
+
+      {loading ? (
+        <div className="space-y-3">{[1,2,3,4].map(i => <div key={i} className="h-10 bg-muted rounded-md animate-pulse" />)}</div>
+      ) : (
+        <div className="space-y-3">
+          {field('companyName',   'Company Name',          'Acme Roofing Inc.')}
+          {field('tagline',       'Tagline / Slogan',      'Your trusted roofing partner')}
+          {field('website',       'Website',               'https://acmeroofing.com', 'url')}
+          {field('email',         'Primary Contact Email', 'hello@acmeroofing.com',   'email')}
+          {field('phone',         'Phone Number',          '+1 (555) 000-0000',       'tel')}
+          {field('address',       'Business Address',      '123 Main St, Dallas, TX 75001')}
+          {field('licenseNumber', 'License Number',        'ROC-123456')}
+
+          <div className="pt-1">
+            <button
+              onClick={save}
+              disabled={saving}
+              className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              {saving ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

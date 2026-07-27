@@ -63,16 +63,52 @@ export class ImapAdapter {
     return err.message || err.responseText || err.code || String(err)
   }
 
+  /**
+   * List recent inbox emails for scanning.
+   * Prefers unread first; if none, falls back to the most recent N messages
+   * (already-read messages are common when users open mail on phone/web first).
+   * Dedup against ProcessedEmail happens in the service layer.
+   */
   async listUnread(maxResults = 30): Promise<RawEmail[]> {
     const client = this.createClient()
     const emails: RawEmail[] = []
 
     try {
       await client.connect()
-      await client.mailboxOpen('INBOX')
+      const lock = await client.mailboxOpen('INBOX')
+      const total = lock.exists ?? 0
+      this.logger.log(`IMAP INBOX opened for ${this.config.user} — ${total} messages`)
 
+      if (total === 0) {
+        await client.logout()
+        return []
+      }
+
+      // 1) Try unread UIDs first
+      let range: string | number[] | { seen: false } = { seen: false }
+      let mode = 'unread'
+      try {
+        const unreadUids = await client.search({ seen: false }, { uid: true })
+        this.logger.log(`IMAP unread count for ${this.config.user}: ${unreadUids?.length ?? 0}`)
+        if (unreadUids?.length) {
+          range = unreadUids.slice(-maxResults)
+          mode = 'unread'
+        } else {
+          // 2) Fall back to last N messages by sequence number (includes already-read)
+          const start = Math.max(1, total - maxResults + 1)
+          range = `${start}:${total}`
+          mode = 'recent'
+          this.logger.log(`IMAP falling back to recent sequence ${range} for ${this.config.user}`)
+        }
+      } catch {
+        const start = Math.max(1, total - maxResults + 1)
+        range = `${start}:${total}`
+        mode = 'recent'
+      }
+
+      const useUid = Array.isArray(range)
       const messages = client.fetch(
-        { seen: false },
+        range as any,
         {
           uid: true,
           flags: true,
@@ -80,26 +116,29 @@ export class ImapAdapter {
           bodyStructure: true,
           source: true,
         },
-        { uid: false },
+        { uid: useUid },
       )
 
-      let count = 0
       for await (const msg of messages) {
-        if (count >= maxResults) break
         try {
           const email = await this.parseMessage(msg)
-          if (email) {
-            emails.push(email)
-            count++
-          }
-        } catch {
-          // skip malformed messages
+          if (email) emails.push(email)
+        } catch (err: any) {
+          this.logger.warn(`IMAP skip message: ${this.extractErrorMessage(err)}`)
         }
       }
 
+      // Newest first
+      emails.reverse()
+      this.logger.log(`IMAP fetched ${emails.length} email(s) via ${mode} for ${this.config.user}`)
+
       await client.logout()
     } catch (err: any) {
-      this.logger.error(`IMAP listUnread failed: ${this.extractErrorMessage(err)}`)
+      const msg = this.extractErrorMessage(err)
+      this.logger.error(`IMAP listUnread failed: ${msg}`)
+      try { client.close() } catch {}
+      // Re-throw so the service can surface the error to the UI
+      throw new Error(`IMAP fetch failed for ${this.config.user}: ${msg}`)
     }
 
     return emails

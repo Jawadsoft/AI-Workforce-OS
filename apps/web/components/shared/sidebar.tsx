@@ -8,7 +8,7 @@ import {
   LayoutDashboard, Users, MessageSquare, CheckSquare,
   Clock, BookOpen, FileText, Plug, UserCog,
   BarChart3, Settings, Zap, PanelLeftClose, PanelLeftOpen, Phone,
-  CloudLightning, Wrench, ChevronDown, Ticket, Share2,
+  CloudLightning, Wrench, ChevronDown, Ticket, Share2, Inbox,
 } from 'lucide-react'
 
 const navItems = [
@@ -18,6 +18,7 @@ const navItems = [
   { label: 'Tickets', href: '/tickets', icon: Ticket },
   { label: 'Tasks', href: '/tasks', icon: CheckSquare },
   { label: 'Approvals', href: '/approvals', icon: Clock },
+  { label: 'Email Review', href: '/emails', icon: Inbox },
   { label: 'Knowledge Base', href: '/knowledge', icon: BookOpen },
   { label: 'Documents', href: '/documents', icon: FileText },
   { label: 'Social Media', href: '/social', icon: Share2 },

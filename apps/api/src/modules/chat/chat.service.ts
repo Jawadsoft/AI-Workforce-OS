@@ -1122,13 +1122,13 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         : isExecAssistant
           // Executive assistant (Hanna): full ticket management + contact + scheduling, no silent relay
           ? ['request_approval', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...ticketToolNames, 'get_available_slots', ...taskTools]
-          : isIntakeAgent
-            // Intake agent: silent relay + explicit transfer when user requests it
+      : isIntakeAgent
+        // Intake agent: silent relay + explicit transfer when user requests it
             ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...taskTools, ...socialTools]
-            : isStormAnalyst
-              // Storm analyst: gets storm data tool + standard specialist tools
+        : isStormAnalyst
+          // Storm analyst: gets storm data tool + standard specialist tools
               ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', 'fetch_storm_data', ...ticketToolNames, ...taskTools, ...socialTools]
-              // Specialist agent (estimator, inspector, etc.): offer transfers, no silent relay
+          // Specialist agent (estimator, inspector, etc.): offer transfers, no silent relay
               : ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...schedulingTools, ...taskTools, ...socialTools]
 
     const allowedTools = CRM_TOOL_DEFINITIONS.filter(t =>
@@ -4131,7 +4131,7 @@ When chatting with the business owner/manager directly (in the internal chat thr
       }
     }
     if (!voiceId) {
-      const firstName = (agentName ?? '').split(' ')[0].toLowerCase()
+    const firstName = (agentName ?? '').split(' ')[0].toLowerCase()
       voiceId = this.VOICE_MAP[firstName]
     }
     voiceId = voiceId ?? process.env.ELEVENLABS_VOICE_ID ?? '21m00Tcm4TlvDq8ikWAM'

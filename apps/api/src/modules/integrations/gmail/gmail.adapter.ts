@@ -26,13 +26,24 @@ export class GmailAdapter {
 
   async listUnread(maxResults = 20): Promise<RawEmail[]> {
     try {
-      const res = await this.gmail.users.messages.list({
+      // Prefer unread; if none, fall back to recent inbox (14 days).
+      // Users often open mail on phone/web before clicking Scan Now.
+      let res = await this.gmail.users.messages.list({
         userId: 'me',
         q: 'is:unread in:inbox -category:promotions -category:social',
         maxResults,
       })
 
-      const messages = res.data.messages ?? []
+      let messages = res.data.messages ?? []
+      if (!messages.length) {
+        res = await this.gmail.users.messages.list({
+          userId: 'me',
+          q: 'in:inbox newer_than:14d -category:promotions -category:social',
+          maxResults,
+        })
+        messages = res.data.messages ?? []
+      }
+
       if (!messages.length) return []
 
       const emails = await Promise.all(
@@ -41,7 +52,7 @@ export class GmailAdapter {
       return emails.filter(Boolean) as RawEmail[]
     } catch (err: any) {
       this.logger.error(`listUnread failed: ${err.message}`)
-      return []
+      throw new Error(`Gmail fetch failed: ${err.message}`)
     }
   }
 

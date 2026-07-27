@@ -25,6 +25,12 @@ export interface ScanResult {
   scanned: number
   accounts: number
   results: EmailScanItem[]
+  /** Emails fetched from inbox before dedup */
+  fetched?: number
+  /** Emails skipped because already in ProcessedEmail */
+  skipped?: number
+  /** Per-account fetch/process errors surfaced to the UI */
+  errors?: string[]
 }
 
 const EMAIL_TYPES: EmailType[] = [
@@ -147,11 +153,13 @@ export class IntegrationsService {
   }
 
   async disconnectGoogleAccount(tenantId: string, accountId: string): Promise<void> {
+    // Works for any provider — google, microsoft, or imap
     const account = await this.prisma.connectedAccount.findFirst({
-      where: { id: accountId, tenantId, provider: 'google' },
+      where: { id: accountId, tenantId },
     })
     if (!account) throw new NotFoundException('Account not found')
     await this.prisma.connectedAccount.delete({ where: { id: accountId } })
+    this.logger.log(`Disconnected ${account.provider} account ${account.accountEmail} for tenant ${tenantId}`)
   }
 
   async getConnectedAccounts(tenantId: string) {
@@ -323,14 +331,38 @@ export class IntegrationsService {
     })
 
     const results: EmailScanItem[] = []
+    const errors: string[] = []
+    let fetched = 0
+    let skipped = 0
+
+    if (!accounts.length) {
+      return {
+        scanned: 0,
+        results: [],
+        accounts: 0,
+        fetched: 0,
+        skipped: 0,
+        errors: ['No active connected accounts. Connect Gmail or IMAP first.'],
+      }
+    }
 
     for (const account of accounts) {
-      if (account.provider === 'google') {
-        const items = await this.processAccountEmails(tenantId, account)
-        results.push(...items)
-      } else if (account.provider === 'imap') {
-        const items = await this.processImapAccountEmails(tenantId, account)
-        results.push(...items)
+      try {
+        if (account.provider === 'google') {
+          const { items, fetchedCount, skippedCount } = await this.processAccountEmails(tenantId, account)
+          results.push(...items)
+          fetched += fetchedCount
+          skipped += skippedCount
+        } else if (account.provider === 'imap') {
+          const { items, fetchedCount, skippedCount } = await this.processImapAccountEmails(tenantId, account)
+          results.push(...items)
+          fetched += fetchedCount
+          skipped += skippedCount
+        }
+      } catch (err: any) {
+        const msg = `${account.accountEmail}: ${err.message}`
+        this.logger.error(`[Scan] ${msg}`)
+        errors.push(msg)
       }
     }
 
@@ -338,11 +370,15 @@ export class IntegrationsService {
       scanned: results.length,
       results,
       accounts: accounts.length,
+      fetched,
+      skipped,
+      errors,
     }
   }
 
-  private async processAccountEmails(tenantId: string, account: any): Promise<EmailScanItem[]> {
+  private async processAccountEmails(tenantId: string, account: any): Promise<{ items: EmailScanItem[]; fetchedCount: number; skippedCount: number }> {
     const items: EmailScanItem[] = []
+    let skippedCount = 0
     try {
       const oauth2 = this.getGoogleOAuthClient()
       const accessToken = decrypt(account.encryptedAccessToken)
@@ -388,7 +424,7 @@ export class IntegrationsService {
         const exists = await this.prisma.processedEmail.findUnique({
           where: { connectedAccountId_gmailMessageId: { connectedAccountId: account.id, gmailMessageId: email.id } },
         })
-        if (exists) continue
+        if (exists) { skippedCount++; continue }
 
         const classification = await classifier.classify(email, staffEmails, companyContext)
 
@@ -458,6 +494,7 @@ export class IntegrationsService {
 
         this.logger.log(`[${tenantId}] ${email.from} → ${classification.type} (${classification.confidence}%) → ${action}`)
       }
+      return { items, fetchedCount: emails.length, skippedCount }
     } catch (err: any) {
       this.logger.error(`processAccountEmails failed for ${account.accountEmail}: ${err.message}`)
       if (err.message?.includes('invalid_grant') || err.message?.includes('Token has been expired')) {
@@ -466,13 +503,16 @@ export class IntegrationsService {
           data: { status: 'expired' },
         })
       }
+      throw err
     }
-    return items
   }
 
-  private async processImapAccountEmails(tenantId: string, account: any): Promise<EmailScanItem[]> {
+  private async processImapAccountEmails(tenantId: string, account: any): Promise<{ items: EmailScanItem[]; fetchedCount: number; skippedCount: number }> {
     try {
       const meta = account.metadata as any
+      if (!meta?.imapHost) {
+        throw new Error('IMAP host not configured on this account — reconnect the account')
+      }
       const password = decrypt(account.encryptedAccessToken)
 
       const imapConfig: ImapConfig = {
@@ -487,10 +527,11 @@ export class IntegrationsService {
       const emails = await imap.listUnread(30)
 
       const items: EmailScanItem[] = []
+      let skippedCount = 0
 
       if (!emails.length) {
-        this.logger.log(`[IMAP][${tenantId}] No new unread emails for ${account.accountEmail}`)
-        return items
+        this.logger.log(`[IMAP][${tenantId}] No recent inbox emails for ${account.accountEmail}`)
+        return { items, fetchedCount: 0, skippedCount: 0 }
       }
 
       // Build per-account mailer if SMTP is configured
@@ -513,7 +554,7 @@ export class IntegrationsService {
         const exists = await this.prisma.processedEmail.findUnique({
           where: { connectedAccountId_gmailMessageId: { connectedAccountId: account.id, gmailMessageId: email.id } },
         })
-        if (exists) continue
+        if (exists) { skippedCount++; continue }
 
         const classification = await classifier.classify(email, staffEmails, companyContext)
         const rule = rules.find(r => r.emailType === classification.type)
@@ -582,7 +623,7 @@ export class IntegrationsService {
 
         this.logger.log(`[IMAP][${tenantId}] ${email.from} → ${classification.type} (${classification.confidence}%) → ${action}`)
       }
-      return items
+      return { items, fetchedCount: emails.length, skippedCount }
     } catch (err: any) {
       this.logger.error(`processImapAccountEmails failed for ${account.accountEmail}: ${err.message}`)
       if (err.message?.includes('Authentication') || err.message?.includes('Invalid credentials')) {
@@ -591,7 +632,7 @@ export class IntegrationsService {
           data: { status: 'expired' },
         })
       }
-      return []
+      throw err
     }
   }
 
@@ -1085,17 +1126,114 @@ Instructions:
   // PROCESSED EMAILS HISTORY
   // ─────────────────────────────────────────────
 
-  async getProcessedEmails(tenantId: string, limit = 50, offset = 0): Promise<{ items: any[]; total: number; limit: number; offset: number }> {
+  async getProcessedEmails(
+    tenantId: string,
+    limit = 50,
+    offset = 0,
+    filters?: { action?: string; status?: string; needsReview?: boolean },
+  ): Promise<{ items: any[]; total: number; limit: number; offset: number }> {
+    const where: any = { tenantId }
+
+    if (filters?.needsReview) {
+      where.OR = [
+        { action: { in: ['flagged', 'drafted', 'escalated'] } },
+        { status: 'pending', action: { in: ['notified', 'flagged', 'drafted'] } },
+      ]
+    } else {
+      if (filters?.action) {
+        const actions = filters.action.split(',').map((a) => a.trim()).filter(Boolean)
+        if (actions.length === 1) where.action = actions[0]
+        else if (actions.length > 1) where.action = { in: actions }
+      }
+      if (filters?.status) where.status = filters.status
+    }
+
     const [items, total] = await Promise.all([
       this.prisma.processedEmail.findMany({
-        where: { tenantId },
-        orderBy: { createdAt: 'desc' },
+        where,
+        orderBy: { receivedAt: 'desc' },
         take: limit,
         skip: offset,
         include: { connectedAccount: { select: { accountEmail: true, provider: true } } },
       }),
-      this.prisma.processedEmail.count({ where: { tenantId } }),
+      this.prisma.processedEmail.count({ where }),
     ])
     return { items, total, limit, offset }
+  }
+
+  async replyToProcessedEmail(
+    tenantId: string,
+    emailId: string,
+    body: string,
+  ): Promise<{ success: boolean; id: string }> {
+    const email = await this.prisma.processedEmail.findFirst({
+      where: { id: emailId, tenantId },
+      include: { connectedAccount: { select: { accountEmail: true, provider: true, metadata: true } } },
+    })
+    if (!email) throw new NotFoundException('Processed email not found')
+    if (!body?.trim()) throw new BadRequestException('Reply body is required')
+
+    const subject = email.subject?.startsWith('Re:')
+      ? (email.subject ?? 'Re: (no subject)')
+      : `Re: ${email.subject || '(no subject)'}`
+
+    const smtp = await this.email.getSmtpConfig(tenantId)
+    if (!smtp.user || !smtp.pass) {
+      throw new BadRequestException(
+        'SMTP is not configured — connect an email account with SMTP or set tenant SMTP settings.',
+      )
+    }
+
+    const html = `<div style="font-family:sans-serif;white-space:pre-wrap">${body
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')}</div>`
+
+    await this.email.send({
+      tenantId,
+      to: email.fromEmail,
+      subject,
+      html,
+      text: body,
+      inReplyTo: email.threadId ?? undefined,
+      references: email.threadId ?? undefined,
+    })
+
+    await this.prisma.processedEmail.update({
+      where: { id: email.id },
+      data: {
+        action: 'replied',
+        status: 'actioned',
+        extractedData: {
+          ...((email.extractedData as object) || {}),
+          lastReplyAt: new Date().toISOString(),
+          lastReplyPreview: body.slice(0, 500),
+        },
+      },
+    })
+
+    this.logger.log(`Manual reply sent for processed email ${email.id} → ${email.fromEmail}`)
+    return { success: true, id: email.id }
+  }
+
+  async updateProcessedEmailStatus(
+    tenantId: string,
+    emailId: string,
+    data: { status?: string; action?: string },
+  ): Promise<any> {
+    const email = await this.prisma.processedEmail.findFirst({
+      where: { id: emailId, tenantId },
+    })
+    if (!email) throw new NotFoundException('Processed email not found')
+
+    return this.prisma.processedEmail.update({
+      where: { id: email.id },
+      data: {
+        ...(data.status ? { status: data.status } : {}),
+        ...(data.action ? { action: data.action } : {}),
+      },
+      include: { connectedAccount: { select: { accountEmail: true, provider: true } } },
+    })
   }
 }

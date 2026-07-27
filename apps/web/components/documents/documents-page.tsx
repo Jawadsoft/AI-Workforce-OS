@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { FileText, Download, Trash2, Plus, Loader2, Wand2, X, ChevronRight, LayoutTemplate } from 'lucide-react'
+import { FileText, Download, Trash2, Plus, Loader2, Wand2, X, ChevronRight, LayoutTemplate, CheckSquare, Square, AlertTriangle } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -26,6 +26,10 @@ export function DocumentsPage() {
   const [mode, setMode] = useState<'template' | 'ai'>('template')
   const [form, setForm] = useState({ type: 'estimate', title: '', prompt: '', data: '' })
   const [downloading, setDownloading] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [bulkDownloading, setBulkDownloading] = useState(false)
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false)
 
   const { data: docs = [], isLoading } = useQuery({
     queryKey: ['documents'],
@@ -81,6 +85,53 @@ export function DocumentsPage() {
       try { payload.data = JSON.parse(form.data) } catch { toast.error('Invalid JSON in data field'); return }
     }
     generateMutation.mutate(payload)
+  }
+
+  const toggleSelect = (id: string) =>
+    setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+
+  const toggleSelectAll = () =>
+    setSelectedIds(prev => prev.size === (docs as any[]).length ? new Set() : new Set((docs as any[]).map((d: any) => d.id)))
+
+  const handleBulkDelete = async () => {
+    setBulkDeleting(true)
+    let failed = 0
+    for (const id of Array.from(selectedIds)) {
+      try { await api.delete(`/documents/${id}`) } catch { failed++ }
+    }
+    await qc.invalidateQueries({ queryKey: ['documents'] })
+    setBulkDeleting(false)
+    setSelectedIds(new Set())
+    setConfirmBulkDelete(false)
+    if (failed > 0) toast.error(`${failed} deletion(s) failed`)
+    else toast.success(`${selectedIds.size} document(s) deleted`)
+  }
+
+  const handleBulkDownload = async () => {
+    setBulkDownloading(true)
+    const token = localStorage.getItem('access_token')
+    let failed = 0
+    for (const id of Array.from(selectedIds)) {
+      const doc = (docs as any[]).find((d: any) => d.id === id)
+      if (!doc) continue
+      try {
+        const res = await fetch(`${API_BASE}/documents/download/${id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!res.ok) throw new Error()
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${doc.title}.${doc.format === 'PDF' ? 'pdf' : 'html'}`
+        a.click()
+        URL.revokeObjectURL(url)
+        await new Promise(r => setTimeout(r, 200))
+      } catch { failed++ }
+    }
+    setBulkDownloading(false)
+    if (failed > 0) toast.error(`${failed} download(s) failed`)
+    else toast.success(`${selectedIds.size} document(s) downloaded`)
   }
 
   const selectedTemplate = templates.find((t: any) => t.id === form.type)
@@ -178,6 +229,57 @@ export function DocumentsPage() {
         </div>
       )}
 
+      {/* Bulk action toolbar — appears when items are selected */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 bg-primary/5 border border-primary/20 rounded-xl px-4 py-3">
+          <span className="text-sm font-medium text-primary">{selectedIds.size} selected</span>
+          <div className="flex-1" />
+          <button
+            onClick={handleBulkDownload}
+            disabled={bulkDownloading}
+            className="flex items-center gap-1.5 text-sm border border-border bg-card px-3 py-1.5 rounded-md hover:bg-accent transition-colors disabled:opacity-50">
+            {bulkDownloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+            Download All
+          </button>
+          <button
+            onClick={() => setConfirmBulkDelete(true)}
+            className="flex items-center gap-1.5 text-sm bg-destructive/10 text-destructive border border-destructive/20 px-3 py-1.5 rounded-md hover:bg-destructive/20 transition-colors">
+            <Trash2 className="w-3.5 h-3.5" />
+            Delete Selected
+          </button>
+          <button onClick={() => setSelectedIds(new Set())} className="p-1.5 hover:bg-accent rounded-md transition-colors text-muted-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Bulk delete confirmation */}
+      {confirmBulkDelete && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-card rounded-xl border border-border p-6 w-full max-w-sm space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="w-5 h-5 text-destructive" />
+              </div>
+              <div>
+                <h3 className="font-semibold">Delete {selectedIds.size} document{selectedIds.size > 1 ? 's' : ''}?</h3>
+                <p className="text-sm text-muted-foreground mt-1">This action cannot be undone.</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setConfirmBulkDelete(false)} className="px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors">
+                Cancel
+              </button>
+              <button onClick={handleBulkDelete} disabled={bulkDeleting}
+                className="flex items-center gap-2 bg-destructive text-white px-4 py-2 rounded-md text-sm hover:bg-destructive/90 disabled:opacity-50 transition-colors">
+                {bulkDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                {bulkDeleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Documents list */}
       {isLoading ? (
         <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-16 bg-muted rounded-lg animate-pulse" />)}</div>
@@ -188,33 +290,54 @@ export function DocumentsPage() {
           <p className="text-sm text-muted-foreground">Click "Generate Document" to create your first PDF.</p>
         </div>
       ) : (
-        <div className="rounded-xl border border-border bg-card divide-y divide-border">
-          {(docs as any[]).map((doc: any) => (
-            <div key={doc.id} className="flex items-center gap-4 p-4 hover:bg-accent/20 transition-colors">
-              <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-                <FileText className="w-5 h-5 text-primary" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm truncate">{doc.title}</p>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <Badge className={cn('text-xs', TYPE_COLORS[doc.type] ?? TYPE_COLORS.custom)}>{doc.type}</Badge>
-                  <span className="text-xs text-muted-foreground">{doc.format}</span>
-                  <span className="text-xs text-muted-foreground">{new Date(doc.createdAt).toLocaleDateString()}</span>
+        <div className="rounded-xl border border-border bg-card overflow-hidden">
+          {/* Select-all header row */}
+          <div className="flex items-center gap-3 px-4 py-2.5 bg-muted/40 border-b border-border">
+            <button onClick={toggleSelectAll} className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors">
+              {selectedIds.size === (docs as any[]).length && (docs as any[]).length > 0
+                ? <CheckSquare className="w-4 h-4 text-primary" />
+                : <Square className="w-4 h-4" />}
+              {selectedIds.size === (docs as any[]).length && (docs as any[]).length > 0 ? 'Deselect all' : 'Select all'}
+            </button>
+            <span className="text-xs text-muted-foreground ml-auto">{(docs as any[]).length} document{(docs as any[]).length !== 1 ? 's' : ''}</span>
+          </div>
+
+          <div className="divide-y divide-border">
+            {(docs as any[]).map((doc: any) => (
+              <div key={doc.id}
+                className={cn('flex items-center gap-4 p-4 hover:bg-accent/20 transition-colors', selectedIds.has(doc.id) && 'bg-primary/5')}>
+                {/* Checkbox */}
+                <button onClick={() => toggleSelect(doc.id)} className="flex-shrink-0 text-muted-foreground hover:text-primary transition-colors">
+                  {selectedIds.has(doc.id)
+                    ? <CheckSquare className="w-4 h-4 text-primary" />
+                    : <Square className="w-4 h-4" />}
+                </button>
+
+                <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                  <FileText className="w-4 h-4 text-primary" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-sm truncate">{doc.title}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <Badge className={cn('text-xs', TYPE_COLORS[doc.type] ?? TYPE_COLORS.custom)}>{doc.type}</Badge>
+                    <span className="text-xs text-muted-foreground">{doc.format}</span>
+                    <span className="text-xs text-muted-foreground">{new Date(doc.createdAt).toLocaleDateString()}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button onClick={() => handleDownload(doc)} disabled={downloading === doc.id}
+                    className="flex items-center gap-1.5 text-xs border border-border px-2.5 py-1.5 rounded-md hover:bg-accent transition-colors">
+                    {downloading === doc.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                    Download
+                  </button>
+                  <button onClick={() => deleteMutation.mutate(doc.id)}
+                    className="p-2 hover:bg-destructive/10 text-destructive rounded-md transition-colors">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
-              <div className="flex items-center gap-1 flex-shrink-0">
-                <button onClick={() => handleDownload(doc)} disabled={downloading === doc.id}
-                  className="flex items-center gap-1.5 text-xs border border-border px-2.5 py-1.5 rounded-md hover:bg-accent transition-colors">
-                  {downloading === doc.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                  Download
-                </button>
-                <button onClick={() => deleteMutation.mutate(doc.id)}
-                  className="p-2 hover:bg-destructive/10 text-destructive rounded-md transition-colors">
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
     </div>

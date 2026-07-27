@@ -89,6 +89,21 @@ class TestImapDto {
   password: string
 }
 
+class ReplyProcessedEmailDto {
+  @IsString()
+  body: string
+}
+
+class UpdateProcessedEmailDto {
+  @IsOptional()
+  @IsIn(['pending', 'actioned', 'skipped', 'failed'])
+  status?: string
+
+  @IsOptional()
+  @IsString()
+  action?: string
+}
+
 class UpdateEmailRuleDto {
   @IsOptional()
   @IsIn(['auto_reply', 'auto_draft', 'approval_required', 'notify_only', 'block'])
@@ -131,7 +146,7 @@ export class IntegrationsController {
   @Delete('accounts/:id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Disconnect a connected account' })
+  @ApiOperation({ summary: 'Disconnect a connected account (Google, Microsoft, or IMAP)' })
   @HttpCode(204)
   disconnect(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.disconnectGoogleAccount(tenantId, id)
@@ -246,11 +261,44 @@ export class IntegrationsController {
     @CurrentTenant() tenantId: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('action') action?: string,
+    @Query('status') status?: string,
+    @Query('needsReview') needsReview?: string,
   ) {
     return this.service.getProcessedEmails(
       tenantId,
       limit ? parseInt(limit) : 50,
       offset ? parseInt(offset) : 0,
+      {
+        action,
+        status,
+        needsReview: needsReview === 'true' || needsReview === '1',
+      },
     )
+  }
+
+  @Post('emails/:id/reply')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Send a reply to a processed email' })
+  @HttpCode(200)
+  replyToEmail(
+    @CurrentTenant() tenantId: string,
+    @Param('id') id: string,
+    @Body() dto: ReplyProcessedEmailDto,
+  ) {
+    return this.service.replyToProcessedEmail(tenantId, id, dto.body)
+  }
+
+  @Patch('emails/:id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update processed email status (e.g. mark reviewed)' })
+  updateEmailStatus(
+    @CurrentTenant() tenantId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateProcessedEmailDto,
+  ) {
+    return this.service.updateProcessedEmailStatus(tenantId, id, dto)
   }
 }

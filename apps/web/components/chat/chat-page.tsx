@@ -173,6 +173,9 @@ export function ChatPage() {
   const [voiceRevealPending, setVoiceRevealPending] = useState(false)
   // Ref so sendText can always read the current agent name without being in deps
   const selectedAgentNameRef = useRef<string | undefined>(undefined)
+  // Track which conversation owns the currently-playing TTS audio so the
+  // waveform never bleeds into another agent's window when the user switches.
+  const ttsSourceConvRef = useRef<string | null>(null)
 
   // ── Voice (STT + TTS) ────────────────────────────────────────────────
   const sendTextRef        = useRef<(t: string) => void>(() => {})
@@ -185,6 +188,7 @@ export function ChatPage() {
     (transcript) => sendTextRef.current(transcript),
     // onQueueDrained: called when all audio chunks have finished playing
     () => {
+      ttsSourceConvRef.current = null
       setVoiceRevealPending(false)
       refetchAfterTtsRef.current?.()
       refetchAfterTtsRef.current = null
@@ -207,6 +211,12 @@ export function ChatPage() {
 
   useEffect(() => {
     if (primaryQuery.data?.id) {
+      // Stop any audio playing from a different conversation before switching
+      if (isSpeaking && ttsSourceConvRef.current !== primaryQuery.data.id) {
+        stopSpeaking()
+        ttsSourceConvRef.current = null
+        setVoiceRevealPending(false)
+      }
       setConversationId(primaryQuery.data.id)
       setPendingCards([])
       setStreamingMsg(null)
@@ -333,7 +343,7 @@ export function ChatPage() {
             if (payload.token) {
               accumulated += payload.token
               patchConv({ streamingMsg: ttsEnabled ? null : accumulated, checkingWith: null, typingAgent: null })
-              if (ttsEnabled) addSpeechChunk(payload.token, selectedAgentNameRef.current, selectedAgentId ?? undefined)
+              if (ttsEnabled) { ttsSourceConvRef.current = convId; addSpeechChunk(payload.token, selectedAgentNameRef.current, selectedAgentId ?? undefined) }
             }
             if (payload.checking) { patchConv({ checkingWith: payload.withName ?? 'team', typingAgent: null }) }
             if (payload.action_card) {
@@ -441,7 +451,7 @@ export function ChatPage() {
             if (payload.token) {
               accumulated += payload.token
               patchConv({ streamingMsg: ttsEnabled ? null : accumulated, checkingWith: null, typingAgent: null })
-              if (ttsEnabled) addSpeechChunk(payload.token, selectedAgentNameRef.current, selectedAgentId ?? undefined)
+              if (ttsEnabled) { ttsSourceConvRef.current = convId; addSpeechChunk(payload.token, selectedAgentNameRef.current, selectedAgentId ?? undefined) }
             }
             if (payload.checking) { patchConv({ checkingWith: payload.withName ?? 'team', typingAgent: null }) }
             if (payload.action_card) {
@@ -737,8 +747,10 @@ export function ChatPage() {
                   )
                 }
 
-                // When TTS is on and this is the streaming bubble, show waveform instead of text
-                if (msg.streaming && ttsEnabled) {
+                // When TTS is on and this is the streaming bubble, show waveform instead of text.
+                // Only show for the conversation that owns the current audio — prevents the
+                // waveform from bleeding into a different agent's window on switch.
+                if (msg.streaming && ttsEnabled && ttsSourceConvRef.current === conversationId) {
                   return (
                     <div key={msg.id} className="flex justify-start">
                       <div className="bg-muted rounded-xl px-4 py-3 rounded-bl-none flex items-center gap-2.5">

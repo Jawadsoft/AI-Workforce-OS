@@ -233,6 +233,50 @@ export class CrmService {
     return connector.getDocuments(jobId, type)
   }
 
+  // ── Extended job view ─────────────────────────────────────────────
+
+  async getJobFull(tenantId: string, jobId: string) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.getJobFull(jobId)
+  }
+
+  async getJobTimeline(tenantId: string, jobId: string) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.getJobTimeline(jobId)
+  }
+
+  async getDocumentsByType(tenantId: string, jobId: string, type: string, includeBase64 = false) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.getDocumentsByType(jobId, type, includeBase64)
+  }
+
+  async getFinancials(tenantId: string, jobId: string) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.getFinancials(jobId)
+  }
+
+  // ── Appointments ──────────────────────────────────────────────────
+
+  async getAvailableSlots(tenantId: string, jobId: string, opts?: { type?: string; from?: string; to?: string }) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.getAvailableSlots(jobId, opts)
+  }
+
+  async bookAppointment(tenantId: string, jobId: string, data: { type: string; date: string; time: string; assignedTo?: string; title?: string; priority?: string; status?: string; endTime?: string; description?: string }) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.bookAppointment(jobId, data)
+  }
+
+  async getCrewAvailability(tenantId: string, jobId: string, startDate: string, endDate: string) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.getCrewAvailability(jobId, startDate, endDate)
+  }
+
+  async getAppointments(tenantId: string, jobId: string, type?: string) {
+    const connector = await this.getActiveConnector(tenantId)
+    return connector.getAppointments(jobId, type)
+  }
+
   // ── Private ───────────────────────────────────────────────────────
 
   private getConnector(conn: any): CRMConnector {

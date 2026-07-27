@@ -259,4 +259,20 @@ export class HubSpotConnector implements CRMConnector {
       description: r.properties?.description,
     }
   }
+
+  // ── Stubs: roofing-specific tools not supported by HubSpot ──────
+  async getJobCard(): Promise<any> { throw new Error('Not supported by HubSpot connector') }
+  async updateJobCard(): Promise<any> { throw new Error('Not supported by HubSpot connector') }
+  async getChecklist(): Promise<any> { throw new Error('Not supported by HubSpot connector') }
+  async markChecklistItem(): Promise<any> { throw new Error('Not supported by HubSpot connector') }
+  async attachDocument(): Promise<any> { throw new Error('Not supported by HubSpot connector') }
+  async getDocuments(): Promise<any[]> { return [] }
+  async getJobFull(): Promise<any> { throw new Error('Not supported by HubSpot connector') }
+  async getJobTimeline(): Promise<any> { throw new Error('Not supported by HubSpot connector') }
+  async getDocumentsByType(): Promise<any[]> { return [] }
+  async getFinancials(): Promise<any> { throw new Error('Not supported by HubSpot connector') }
+  async getAvailableSlots(): Promise<any[]> { return [] }
+  async bookAppointment(): Promise<any> { throw new Error('Not supported by HubSpot connector') }
+  async getCrewAvailability(): Promise<any[]> { return [] }
+  async getAppointments(): Promise<any[]> { return [] }
 }

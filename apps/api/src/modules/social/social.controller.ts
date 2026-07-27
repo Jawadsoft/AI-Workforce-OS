@@ -12,6 +12,13 @@ import { SocialService } from './social.service'
 import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import { ConfigService } from '@nestjs/config'
 
+/** Minimal multer file shape used by upload handlers (avoids Express.Multer namespace issues). */
+type MulterFile = {
+  buffer: Buffer
+  originalname: string
+  mimetype: string
+}
+
 class GeneratePostDto {
   @IsString() brief: string
   @IsArray() platforms: string[]
@@ -54,7 +61,7 @@ export class SocialController {
   async generate(
     @CurrentTenant() tenantId: string,
     @Body() body: any,
-    @UploadedFile() image?: Express.Multer.File,
+    @UploadedFile() image?: MulterFile,
   ) {
     // Handle both JSON body and multipart form-data
     // When sent as FormData, platforms may arrive as a comma-separated string or repeated keys
@@ -201,10 +208,26 @@ export class SocialController {
     const appId = this.config.get('FACEBOOK_APP_ID')
     const redirectBase = this.config.get('SOCIAL_OAUTH_REDIRECT_BASE')
     const redirectUri = encodeURIComponent(`${redirectBase}/social/oauth/facebook/callback`)
-    // pages_manage_posts requires Meta App Review before it can be requested.
-    // It is omitted here so OAuth login succeeds for all users.
-    // Once App Review is approved, add it back: pages_manage_posts
-    const scope = 'public_profile,email,pages_show_list,pages_read_engagement,pages_read_user_content'
+    // Facebook Page publish scopes (required for /{page-id}/feed).
+    // Do NOT include Instagram scopes unless the Meta app has the Instagram product
+    // added — Meta returns "Invalid Scopes: instagram_content_publish" to developers
+    // when that product/permission is missing from the app.
+    // To enable Instagram publish later:
+    // 1) Meta App Dashboard → add "Instagram" / Instagram Graph API product
+    // 2) set FACEBOOK_INSTAGRAM_SCOPES=true
+    // 3) reconnect Facebook
+    const scopes = [
+      'public_profile',
+      'email',
+      'pages_show_list',
+      'pages_read_engagement',
+      'pages_manage_posts',
+      'pages_manage_engagement',
+    ]
+    if (this.config.get('FACEBOOK_INSTAGRAM_SCOPES') === 'true') {
+      scopes.push('instagram_basic', 'instagram_content_publish')
+    }
+    const scope = scopes.join(',')
     const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64')
     const url = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&response_type=code`
     return res.redirect(url)

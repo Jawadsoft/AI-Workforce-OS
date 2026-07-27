@@ -382,6 +382,129 @@ export class CrmContextService {
         return { result: docs, summary: lines.join('\n') }
       }
 
+      // ── Extended job view ───────────────────────────────────────────
+
+      case 'crm_get_job_full': {
+        if (!can('read_job_cards')) throw new Error('Permission denied: read_job_cards')
+        const full = await connector.getJobFull(params.jobId)
+        const lines: string[] = [`Full job record for job ${params.jobId}:`]
+        const c = full.contact ?? {}
+        if (c.name)    lines.push(`  Contact: ${c.name} | ${c.email ?? '—'} | ${c.phone ?? '—'}`)
+        if (c.address) lines.push(`  Property: ${c.address}, ${c.zip ?? ''}`)
+        const j = full.job ?? {}
+        lines.push(`  Stage: ${j.currentStageIndex ?? '—'} | Status: ${j.status ?? '—'} | Insured: ${j.isInsured ?? false}`)
+        const ins = full.insurance ?? {}
+        if (ins.carrier) lines.push(`  Insurance: ${ins.carrier} | Claim: ${ins.claimNumber ?? '—'} | ACV: $${ins.acvAmount ?? 0} | RCV: $${ins.rcvAmount ?? 0}`)
+        const fin = full.financials ?? {}
+        if (fin.estimateTotal !== undefined) lines.push(`  Financials: Est $${fin.estimateTotal} | Balance Due $${fin.balanceDue ?? 0}`)
+        const mat = full.materials ?? {}
+        if (mat.brand || mat.product) lines.push(`  Materials: ${mat.brand ?? ''} ${mat.product ?? ''} ${mat.colour ?? ''} | Underlayment: ${mat.underlayment ?? '—'}`)
+        if (full.contract?.status) lines.push(`  Contract: ${full.contract.status} (${(full.contract.items ?? []).length} item(s))`)
+        if (full.warranty?.type)   lines.push(`  Warranty: ${full.warranty.type}`)
+        if (full.notes?.length)    lines.push(`  Notes: ${full.notes.length} note(s)`)
+        const fileCount = Object.values(full.files ?? {}).reduce((n: number, arr) => n + (Array.isArray(arr) ? arr.length : 0), 0)
+        if (fileCount) lines.push(`  Files: ${fileCount} file(s) across all categories`)
+        return { result: full, summary: lines.join('\n') }
+      }
+
+      case 'crm_get_job_timeline': {
+        if (!can('read_job_cards')) throw new Error('Permission denied: read_job_cards')
+        const timeline = await connector.getJobTimeline(params.jobId)
+        if (!timeline.events.length) {
+          return { result: timeline, summary: `No timeline events found for job ${params.jobId}` }
+        }
+        const lines = [`Timeline for job ${params.jobId} — ${timeline.total} event(s):`]
+        timeline.events.slice(0, 10).forEach(e =>
+          lines.push(`  [${e.type}] ${e.summary?.slice(0, 80) ?? '—'} (${e.timestamp?.slice(0, 10) ?? '—'})`)
+        )
+        if (timeline.total > 10) lines.push(`  ... and ${timeline.total - 10} more`)
+        return { result: timeline, summary: lines.join('\n') }
+      }
+
+      case 'crm_get_documents_by_type': {
+        if (!can('read_job_cards')) throw new Error('Permission denied: read_job_cards')
+        const docs = await connector.getDocumentsByType(params.jobId, params.type, params.includeBase64 ?? false)
+        if (!docs.length) {
+          return { result: docs, summary: `No "${params.type}" documents found on job ${params.jobId}` }
+        }
+        const lines = [`${docs.length} "${params.type}" document(s) on job ${params.jobId}:`]
+        docs.forEach(d => lines.push(`  - ${d.fileName} | status: ${d.status ?? '—'} | url: ${d.fileUrl ? 'present' : 'null'}`))
+        return { result: docs, summary: lines.join('\n') }
+      }
+
+      case 'crm_get_financials': {
+        if (!can('read_job_cards')) throw new Error('Permission denied: read_job_cards')
+        const fin = await connector.getFinancials(params.jobId)
+        const lines = [`Financial summary for job ${params.jobId}:`]
+        lines.push(`  Estimate Total:    $${fin.estimateTotal ?? 0}`)
+        lines.push(`  ACV / RCV:         $${fin.acvAmount ?? 0} / $${fin.rcvAmount ?? 0}`)
+        lines.push(`  Depreciation:      $${fin.depreciationHoldback ?? 0}`)
+        lines.push(`  Deposit Paid:      $${fin.depositPaid ?? 0}`)
+        lines.push(`  Payments Received: $${fin.paymentsReceived ?? 0}`)
+        lines.push(`  Balance Due:       $${fin.balanceDue ?? 0}`)
+        if (fin.invoices?.length) {
+          lines.push(`  Invoices (${fin.invoices.length}):`)
+          fin.invoices.forEach(inv => lines.push(`    - #${inv.invoiceId} | ${inv.paidStatus ?? '—'} | $${inv.amount ?? 0} | paid $${inv.paidAmount ?? 0}`))
+        }
+        return { result: fin, summary: lines.join('\n') }
+      }
+
+      // ── Appointment tools ───────────────────────────────────────────
+
+      case 'crm_get_available_slots': {
+        if (!can('read_appointments')) throw new Error('Permission denied: read_appointments')
+        const slots = await connector.getAvailableSlots(params.jobId, { type: params.type, from: params.from, to: params.to })
+        if (!slots.length) {
+          return { result: slots, summary: `No available slots found for job ${params.jobId}${params.type ? ` (type: ${params.type})` : ''}` }
+        }
+        const lines = [`${slots.length} available slot(s) for job ${params.jobId}:`]
+        slots.slice(0, 10).forEach(s => lines.push(`  ${s.date} ${s.time} — ${s.inspectorName ?? '—'} (${s.type ?? 'inspection'})`))
+        if (slots.length > 10) lines.push(`  ... and ${slots.length - 10} more slots`)
+        return { result: slots, summary: lines.join('\n') }
+      }
+
+      case 'crm_book_appointment': {
+        if (!can('write_appointments')) throw new Error('Permission denied: write_appointments')
+        const res = await connector.bookAppointment(params.jobId, {
+          type: params.type,
+          date: params.date,
+          time: params.time,
+          assignedTo: params.assignedTo,
+          title: params.title,
+          priority: params.priority ?? 'Medium',
+          status: params.status ?? 'Confirm',
+          endTime: params.endTime,
+          description: params.description,
+        })
+        const a: Record<string, any> = res.appointment ?? {}
+        return {
+          result: res,
+          summary: `Appointment booked on job ${params.jobId}: ${a['type'] ?? params.type} on ${a['date'] ?? params.date} at ${a['time'] ?? params.time} — assigned to ${a['description'] ?? params.assignedTo ?? '—'} (id: ${res.appointmentId}, status: ${a['status'] ?? 'Confirm'})`,
+        }
+      }
+
+      case 'crm_get_crew_availability': {
+        if (!can('read_appointments')) throw new Error('Permission denied: read_appointments')
+        const crews = await connector.getCrewAvailability(params.jobId, params.startDate, params.endDate)
+        if (!crews.length) {
+          return { result: crews, summary: `No crew availability data found for job ${params.jobId}` }
+        }
+        const lines = [`${crews.length} crew(s) available for job ${params.jobId} (${params.startDate} → ${params.endDate}):`]
+        crews.forEach(c => lines.push(`  ${c.crewName} (id ${c.crewId}): ${c.availableDates?.length ?? 0} available date(s) — ${(c.availableDates ?? []).slice(0, 3).join(', ')}${(c.availableDates?.length ?? 0) > 3 ? '...' : ''}`))
+        return { result: crews, summary: lines.join('\n') }
+      }
+
+      case 'crm_get_appointments': {
+        if (!can('read_appointments')) throw new Error('Permission denied: read_appointments')
+        const appts = await connector.getAppointments(params.jobId, params.type)
+        if (!appts.length) {
+          return { result: appts, summary: `No appointments found on job ${params.jobId}${params.type ? ` (type: ${params.type})` : ''}` }
+        }
+        const lines = [`${appts.length} appointment(s) on job ${params.jobId}:`]
+        appts.forEach(a => lines.push(`  [${a.type ?? '?'}] ${a.title ?? '—'} | ${a.date ?? '—'} ${a.time ?? '—'} | ${a.status ?? '—'}`))
+        return { result: appts, summary: lines.join('\n') }
+      }
+
       default:
         throw new Error(`Unknown CRM tool: ${tool}`)
     }

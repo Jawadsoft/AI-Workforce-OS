@@ -36,7 +36,9 @@ export class OpenAIProvider {
       model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
       messages,
       temperature: options?.temperature,
-      max_tokens: options?.maxTokens,
+      // Default 8000 tokens — large enough for full supplement analyses (7 sections + tables).
+      // Callers can override via options.maxTokens. gpt-4o supports up to 16,384 output tokens.
+      max_tokens: options?.maxTokens ?? 8000,
     })
     return {
       content: response.choices[0].message.content ?? '',
@@ -119,6 +121,7 @@ export class OpenAIProvider {
     const fallback = await this.getClient().chat.completions.create({
       model,
       messages: currentMessages,
+      max_tokens: 8000,
     })
     return fallback.choices[0].message.content ?? ''
   }

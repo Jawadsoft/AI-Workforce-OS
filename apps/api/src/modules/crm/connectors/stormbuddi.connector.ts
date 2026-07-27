@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios'
-import type { CRMConnector, CRMCustomer, CRMLead, CRMJob, CRMProposal, CRMNote, CRMMaterial, CRMJobCard, CRMChecklist, CRMDocument } from '../crm.interface'
+import type { CRMConnector, CRMCustomer, CRMLead, CRMJob, CRMProposal, CRMNote, CRMMaterial, CRMJobCard, CRMChecklist, CRMDocument, CRMJobFull, CRMTimelineEvent, CRMFinancials, CRMSlot, CRMCrewMember, CRMAppointment } from '../crm.interface'
 
 /**
  * StormBuddi CRM Connector
@@ -318,6 +318,78 @@ export class StormBuddiConnector implements CRMConnector {
       stageIndex: doc.stageIndex ?? doc.stage_index,
       notes: doc.notes,
     } as CRMDocument))
+  }
+
+  // ── Extended job view ────────────────────────────────────────────
+
+  async getJobFull(jobId: string): Promise<CRMJobFull> {
+    const { data } = await this.httpCrm.post(`/get-job-full/${jobId}`, {})
+    return data as CRMJobFull
+  }
+
+  async getJobTimeline(jobId: string): Promise<{ jobId: string; events: CRMTimelineEvent[]; total: number }> {
+    const { data } = await this.httpCrm.post(`/get-job-timeline/${jobId}`, {})
+    return {
+      jobId: String(data.jobId ?? jobId),
+      events: data.events ?? [],
+      total: data.total ?? (data.events ?? []).length,
+    }
+  }
+
+  async getDocumentsByType(jobId: string, type: string, includeBase64 = false): Promise<CRMDocument[]> {
+    const { data } = await this.httpCrm.post(`/get-documents-by-type/${jobId}`, { type, includeBase64 })
+    const list = data?.documents ?? data?.data ?? []
+    return list.map((doc: any) => ({
+      documentId: doc.documentId ?? doc.fileId ?? doc.id,
+      type: doc.type ?? type,
+      fileName: doc.fileName ?? doc.file_name ?? '',
+      fileUrl: doc.fileUrl ?? doc.file_url ?? '',
+      uploadedAt: doc.uploadedAt ?? doc.uploaded_at,
+      status: doc.status,
+      signatureStatus: doc.signatureStatus ?? null,
+      source: doc.source,
+      fileType: doc.fileType,
+      fileSize: doc.fileSize,
+      caption: doc.caption ?? null,
+      base64: doc.base64 ?? null,
+    } as CRMDocument))
+  }
+
+  async getFinancials(jobId: string): Promise<CRMFinancials> {
+    const { data } = await this.httpCrm.post(`/get-financials/${jobId}`, {})
+    return data as CRMFinancials
+  }
+
+  // ── Appointments ─────────────────────────────────────────────────
+
+  async getAvailableSlots(jobId: string, opts?: { type?: string; from?: string; to?: string }): Promise<CRMSlot[]> {
+    const body: Record<string, any> = {}
+    if (opts?.type) body.type = opts.type
+    if (opts?.from) body.from = opts.from
+    if (opts?.to)   body.to   = opts.to
+    const { data } = await this.httpCrm.post(`/get-available-slots/${jobId}`, body)
+    return (data?.slots ?? data?.data ?? []) as CRMSlot[]
+  }
+
+  async bookAppointment(jobId: string, input: { type: string; date: string; time: string; assignedTo?: string; title?: string; priority?: string; status?: string; endTime?: string; description?: string }): Promise<{ success: boolean; appointmentId: string | number; appointment: CRMAppointment }> {
+    const { data } = await this.httpCrm.post(`/book-appointment/${jobId}`, input)
+    return {
+      success: data.success ?? true,
+      appointmentId: data.appointmentId ?? data.appointment?.appointmentId,
+      appointment: data.appointment ?? {},
+    }
+  }
+
+  async getCrewAvailability(jobId: string, startDate: string, endDate: string): Promise<CRMCrewMember[]> {
+    const { data } = await this.httpCrm.post(`/get-crew-availability/${jobId}`, { startDate, endDate })
+    return (data?.crews ?? data?.data ?? []) as CRMCrewMember[]
+  }
+
+  async getAppointments(jobId: string, type?: string): Promise<CRMAppointment[]> {
+    const body: Record<string, any> = {}
+    if (type) body.type = type
+    const { data } = await this.httpCrm.post(`/get-appointments/${jobId}`, body)
+    return (data?.appointments ?? data?.data ?? []) as CRMAppointment[]
   }
 
   // ── Private mappers ───────────────────────────────────────────────

@@ -126,4 +126,20 @@ export class LaravelCRMConnector implements CRMConnector {
   async updateRecord(model: string, id: string, payload: Record<string, unknown>): Promise<void> {
     await this.http.patch(`/api/${model}/${id}`, payload)
   }
+
+  // ── Stubs: roofing-specific tools not supported by Laravel connector ─
+  async getJobCard(): Promise<any> { throw new Error('Not supported by Laravel connector') }
+  async updateJobCard(): Promise<any> { throw new Error('Not supported by Laravel connector') }
+  async getChecklist(): Promise<any> { throw new Error('Not supported by Laravel connector') }
+  async markChecklistItem(): Promise<any> { throw new Error('Not supported by Laravel connector') }
+  async attachDocument(): Promise<any> { throw new Error('Not supported by Laravel connector') }
+  async getDocuments(): Promise<any[]> { return [] }
+  async getJobFull(): Promise<any> { throw new Error('Not supported by Laravel connector') }
+  async getJobTimeline(): Promise<any> { throw new Error('Not supported by Laravel connector') }
+  async getDocumentsByType(): Promise<any[]> { return [] }
+  async getFinancials(): Promise<any> { throw new Error('Not supported by Laravel connector') }
+  async getAvailableSlots(): Promise<any[]> { return [] }
+  async bookAppointment(): Promise<any> { throw new Error('Not supported by Laravel connector') }
+  async getCrewAvailability(): Promise<any[]> { return [] }
+  async getAppointments(): Promise<any[]> { return [] }
 }

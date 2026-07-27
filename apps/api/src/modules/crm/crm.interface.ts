@@ -143,6 +143,160 @@ export interface CRMDocument {
   uploadedAt?: string
   stageIndex?: number
   notes?: string
+  status?: string
+  signatureStatus?: string | null
+  source?: string
+  fileType?: string
+  fileSize?: number
+  caption?: string | null
+  base64?: string | null
+}
+
+export interface CRMAppointment {
+  appointmentId: number | string
+  type: string
+  title?: string
+  status?: string
+  priority?: string
+  date?: string
+  time?: string
+  startDateTime?: string
+  endDateTime?: string
+  dateWords?: string
+  description?: string
+}
+
+export interface CRMJobFull {
+  jobId: string | number
+  leadId?: string | number
+  job?: {
+    title?: string
+    description?: string
+    status?: string
+    startDate?: string | null
+    endDate?: string | null
+    isInsured?: boolean
+    insuranceId?: number | null
+    currentStageIndex?: number
+  }
+  contact?: {
+    name?: string
+    email?: string
+    phone?: string
+    address?: string
+    zip?: string
+  }
+  inspection?: {
+    appointments?: CRMAppointment[]
+    latestDate?: string | null
+    reports?: unknown[]
+  }
+  insurance?: {
+    isInsured?: boolean
+    insuranceId?: number | null
+    carrier?: string
+    policyNumber?: string
+    claimNumber?: string
+    claimReferenceNumber?: string | null
+    acvAmount?: number
+    rcvAmount?: number
+    depreciationHoldback?: number
+    files?: unknown[]
+  }
+  financials?: {
+    estimateTotal?: number
+    acvAmount?: number
+    rcvAmount?: number
+    depreciationHoldback?: number
+    depositPaid?: number
+    paymentsReceived?: number
+    invoiceTotal?: number
+    balanceDue?: number
+    invoices?: unknown[]
+  }
+  materials?: {
+    brand?: string | null
+    product?: string | null
+    colour?: string | null
+    underlayment?: string | null
+    orders?: unknown[]
+  }
+  contract?: {
+    status?: string
+    items?: unknown[]
+  }
+  warranty?: {
+    type?: string | null
+    documents?: unknown[]
+  }
+  notes?: Array<{
+    noteId?: number
+    note?: string
+    createdBy?: string
+    createdAt?: string
+    updatedAt?: string
+    images?: unknown[]
+  }>
+  appointments?: {
+    inspection?: CRMAppointment[]
+    other?: CRMAppointment[]
+  }
+  proposals?: unknown[]
+  invoices?: unknown[]
+  files?: {
+    measurements?: unknown[]
+    fileUploads?: unknown[]
+    workOrders?: unknown[]
+    materialOrderDocs?: unknown[]
+    beforePictures?: unknown[]
+    afterPictures?: unknown[]
+  }
+  [key: string]: unknown
+}
+
+export interface CRMTimelineEvent {
+  type: string
+  id: number | string
+  stageIndex?: number | null
+  summary?: string
+  actor?: string | null
+  timestamp?: string
+}
+
+export interface CRMFinancials {
+  jobId: string | number
+  estimateTotal?: number
+  acvAmount?: number
+  rcvAmount?: number
+  depreciationHoldback?: number
+  depositPaid?: number
+  paymentsReceived?: number
+  invoiceTotal?: number
+  balanceDue?: number
+  invoices?: Array<{
+    invoiceId?: number | string
+    status?: string
+    paidStatus?: string
+    amount?: number
+    paidAmount?: number
+    dueDate?: string
+    updatedAt?: string
+    createdAt?: string
+  }>
+}
+
+export interface CRMSlot {
+  date: string
+  time: string
+  inspectorId?: number | string
+  inspectorName?: string
+  type?: string
+}
+
+export interface CRMCrewMember {
+  crewId: number | string
+  crewName: string
+  availableDates?: string[]
 }
 
 // ── Connector Interface ───────────────────────────────────────────
@@ -196,6 +350,18 @@ export interface CRMConnector {
   // ── Document management ─────────────────────────────────
   attachDocument(data: { jobId: string; documentType: string; fileName: string; fileUrl: string; uploadedBy?: string; stageIndex?: number; notes?: string }): Promise<{ success: boolean; documentId: string; fileUrl: string }>
   getDocuments(jobId: string, type?: string): Promise<CRMDocument[]>
+
+  // ── Extended job view ────────────────────────────────────────────
+  getJobFull(jobId: string): Promise<CRMJobFull>
+  getJobTimeline(jobId: string): Promise<{ jobId: string; events: CRMTimelineEvent[]; total: number }>
+  getDocumentsByType(jobId: string, type: string, includeBase64?: boolean): Promise<CRMDocument[]>
+  getFinancials(jobId: string): Promise<CRMFinancials>
+
+  // ── Appointments ─────────────────────────────────────────────────
+  getAvailableSlots(jobId: string, opts?: { type?: string; from?: string; to?: string }): Promise<CRMSlot[]>
+  bookAppointment(jobId: string, data: { type: string; date: string; time: string; assignedTo?: string; title?: string; priority?: string; status?: string; endTime?: string; description?: string }): Promise<{ success: boolean; appointmentId: string | number; appointment: CRMAppointment }>
+  getCrewAvailability(jobId: string, startDate: string, endDate: string): Promise<CRMCrewMember[]>
+  getAppointments(jobId: string, type?: string): Promise<CRMAppointment[]>
 }
 
 // ── CRM Context (injected into agent prompt) ──────────────────────
@@ -225,6 +391,8 @@ export const CRM_PERMISSIONS = {
   WRITE_JOB_CARDS: 'write_job_cards',
   WRITE_CHECKLISTS: 'write_checklists',
   WRITE_DOCUMENTS: 'write_documents',
+  READ_APPOINTMENTS: 'read_appointments',
+  WRITE_APPOINTMENTS: 'write_appointments',
 } as const
 
 // ── Industry → CRM defaults ───────────────────────────────────────
@@ -248,14 +416,17 @@ export const INDUSTRY_CRM_DEFAULTS: Record<string, IndustryCRMDefaults> = {
       'crm_create_note', 'crm_create_task', 'crm_update_lead', 'crm_update', 'crm_search_contacts',
       'crm_get_job', 'crm_update_job', 'crm_get_checklist', 'crm_mark_checklist_item',
       'crm_attach_document', 'crm_get_documents',
+      'crm_get_job_full', 'crm_get_financials', 'crm_get_documents_by_type',
+      'crm_get_available_slots', 'crm_book_appointment', 'crm_get_crew_availability',
+      'crm_get_appointments', 'crm_get_job_timeline',
     ],
     workflow: 'Lead -> Inspection -> Estimate -> Insurance Claim -> Job -> Invoice',
     agentRoleDefaults: {
-      'Sales Assistant': ['read_leads', 'update_leads', 'read_customers', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_checklists'],
-      'Estimator': ['read_customers', 'read_jobs', 'read_proposals', 'read_materials', 'read_notes', 'write_notes', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
-      'Inspector': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_checklists', 'write_documents'],
-      'Insurance Assistant': ['read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
-      'Receptionist': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards'],
+      'Sales Assistant': ['read_leads', 'update_leads', 'read_customers', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_checklists', 'read_appointments', 'write_appointments'],
+      'Estimator': ['read_customers', 'read_jobs', 'read_proposals', 'read_materials', 'read_notes', 'write_notes', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents', 'read_appointments'],
+      'Inspector': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_checklists', 'write_documents', 'read_appointments', 'write_appointments'],
+      'Insurance Assistant': ['read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents', 'read_appointments'],
+      'Receptionist': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'read_appointments', 'write_appointments'],
     },
   },
   HVAC: {
@@ -363,14 +534,14 @@ export const INDUSTRY_CRM_DEFAULTS: Record<string, IndustryCRMDefaults> = {
 
 // Default permissions per agent role
 export const ROLE_CRM_PERMISSIONS: Record<string, string[]> = {
-  'Receptionist': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards'],
-  'Sales Assistant': ['read_leads', 'update_leads', 'read_customers', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists'],
-  'Estimator': ['read_customers', 'read_jobs', 'read_proposals', 'read_materials', 'read_notes', 'write_notes', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
-  'Inspector': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
-  'Insurance Assistant': ['read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
-  'Executive Assistant': ['read_leads', 'read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists'],
+  'Receptionist': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'read_appointments', 'write_appointments'],
+  'Sales Assistant': ['read_leads', 'update_leads', 'read_customers', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'read_appointments', 'write_appointments'],
+  'Estimator': ['read_customers', 'read_jobs', 'read_proposals', 'read_materials', 'read_notes', 'write_notes', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents', 'read_appointments'],
+  'Inspector': ['read_customers', 'read_jobs', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents', 'read_appointments', 'write_appointments'],
+  'Insurance Assistant': ['read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents', 'read_appointments'],
+  'Executive Assistant': ['read_leads', 'read_customers', 'read_jobs', 'read_proposals', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'read_appointments', 'write_appointments'],
   'Lead Qualification Assistant': ['read_leads', 'update_leads', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_checklists'],
   'Marketing Assistant': ['read_leads', 'read_notes'],
-  'Project Coordinator': ['read_customers', 'read_jobs', 'read_materials', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents'],
-  'Procurement Assistant': ['read_jobs', 'read_materials', 'create_tasks', 'read_job_cards'],
+  'Project Coordinator': ['read_customers', 'read_jobs', 'read_materials', 'read_notes', 'write_notes', 'create_tasks', 'read_job_cards', 'write_job_cards', 'write_checklists', 'write_documents', 'read_appointments', 'write_appointments'],
+  'Procurement Assistant': ['read_jobs', 'read_materials', 'create_tasks', 'read_job_cards', 'read_appointments'],
 }

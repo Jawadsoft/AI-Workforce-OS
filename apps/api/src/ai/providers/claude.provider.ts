@@ -24,7 +24,8 @@ export class ClaudeProvider {
 
     const response = await this.getClient().messages.create({
       model: this.config.get('CLAUDE_MODEL') ?? 'claude-3-5-sonnet-20241022',
-      max_tokens: 4096,
+      // 8192 — full capacity of Claude 3.5 Sonnet; covers multi-section supplement analyses without truncation.
+      max_tokens: 8192,
       system,
       messages: userMessages as Anthropic.MessageParam[],
     })
@@ -41,7 +42,7 @@ export class ClaudeProvider {
 
     const stream = this.getClient().messages.stream({
       model: this.config.get('CLAUDE_MODEL') ?? 'claude-3-5-sonnet-20241022',
-      max_tokens: 4096,
+      max_tokens: 8192,
       system,
       messages: userMessages as Anthropic.MessageParam[],
     })

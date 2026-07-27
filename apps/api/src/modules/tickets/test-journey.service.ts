@@ -93,6 +93,8 @@ interface StageConfig {
   crmUpdate?: Record<string, any>
   // Document to attach to the job card (type + simulated filename)
   crmDocument?: { type: string; fileName: string }
+  // Appointment to book after stage completes (uses get-available-slots → book-appointment)
+  crmBooking?: { type: 'inspection' | 'installation' | 'qc' | 'walkthrough'; assignedToNote?: string }
   // Email sent FROM the customer/contractor TO the carrier (claim/supplement submission).
   // Defined as a factory so customer name/address are substituted at runtime.
   customerToCarrier?: (customer: JourneyCustomer, jobId?: string | null) => { subject: string; html: string }
@@ -134,6 +136,7 @@ const ALL_STAGES: StageConfig[] = [
     note: 'Inspection scheduled for 10 July 2026 at 10 AM.',
     isInspectionScheduling: true,
     crmUpdate: { inspectionDate: '2026-07-10', notes: 'Inspection scheduled' },
+    crmBooking: { type: 'inspection', assignedToNote: 'Jared (Inspector)' },
   },
 
   // ── INSPECTION & VERIFICATION ────────────────────────────────────────────
@@ -337,6 +340,7 @@ const ALL_STAGES: StageConfig[] = [
     replies: [],
     note: 'Crew assigned: ProRoof TX (5-person team). Installation scheduled for July 15, 2026. Homeowner notified via email. Pre-job checklist complete.',
     crmUpdate: { installationDate: '2026-07-15', notes: 'Production scheduled' },
+    crmBooking: { type: 'installation', assignedToNote: 'ProRoof TX Crew' },
   },
   {
     idx: 14,
@@ -356,6 +360,7 @@ const ALL_STAGES: StageConfig[] = [
     note: 'QC inspection passed. Flashing properly sealed, ridge cap installed, gutters reattached. Zero punch list items. Job approved.',
     crmDocument: { type: 'qc_report', fileName: 'qc-report-2026-07-16.pdf' },
     crmUpdate: { notes: 'QC inspection passed' },
+    crmBooking: { type: 'qc', assignedToNote: 'QC Inspector' },
   },
   {
     idx: 16,
@@ -366,6 +371,7 @@ const ALL_STAGES: StageConfig[] = [
     ],
     note: 'Homeowner satisfied with completed roof. No punch list items. Signed off on completion.',
     crmUpdate: { notes: 'Customer walkthrough complete — job accepted' },
+    crmBooking: { type: 'walkthrough', assignedToNote: 'Sales Agent' },
   },
   {
     idx: 17,
@@ -1121,14 +1127,16 @@ export class TestJourneyService {
   ) {
     const crmLabel = `CRM S${stage.idx}`
 
-    // 1. Fetch job card
+    // 1. Fetch full job card (richer context than basic getJobCard)
     let existingStageIndex: number | undefined
     try {
-      const card = await this.crm.getJobCard(tenantId, jobId)
-      existingStageIndex = card.currentStageIndex
-      log('📂', crmLabel, `Job card read — status: ${card.leadStatus ?? '—'} | stage: ${card.currentStageIndex ?? '—'}`)
+      const full = await this.crm.getJobFull(tenantId, jobId)
+      existingStageIndex = full.job?.currentStageIndex
+      const c = full.contact ?? {}
+      const fin = full.financials ?? {}
+      log('📂', crmLabel, `Job full read — contact: ${c.name ?? '—'} | stage: ${existingStageIndex ?? '—'} | balance due: $${fin.balanceDue ?? 0}`)
     } catch (e: any) {
-      log('⚠️', crmLabel, `crm_get_job failed: ${e.message} — skipping CRM simulation for this stage`)
+      log('⚠️', crmLabel, `crm_get_job_full failed: ${e.message} — skipping CRM simulation for this stage`)
       return
     }
 
@@ -1160,7 +1168,7 @@ export class TestJourneyService {
       }
     }
 
-    // 4. Attach document if this stage generates one
+    // 4. Attach document if this stage generates one, then verify it landed
     if (stage.crmDocument) {
       try {
         const res = await this.crm.attachDocument(tenantId, {
@@ -1173,8 +1181,68 @@ export class TestJourneyService {
           notes: `[Test Journey] Auto-generated for Stage ${stage.idx} — ${stage.name}`,
         })
         log('📎', crmLabel, `Document attached: ${stage.crmDocument.fileName} (id: ${res.documentId})`)
+        // Verify document shows up in the type-filtered list
+        try {
+          const docs = await this.crm.getDocumentsByType(tenantId, jobId, stage.crmDocument.type)
+          log('🔍', crmLabel, `Verified: ${docs.length} "${stage.crmDocument.type}" doc(s) on job`)
+        } catch { /* verification is best-effort */ }
       } catch (e: any) {
         log('⚠️', crmLabel, `crm_attach_document failed: ${formatCrmError(e)}`)
+      }
+    }
+
+    // 5. Book appointment for scheduling stages (inspection, installation, QC, walkthrough)
+    if (stage.crmBooking) {
+      try {
+        const today = new Date()
+        const from = today.toISOString().split('T')[0]
+        const to   = new Date(today.getTime() + 14 * 86400000).toISOString().split('T')[0]
+        const slots = await this.crm.getAvailableSlots(tenantId, jobId, { type: stage.crmBooking.type, from, to })
+        if (slots.length) {
+          const slot = slots[0]
+          const booking = await this.crm.bookAppointment(tenantId, jobId, {
+            type: stage.crmBooking.type,
+            date: slot.date,
+            time: slot.time,
+            assignedTo: slot.inspectorName ?? stage.crmBooking.assignedToNote ?? 'Agent',
+            title: `[Test Journey] ${stage.name}`,
+            priority: 'Medium',
+            status: 'Confirm',
+            description: `[Test Journey] Auto-booked for Stage ${stage.idx} — ${stage.name}`,
+          })
+          log('📅', crmLabel, `Appointment booked: ${stage.crmBooking.type} on ${slot.date} ${slot.time} — assigned to ${slot.inspectorName ?? stage.crmBooking.assignedToNote ?? '—'} (appt id: ${booking.appointmentId})`)
+        } else {
+          log('⚠️', crmLabel, `No available slots found for ${stage.crmBooking.type} — skipping booking`)
+        }
+      } catch (e: any) {
+        log('⚠️', crmLabel, `crm_book_appointment failed: ${e.message}`)
+      }
+    }
+
+    // 6. Show financials at key payment stages (17: Invoice, 18: Payment)
+    if (stage.idx === 17 || stage.idx === 18) {
+      try {
+        const fin = await this.crm.getFinancials(tenantId, jobId)
+        log('💰', crmLabel, `Financials: Est $${fin.estimateTotal ?? 0} | ACV $${fin.acvAmount ?? 0} | Paid $${fin.paymentsReceived ?? 0} | Balance Due $${fin.balanceDue ?? 0}`)
+      } catch (e: any) {
+        log('⚠️', crmLabel, `crm_get_financials failed: ${e.message}`)
+      }
+    }
+
+    // 7. Show full job timeline at Stage 21 (Project Closeout) for final audit
+    if (stage.idx === 21) {
+      try {
+        const timeline = await this.crm.getJobTimeline(tenantId, jobId)
+        if (timeline.events.length) {
+          log('📋', crmLabel, `Job timeline: ${timeline.total} event(s) recorded`)
+          timeline.events.slice(0, 5).forEach(e =>
+            log('  ↳', crmLabel, `[${e.type}] ${(e.summary ?? '').slice(0, 60)} (${(e.timestamp ?? '').slice(0, 10)})`)
+          )
+        } else {
+          log('ℹ️', crmLabel, 'Job timeline is empty — no events recorded yet')
+        }
+      } catch (e: any) {
+        log('⚠️', crmLabel, `crm_get_job_timeline failed: ${e.message}`)
       }
     }
   }

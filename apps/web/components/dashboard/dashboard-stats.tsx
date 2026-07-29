@@ -12,10 +12,10 @@ export function DashboardStats() {
   })
 
   const stats = [
-    { label: 'Tasks Today', value: data?.tasksToday ?? 0, icon: CheckSquare, color: 'text-green-500' },
+    { label: 'Tasks Today', value: data?.tasksToday ?? 0, icon: CheckSquare, color: 'text-primary' },
     { label: 'Pending Approvals', value: data?.pendingApprovals ?? 0, icon: Clock, color: 'text-yellow-500' },
-    { label: 'Documents Generated', value: data?.totalDocuments ?? 0, icon: FileText, color: 'text-blue-500' },
-    { label: 'Active Agents', value: data?.activeAgents ?? 0, icon: Users, color: 'text-purple-500' },
+    { label: 'Documents Generated', value: data?.totalDocuments ?? 0, icon: FileText, color: 'text-primary/70' },
+    { label: 'Active Agents', value: data?.activeAgents ?? 0, icon: Users, color: 'text-primary/50' },
   ]
 
   return (

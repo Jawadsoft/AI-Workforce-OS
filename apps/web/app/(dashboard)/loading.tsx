@@ -6,8 +6,8 @@ export default function Loading() {
       {/* Logo mark */}
       <div className="relative">
         <div className="absolute inset-0 rounded-full bg-primary/20 blur-xl scale-150" />
-        <div className="relative w-14 h-14 rounded-full flex items-center justify-center bg-gradient-to-br from-gray-700 to-gray-900 border border-white/10 shadow-2xl">
-          <Zap className="w-6 h-6 text-white" />
+        <div className="relative w-14 h-14 rounded-full flex items-center justify-center bg-primary border border-primary/60 shadow-[0_0_28px_rgba(193,255,0,0.35)]">
+          <Zap className="w-6 h-6 text-primary-foreground" />
         </div>
       </div>
 

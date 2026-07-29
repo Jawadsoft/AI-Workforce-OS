@@ -11,7 +11,7 @@ import {
   Sparkles, Image, Send, Clock, CheckCircle, XCircle,
   Loader2, Plus, Trash2, Edit2, Calendar, RefreshCw,
   Facebook, Linkedin, Twitter, Instagram, LayoutGrid, List,
-  BarChart2, Star, Link2, Unlink
+  BarChart2, Star, Link2, Unlink, Info
 } from 'lucide-react'
 
 const PLATFORM_ICONS: Record<string, React.ReactNode> = {
@@ -625,12 +625,31 @@ export function SocialPage() {
                         </button>
                       )}
                     </div>
+
+                    {!facebookAcc && (
+                      <p className="flex items-start gap-1.5 text-xs text-muted-foreground pl-1">
+                        <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        There&apos;s no separate Instagram button — connecting Facebook links Instagram
+                        automatically if your Page has a Business/Creator Instagram account attached.
+                      </p>
+                    )}
+
                     {facebookAcc && (
                       <div className="flex items-center gap-2 text-xs text-muted-foreground pl-1">
                         <CheckCircle className="w-3.5 h-3.5 text-green-400" />
                         <span className="text-green-400 font-medium">{facebookAcc.accountName}</span>
                         {instagramAcc && <span>· Instagram: <span className="text-green-400 font-medium">{instagramAcc.accountName}</span></span>}
                       </div>
+                    )}
+
+                    {facebookAcc && !instagramAcc && (
+                      <p className="flex items-start gap-1.5 text-xs text-muted-foreground pl-1">
+                        <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        No Instagram account linked. Make sure the Page has a Business/Creator Instagram
+                        account attached, and that your Meta app has the Instagram product enabled
+                        (<code className="font-mono bg-muted px-1 rounded">FACEBOOK_INSTAGRAM_SCOPES=true</code>),
+                        then disconnect and reconnect Facebook.
+                      </p>
                     )}
                   </div>
                 )

@@ -18,12 +18,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body className={`${inter.variable} font-sans antialiased`}>
         <NextTopLoader
-          color="hsl(217 28% 58%)"
+          color="#C1FF00"
           initialPosition={0.1}
           crawlSpeed={200}
           height={3}
           showSpinner={false}
-          shadow="0 0 10px hsl(217 28% 58% / 0.4)"
+          shadow="0 0 10px rgba(193, 255, 0, 0.45)"
         />
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
           <QueryProvider>

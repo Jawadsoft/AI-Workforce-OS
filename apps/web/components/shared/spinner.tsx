@@ -16,14 +16,14 @@ const SIZES = {
 
 const COUNT = 20
 
-// Color interpolation: dark gray (top/inactive) → bright teal (bottom/active)
+// Color interpolation: dark gray (inactive) → neon lime (active)
 function pillColor(i: number): string {
   const t = i / (COUNT - 1)
-  const gray = { r: 100, g: 110, b: 120 }
-  const teal = { r: 45,  g: 212, b: 191 }
-  const r = Math.round(gray.r + (teal.r - gray.r) * t)
-  const g = Math.round(gray.g + (teal.g - gray.g) * t)
-  const b = Math.round(gray.b + (teal.b - gray.b) * t)
+  const gray = { r: 80, g: 85, b: 90 }
+  const lime = { r: 193, g: 255, b: 0 }
+  const r = Math.round(gray.r + (lime.r - gray.r) * t)
+  const g = Math.round(gray.g + (lime.g - gray.g) * t)
+  const b = Math.round(gray.b + (lime.b - gray.b) * t)
   return `rgb(${r},${g},${b})`
 }
 

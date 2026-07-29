@@ -2,12 +2,18 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
 const PUBLIC_ROUTES = ['/login', '/register', '/forgot-password', '/onboarding']
+const LANDING_ROUTES = ['/']
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   // Super admin and public widget have their own auth — skip tenant middleware
   if (pathname.startsWith('/super-admin') || pathname.startsWith('/widget')) {
+    return NextResponse.next()
+  }
+
+  // Marketing landing is always public (including signed-in users)
+  if (LANDING_ROUTES.includes(pathname)) {
     return NextResponse.next()
   }
 

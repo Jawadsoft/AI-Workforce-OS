@@ -59,7 +59,7 @@ export function Sidebar() {
             isCollapsed ? 'w-10 h-10 justify-center bg-primary shadow-sm' : 'gap-3',
           )}
         >
-          <span className="w-10 h-10 rounded-2xl bg-primary flex items-center justify-center shadow-sm">
+          <span className="w-10 h-10 rounded-2xl bg-primary flex items-center justify-center shadow-[0_0_20px_rgba(193,255,0,0.35)]">
             <Zap className="w-5 h-5 text-primary-foreground" />
           </span>
           {!isCollapsed && <span className="font-semibold text-sm whitespace-nowrap">AI Workforce OS</span>}

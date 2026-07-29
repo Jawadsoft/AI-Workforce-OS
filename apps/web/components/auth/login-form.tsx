@@ -43,16 +43,16 @@ export function LoginForm() {
       {/* Logo */}
       <div className="flex flex-col items-center gap-4 text-center">
         <div className="relative">
-          <div className="absolute inset-0 rounded-full bg-white/10 blur-md scale-125" />
+          <div className="absolute inset-0 rounded-full bg-[#C1FF00]/25 blur-md scale-125" />
           <div
             className="relative w-14 h-14 rounded-full flex items-center justify-center"
             style={{
-              background: 'linear-gradient(135deg, #4b5563 0%, #6b7280 100%)',
-              border: '1px solid rgba(255,255,255,0.25)',
-              boxShadow: '0 0 24px rgba(255,255,255,0.15)',
+              background: '#C1FF00',
+              border: '1px solid rgba(193,255,0,0.6)',
+              boxShadow: '0 0 28px rgba(193,255,0,0.45)',
             }}
           >
-            <Zap className="w-6 h-6 text-white" />
+            <Zap className="w-6 h-6 text-black" />
           </div>
         </div>
 
@@ -89,7 +89,7 @@ export function LoginForm() {
               border: '1px solid rgba(255,255,255,0.12)',
             }}
             onFocus={e => {
-              e.currentTarget.style.border = '1px solid rgba(255,255,255,0.35)'
+              e.currentTarget.style.border = '1px solid rgba(193,255,0,0.55)'
               e.currentTarget.style.background = 'rgba(255,255,255,0.10)'
             }}
             onBlur={e => {
@@ -115,7 +115,7 @@ export function LoginForm() {
                 border: '1px solid rgba(255,255,255,0.12)',
               }}
               onFocus={e => {
-                e.currentTarget.style.border = '1px solid rgba(255,255,255,0.35)'
+                e.currentTarget.style.border = '1px solid rgba(193,255,0,0.55)'
                 e.currentTarget.style.background = 'rgba(255,255,255,0.10)'
               }}
               onBlur={e => {
@@ -135,21 +135,21 @@ export function LoginForm() {
         <button
           type="submit"
           disabled={busy}
-          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-black tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           style={{
-            background: 'linear-gradient(135deg, #374151 0%, #1f2937 100%)',
-            border: '1px solid rgba(255,255,255,0.15)',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+            background: '#C1FF00',
+            border: '1px solid rgba(193,255,0,0.8)',
+            boxShadow: '0 4px 24px rgba(193,255,0,0.35)',
           }}
           onMouseEnter={e => {
             if (!busy) {
-              e.currentTarget.style.background = 'linear-gradient(135deg, #4b5563 0%, #374151 100%)'
-              e.currentTarget.style.boxShadow = '0 4px 30px rgba(255,255,255,0.1)'
+              e.currentTarget.style.background = '#d4ff33'
+              e.currentTarget.style.boxShadow = '0 4px 32px rgba(193,255,0,0.5)'
             }
           }}
           onMouseLeave={e => {
-            e.currentTarget.style.background = 'linear-gradient(135deg, #374151 0%, #1f2937 100%)'
-            e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.4)'
+            e.currentTarget.style.background = '#C1FF00'
+            e.currentTarget.style.boxShadow = '0 4px 24px rgba(193,255,0,0.35)'
           }}
         >
           {busy && <Loader2 className="w-4 h-4 animate-spin" />}

@@ -52,11 +52,11 @@ function actionLabel(action: string) {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  OPEN:              '#3b82f6',
-  IN_PROGRESS:       '#6366f1',
+  OPEN:              '#C1FF00',
+  IN_PROGRESS:       '#A3D900',
   AWAITING_CUSTOMER: '#f59e0b',
   AWAITING_AGENT:    '#f97316',
-  SCHEDULED:         '#8b5cf6',
+  SCHEDULED:         '#84cc16',
   COMPLETED:         '#22c55e',
   ESCALATED:         '#ef4444',
   CANCELLED:         '#6b7280',
@@ -132,11 +132,11 @@ export function AnalyticsPage() {
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
             {[
               { label: 'Total Jobs',       value: totals.total          ?? 0, icon: CheckSquare,   color: 'text-foreground' },
-              { label: 'Active',           value: totals.active         ?? 0, icon: TrendingUp,    color: 'text-blue-400' },
+              { label: 'Active',           value: totals.active         ?? 0, icon: TrendingUp,    color: 'text-primary' },
               { label: 'Completed',        value: totals.completed      ?? 0, icon: CheckSquare,   color: 'text-emerald-400' },
               { label: 'Escalated',        value: totals.escalated      ?? 0, icon: AlertTriangle, color: totals.escalated > 0 ? 'text-red-400' : 'text-muted-foreground' },
-              { label: 'CRM Leads In',     value: totals.crmImported    ?? 0, icon: Users,         color: 'text-indigo-400' },
-              { label: 'Pipeline Moves',   value: totals.pipelineAdvanced ?? 0, icon: ArrowRight,  color: 'text-violet-400' },
+              { label: 'CRM Leads In',     value: totals.crmImported    ?? 0, icon: Users,         color: 'text-primary/70' },
+              { label: 'Pipeline Moves',   value: totals.pipelineAdvanced ?? 0, icon: ArrowRight,  color: 'text-primary/50' },
               { label: 'Avg Resolution',   value: totals.avgResolutionHours != null ? `${totals.avgResolutionHours}h` : '—', icon: Clock, color: 'text-muted-foreground' },
             ].map(s => (
               <div key={s.label} className="bg-card border border-border rounded-xl px-3 py-3">
@@ -158,8 +158,8 @@ export function AnalyticsPage() {
                 <AreaChart data={(pipelineData?.dailyChart ?? [])}>
                   <defs>
                     <linearGradient id="cG" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.25} />
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                      <stop offset="5%" stopColor="#C1FF00" stopOpacity={0.28} />
+                      <stop offset="95%" stopColor="#C1FF00" stopOpacity={0} />
                     </linearGradient>
                     <linearGradient id="dG" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#22c55e" stopOpacity={0.25} />
@@ -171,7 +171,7 @@ export function AnalyticsPage() {
                   <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
                   <Tooltip />
                   <Legend />
-                  <Area type="monotone" dataKey="created"   stroke="#3b82f6" fill="url(#cG)" name="Created" />
+                  <Area type="monotone" dataKey="created"   stroke="#C1FF00" fill="url(#cG)" name="Created" />
                   <Area type="monotone" dataKey="completed" stroke="#22c55e" fill="url(#dG)" name="Completed" />
                 </AreaChart>
               </ResponsiveContainer>
@@ -216,7 +216,7 @@ export function AnalyticsPage() {
                     <YAxis dataKey="name" type="category" tick={{ fontSize: 10 }} width={70} />
                     <Tooltip />
                     <Legend iconSize={8} />
-                    <Bar dataKey="open"  fill="#3b82f6" name="Active"    radius={[0, 3, 3, 0]} stackId="a" />
+                    <Bar dataKey="open"  fill="#C1FF00" name="Active"    radius={[0, 3, 3, 0]} stackId="a" />
                     <Bar dataKey="done"  fill="#22c55e" name="Completed" radius={[0, 3, 3, 0]} stackId="a" />
                     <Bar dataKey="esc"   fill="#ef4444" name="Escalated" radius={[0, 3, 3, 0]} stackId="a" />
                   </BarChart>

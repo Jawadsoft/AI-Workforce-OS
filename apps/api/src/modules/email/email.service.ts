@@ -105,6 +105,11 @@ export class EmailService {
     text?: string
     inReplyTo?: string
     references?: string
+    attachments?: Array<{
+      filename: string
+      content: Buffer
+      contentType?: string
+    }>
   }): Promise<{ messageId?: string }> {
     const cfg = await this.getSmtpConfig(params.tenantId)
     if (!cfg.user || !cfg.pass) {
@@ -114,6 +119,11 @@ export class EmailService {
 
     const actualTo = Array.isArray(params.to) ? params.to.join(', ') : params.to
     const subject = params.subject
+    const attachments = (params.attachments ?? []).map(a => ({
+      filename: a.filename,
+      content: a.content,
+      contentType: a.contentType,
+    }))
 
     const transporter = await this.buildTransporter(params.tenantId)
     try {
@@ -123,10 +133,14 @@ export class EmailService {
         subject,
         html: params.html,
         text: params.text,
+        ...(attachments.length ? { attachments } : {}),
         ...(params.inReplyTo ? { inReplyTo: params.inReplyTo } : {}),
         ...(params.references ? { references: params.references } : {}),
       })
-      this.logger.log(`Email sent to ${actualTo}: ${params.subject}`)
+      this.logger.log(
+        `Email sent to ${actualTo}: ${params.subject}` +
+          (attachments.length ? ` (${attachments.length} attachment${attachments.length > 1 ? 's' : ''})` : ''),
+      )
       const messageId = (info as any)?.messageId
 
       // Save a copy to the Sent folder via IMAP (non-blocking — does not affect delivery)
@@ -139,6 +153,7 @@ export class EmailService {
         messageId,
         inReplyTo: params.inReplyTo,
         references: params.references,
+        attachments,
       }).catch(e => this.logger.warn(`[EmailService] Sent-folder append failed (non-critical): ${e.message}`))
 
       return { messageId }
@@ -164,6 +179,7 @@ export class EmailService {
       messageId?: string
       inReplyTo?: string
       references?: string
+      attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>
     },
   ): Promise<void> {
     // Derive IMAP host from SMTP host — handle known providers and generic patterns
@@ -211,35 +227,76 @@ export class EmailService {
       )
       const folder = sentFolder?.path ?? 'Sent Items'
 
-      // Build raw RFC 2822 message
-      const boundary = `boundary_${Date.now()}`
+      // Build raw RFC 2822 message (multipart/mixed when attachments are present)
+      const mixedBoundary = `mixed_${Date.now()}`
+      const altBoundary = `alt_${Date.now()}`
       const plainText = msg.text ?? msg.html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
       const now = new Date().toUTCString()
-      const rawMessage = [
-        `From: ${msg.from}`,
-        `To: ${msg.to}`,
-        `Subject: ${msg.subject}`,
-        `Date: ${now}`,
-        `MIME-Version: 1.0`,
-        `Content-Type: multipart/alternative; boundary="${boundary}"`,
-        ...(msg.messageId  ? [`Message-ID: ${msg.messageId}`]  : []),
-        ...(msg.inReplyTo  ? [`In-Reply-To: ${msg.inReplyTo}`]  : []),
-        ...(msg.references  ? [`References: ${msg.references}`]  : []),
-        ``,
-        `--${boundary}`,
+      const hasAttachments = (msg.attachments?.length ?? 0) > 0
+
+      const alternativeParts = [
+        `--${altBoundary}`,
         `Content-Type: text/plain; charset=utf-8`,
         `Content-Transfer-Encoding: 7bit`,
         ``,
         plainText,
         ``,
-        `--${boundary}`,
+        `--${altBoundary}`,
         `Content-Type: text/html; charset=utf-8`,
         `Content-Transfer-Encoding: 7bit`,
         ``,
         msg.html,
         ``,
-        `--${boundary}--`,
+        `--${altBoundary}--`,
       ].join('\r\n')
+
+      const attachmentParts = (msg.attachments ?? []).map(att => {
+        const safeName = att.filename.replace(/["\r\n]/g, '_')
+        const type = att.contentType || 'application/octet-stream'
+        return [
+          `--${mixedBoundary}`,
+          `Content-Type: ${type}; name="${safeName}"`,
+          `Content-Transfer-Encoding: base64`,
+          `Content-Disposition: attachment; filename="${safeName}"`,
+          ``,
+          att.content.toString('base64').replace(/(.{76})/g, '$1\r\n'),
+          ``,
+        ].join('\r\n')
+      }).join('')
+
+      const rawMessage = hasAttachments
+        ? [
+            `From: ${msg.from}`,
+            `To: ${msg.to}`,
+            `Subject: ${msg.subject}`,
+            `Date: ${now}`,
+            `MIME-Version: 1.0`,
+            `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
+            ...(msg.messageId  ? [`Message-ID: ${msg.messageId}`]  : []),
+            ...(msg.inReplyTo  ? [`In-Reply-To: ${msg.inReplyTo}`]  : []),
+            ...(msg.references  ? [`References: ${msg.references}`]  : []),
+            ``,
+            `--${mixedBoundary}`,
+            `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+            ``,
+            alternativeParts,
+            ``,
+            attachmentParts,
+            `--${mixedBoundary}--`,
+          ].join('\r\n')
+        : [
+            `From: ${msg.from}`,
+            `To: ${msg.to}`,
+            `Subject: ${msg.subject}`,
+            `Date: ${now}`,
+            `MIME-Version: 1.0`,
+            `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+            ...(msg.messageId  ? [`Message-ID: ${msg.messageId}`]  : []),
+            ...(msg.inReplyTo  ? [`In-Reply-To: ${msg.inReplyTo}`]  : []),
+            ...(msg.references  ? [`References: ${msg.references}`]  : []),
+            ``,
+            alternativeParts,
+          ].join('\r\n')
 
       try {
         await client.append(folder, Buffer.from(rawMessage), ['\\Seen'])

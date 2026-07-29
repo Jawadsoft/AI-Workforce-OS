@@ -306,20 +306,20 @@ const CRM_TOOL_DEFINITIONS = [
   },
   {
     name: 'generate_document',
-    description: 'Generate a professional PDF document (estimate, proposal, report, invoice, etc.). Call this directly when the user asks for a document or proposal. Optionally use ask_user first to confirm details if the scope is unclear — but if the user has explicitly asked for a document, generate it immediately.',
+    description: 'Generate a professional PDF ONLY when the user explicitly asks to generate/create/finalize the document (e.g. "generate the quote", "create the PDF", "finalize it", "go ahead and generate"). Do NOT call this while the user is still customizing details (currency, company name, line items, prices, address, etc.) — confirm the draft in chat first and wait for an explicit generate request. When generating, include currency and company/header name in the prompt.',
     parameters: {
       type: 'object',
       properties: {
         type: { type: 'string', enum: ['estimate', 'inspection', 'sow', 'invoice', 'supplement'], description: 'Document type: estimate=quote/proposal, inspection=inspection report, sow=statement of work, invoice=payment invoice, supplement=insurance supplement request' },
         title: { type: 'string', description: 'Document title e.g. "Roof Estimate - John Smith"' },
-        prompt: { type: 'string', description: 'Describe what to include: customer name, address, items, scope of work, amounts, etc.' },
+        prompt: { type: 'string', description: 'FINAL confirmed details only: customer name, address, items, scope, amounts, currency (GBP/£, EUR/€, USD/$, etc.), and header company name if different (write "company name: Acme Ltd"). Include ALL agreed details.' },
       },
       required: ['type', 'title', 'prompt'],
     },
   },
   {
     name: 'contact_customer',
-    description: 'Send a message to a customer. For CRM/pipeline leads provide contactEmail directly. For widget/chat customers provide sessionId. Always pass contactEmail when you have it — do not pass sessionId for pipeline tickets. Pass ticketId to keep all emails in the same thread.',
+    description: 'Send a message to a customer (optionally with a generated document attached). For CRM/pipeline leads provide contactEmail directly. For widget/chat customers provide sessionId. Always pass contactEmail when you have it — do not pass sessionId for pipeline tickets. Pass ticketId to keep all emails in the same thread. When the user asks to email a quotation/estimate/PDF/document, ALWAYS pass documentId (from the most recent generate_document result) or set attachDocument=true so the PDF is attached.',
     parameters: {
       type: 'object',
       properties: {
@@ -329,6 +329,8 @@ const CRM_TOOL_DEFINITIONS = [
         message:      { type: 'string', description: 'The message body to send to the customer' },
         subject:      { type: 'string', description: 'Email subject line (used when sending by email)' },
         ticketId:     { type: 'string', description: 'The ticket ID this email relates to — ensures all emails thread together in the customer mailbox' },
+        documentId:   { type: 'string', description: 'ID of a generated document to attach as a PDF/file. Use the documentId returned by generate_document.' },
+        attachDocument: { type: 'boolean', description: 'If true (or when emailing a quote/estimate/document), attach the latest generated document when documentId is omitted.' },
       },
       required: ['message'],
     },
@@ -1152,6 +1154,26 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         // ── Document / PDF generation ──────────────────────
         if (toolName === 'generate_document') {
           try {
+            // Gate: while the user is still customizing details, do not generate a PDF
+            // until they explicitly ask to generate/create/finalize.
+            const lastUserText = [...messages].reverse().find(m => m.role === 'user')?.content ?? ''
+            const explicitGenerate =
+              /\b(generate|regenerate|create(\s+the)?\s+(pdf|document|quote|quotation|estimate|proposal|invoice|report)|make(\s+the)?\s+(pdf|document|quote|quotation|estimate)|finalize|finalise|prepare(\s+the)?\s+(pdf|document|quote|quotation|estimate)|download|go\s+ahead|looks\s+good|send\s+me\s+the\s+(pdf|document|quote|quotation|estimate)|yes[,!]?\s*(generate|create|make|finalize|finalise|do\s+it)|confirmed?)\b/i
+                .test(lastUserText)
+            const isCustomizingOnly =
+              !explicitGenerate &&
+              /\b(change|update|set|use|switch|edit|adjust|revise|modify|instead|rather|header|company\s*name|letterhead|currency|pounds?|gbp|euros?|eur|dollars?|usd|line\s*items?|price|pricing|total|address|add|remove|replace)\b/i
+                .test(lastUserText)
+
+            if (isCustomizingOnly) {
+              this.logger.log(`[generate_document] Blocked — user is still customizing: "${lastUserText.slice(0, 120)}"`)
+              return (
+                'Do NOT generate a PDF yet. The user is still customizing details. ' +
+                'Confirm the updated draft in chat (currency, company name, line items, totals, etc.) and ask if they are ready. ' +
+                'Only call generate_document again after they explicitly ask to generate/create/finalize the document.'
+              )
+            }
+
             emit?.({ step: { label: `Generating ${params.title ?? params.type ?? 'document'}`, status: 'active' } })
             const doc = await this.documents.generate(tenantId, agent.id, {
               type: params.type,
@@ -1161,7 +1183,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
             emit?.({ step: { label: `Generating ${params.title ?? params.type ?? 'document'}`, status: 'done' } })
             emit?.({ step: { label: 'Saving document', status: 'done' } })
             emit?.({ action_card: { type: 'document', id: doc.id, title: doc.title, docType: doc.type, format: doc.format } })
-            return `Document generated successfully: "${doc.title}" (${doc.format}). The download button has appeared in the chat.`
+            return `Document generated successfully: "${doc.title}" (${doc.format}). documentId=${doc.id}. The download button has appeared in the chat. When emailing this document, call contact_customer with documentId="${doc.id}" (or attachDocument=true).`
           } catch (err: any) {
             emit?.({ step: { label: 'Document generation failed', status: 'error' } })
             return `Failed to generate document: ${err.message}`
@@ -1566,6 +1588,54 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
             })
             const companyName = (tenant?.settings as any)?.brain?.companyName || tenant?.name || 'Us'
 
+            // Resolve optional document attachment (quotation / estimate / PDF)
+            const lastUserText = [...messages].reverse().find(m => m.role === 'user')?.content ?? ''
+            const attachIntentText = `${params.message ?? ''} ${lastUserText}`
+            const wantsDocAttach =
+              params.attachDocument === true ||
+              !!params.documentId ||
+              /(attach|attachment|document|quotation|quote|estimate|proposal|invoice|\.pdf|send\s+this|email\s+this)/i.test(
+                attachIntentText,
+              )
+
+            let emailAttachments: Array<{ filename: string; content: Buffer; contentType?: string }> = []
+            let attachedDocLabel = ''
+            if (wantsDocAttach) {
+              try {
+                let docId = typeof params.documentId === 'string' ? params.documentId.trim() : ''
+                if (!docId) {
+                  // Prefer a documentId mentioned in recent tool/assistant context
+                  const recentText = messages.slice(-8).map(m => m.content).join('\n')
+                  const idMatch = recentText.match(/documentId[=:\s]+([a-z0-9_-]{10,})/i)
+                  if (idMatch?.[1]) docId = idMatch[1]
+                }
+                let doc = docId
+                  ? await this.documents.findOne(tenantId, docId)
+                  : await this.documents.findLatest(tenantId, agent.id)
+                // Fall back to any recent tenant document if this agent has none
+                if (!doc && !docId) {
+                  doc = await this.documents.findLatest(tenantId)
+                }
+                const resolvedId = doc?.id
+                if (resolvedId) {
+                  const att = await this.documents.getEmailAttachment(tenantId, resolvedId)
+                  if (att) {
+                    emailAttachments = [{
+                      filename: att.filename,
+                      content: att.content,
+                      contentType: att.contentType,
+                    }]
+                    attachedDocLabel = att.title
+                    this.logger.log(`[contact_customer] Attaching document "${att.title}" (${att.filename}, ${att.content.length} bytes)`)
+                  }
+                } else {
+                  this.logger.warn('[contact_customer] Document attach requested but no generated document found')
+                }
+              } catch (attErr: any) {
+                this.logger.error(`[contact_customer] Failed to load document attachment: ${attErr?.message ?? attErr}`)
+              }
+            }
+
             // ── Path A: direct outbound email to a CRM contact ─────────────
             // When contactEmail is provided directly (CRM leads, pipeline tickets)
             // and there is no widget sessionId, send a direct outbound email.
@@ -1584,7 +1654,11 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
             if (effectiveEmail && !params.sessionId) {
               params.contactEmail = effectiveEmail
               const recipientName = params.contactName || params.contactRef || 'there'
-              const subject = params.subject || `Regarding your property — ${companyName}`
+              const subject = params.subject || (
+                attachedDocLabel
+                  ? `${attachedDocLabel} — ${companyName}`
+                  : `Regarding your property — ${companyName}`
+              )
 
               // ── Email threading: resolve ticket (agent-provided or auto-detected) ──
               // Agent passes ticketId when it follows briefing instructions.
@@ -1645,19 +1719,26 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                 }
               }
 
+              const attachNote = attachedDocLabel
+                ? `<p style="color:#64748b;font-size:13px;margin-top:16px;">📎 Attached: <strong>${attachedDocLabel}</strong></p>`
+                : ''
+
               const { messageId } = await this.email.send({
                 tenantId,
                 to: params.contactEmail as string,
                 subject,
                 html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto">
+                  <p>Hi ${recipientName},</p>
                   <p>${(params.message as string).replace(/\n/g, '<br>')}</p>
+                  ${attachNote}
                   <p style="color:#64748b;font-size:13px;margin-top:24px;">— ${companyName}</p>
                 </div>`,
-                text: `${params.message}\n\n— ${companyName}`,
+                text: `Hi ${recipientName},\n\n${params.message}${attachedDocLabel ? `\n\nAttached: ${attachedDocLabel}` : ''}\n\n— ${companyName}`,
                 inReplyTo,
                 references,
+                attachments: emailAttachments,
               })
-              this.logger.log(`[contact_customer] Outbound email sent to ${params.contactEmail}${inReplyTo ? ' (threaded)' : ' (new thread)'}`)
+              this.logger.log(`[contact_customer] Outbound email sent to ${params.contactEmail}${inReplyTo ? ' (threaded)' : ' (new thread)'}${emailAttachments.length ? ' with attachment' : ''}`)
 
               // ── Save the first messageId as the thread anchor ──────────────────
               // Only set on the first email (no prior inReplyTo) — all follow-ups will
@@ -1671,7 +1752,10 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                 this.logger.log(`[contact_customer] Thread anchor saved: ${messageId?.slice(0, 30)} on ticket ${emailTicketId.slice(-6)}`)
               }
 
-              return `✅ Email sent to ${params.contactEmail}: "${params.message}"`
+              if (wantsDocAttach && !emailAttachments.length) {
+                return `⚠️ Email sent to ${params.contactEmail}, but NO document was attached (none found or download failed). Ask the user to regenerate the document, then retry with documentId.`
+              }
+              return `✅ Email sent to ${params.contactEmail}${attachedDocLabel ? ` with attachment "${attachedDocLabel}"` : ''}: "${params.message}"`
             }
 
             // ── Path B: widget session (inbound chat follow-up) ────────────
@@ -1711,7 +1795,14 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
               this.logger.log(`[contact_customer] Widget reply sent to session ${params.sessionId}`)
               return `✅ Message delivered to ${visitorName} via website chat: "${params.message}"`
             } else if (visitorEmail) {
-              const subject = params.subject || `Follow-up from ${companyName}`
+              const subject = params.subject || (
+                attachedDocLabel
+                  ? `${attachedDocLabel} — ${companyName}`
+                  : `Follow-up from ${companyName}`
+              )
+              const attachNote = attachedDocLabel
+                ? `<p style="color:#64748b;font-size:13px;margin-top:16px;">📎 Attached: <strong>${attachedDocLabel}</strong></p>`
+                : ''
               await this.email.send({
                 tenantId,
                 to: visitorEmail,
@@ -1719,12 +1810,17 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                 html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto">
                   <p>Hi ${visitorName},</p>
                   <p>${(params.message as string).replace(/\n/g, '<br>')}</p>
+                  ${attachNote}
                   <p style="color:#64748b;font-size:13px;margin-top:24px;">— ${companyName}</p>
                 </div>`,
-                text: `Hi ${visitorName},\n\n${params.message}\n\n— ${companyName}`,
+                text: `Hi ${visitorName},\n\n${params.message}${attachedDocLabel ? `\n\nAttached: ${attachedDocLabel}` : ''}\n\n— ${companyName}`,
+                attachments: emailAttachments,
               })
-              this.logger.log(`[contact_customer] Email sent to ${visitorEmail}`)
-              return `✅ Customer left the chat — email sent to ${visitorEmail}: "${params.message}"`
+              this.logger.log(`[contact_customer] Email sent to ${visitorEmail}${emailAttachments.length ? ' with attachment' : ''}`)
+              if (wantsDocAttach && !emailAttachments.length) {
+                return `⚠️ Email sent to ${visitorEmail}, but NO document was attached (none found or download failed).`
+              }
+              return `✅ Customer left the chat — email sent to ${visitorEmail}${attachedDocLabel ? ` with attachment "${attachedDocLabel}"` : ''}: "${params.message}"`
             } else {
               return `⚠️ Customer session is idle (${Math.round(idleMs / 60000)} min ago) and no email was collected. Cannot reach them automatically.`
             }
@@ -2962,8 +3058,8 @@ TICKET WORKFLOW:
 4. Job can't proceed → note the reason → escalate or reassign via update_ticket(assignedAgentRole)
 
 DOCUMENT GENERATION:
-When asked for a booking confirmation, schedule, or job sheet → call generate_document directly.
-No confirmation step needed if the owner has already given you the details.
+Discuss booking/schedule details in chat first. Only call generate_document when the user explicitly asks to generate/create/finalize the PDF (e.g. "generate the confirmation", "create the job sheet").
+While they are still editing details, confirm changes in chat — do NOT regenerate a PDF on every tweak.
 
 IN SCOPE (handle yourself):
 - Scheduling, booking, and availability checks
@@ -2989,15 +3085,20 @@ Example:
 ❌ "Could you give me more details before I can quote?"
 ✅ "For ${service1}, here's our typical range — [${pricingHint}]. Want me to dial that in with more specifics?"
 
-DOCUMENT GENERATION:
-When asked for a formal estimate or proposal → call generate_document directly.
-Give the verbal range first, then generate immediately — no extra confirmation step needed unless the scope is genuinely unclear.
+DOCUMENT GENERATION — WAIT FOR EXPLICIT CONFIRMATION:
+1. Give a verbal ballpark / draft summary in chat first (line items, totals, currency, company header).
+2. Let the user customize freely (currency, company name, prices, scope, address, etc.). Confirm each change in chat ONLY — do NOT call generate_document while they are still editing.
+3. Call generate_document ONLY when the user explicitly asks to generate/create/finalize the PDF (e.g. "generate the quote", "create the PDF", "finalize it", "go ahead and generate", "looks good — generate it").
+4. After generating once, if they request more changes, update the draft in chat and wait again for an explicit regenerate request — do not auto-regenerate on every tweak.
+CURRENCY: Note requested currency in the draft (GBP/£, EUR/€, USD/$). When they finally ask to generate, put it in the generate_document prompt (e.g. "currency: GBP").
+HEADER / COMPANY NAME: Note header/company name changes in the draft. Include "company name: <exact name>" in the prompt only when they explicitly ask to generate/regenerate.
+EMAILING DOCUMENTS: When the user asks to email a quotation/estimate/PDF/document, call contact_customer with contactEmail AND documentId (from generate_document) or attachDocument=true. Never claim a document was attached unless the tool result confirms the attachment.
 
-NEVER skip giving a range upfront. Do not wait for all details before giving any number.
+NEVER skip giving a range upfront. Do not wait for all details before giving any verbal number — but DO wait for an explicit generate request before creating a PDF.
 
 IN SCOPE (handle yourself):
 - Instant ballpark estimates using your knowledge base pricing data
-- Formal estimate documents following the 4-step flow above
+- Formal estimate documents AFTER the user confirms and asks to generate
 - Material costs, labor rates, scope of work discussions
 
 OUT OF SCOPE (offer transfer using suggest_transfer):
@@ -3944,13 +4045,13 @@ When the user uploads roof photos, perform a structured damage assessment using 
 **Recommended Next Step:** [File insurance claim / Request adjuster inspection / Contractor estimate]
 
 DOCUMENT GENERATION:
-When asked for an inspection report → call generate_document directly once you have the address and job type.
-If address is missing, ask once — then generate immediately without a second confirmation step.
+Share findings in chat first. Only call generate_document when the user explicitly asks to generate/create the inspection report PDF.
+If address is missing, ask for it — then wait for an explicit generate request after details are confirmed.
 
 IN SCOPE (handle yourself):
 - Scheduling and conducting site visits/inspections
 - Reviewing uploaded roof photos using the checklist above
-- Documenting findings and site conditions → use generate_document
+- Documenting findings in chat; PDF via generate_document only after explicit request
 - Answering questions about the inspection process
 
 OUT OF SCOPE (offer transfer using suggest_transfer):
@@ -3966,6 +4067,12 @@ Call suggest_transfer with a natural message like:
 
 YOUR ROLE — SALES:
 You handle the full sales cycle at ${company}: new enquiries, qualifying leads, providing quotes and estimates, following up on proposals, and closing business.
+
+DOCUMENT GENERATION — WAIT FOR EXPLICIT CONFIRMATION:
+Discuss the quote in chat (pricing, currency, company header, line items). Let the user customize freely.
+Confirm changes in chat only — do NOT call generate_document while they are still editing.
+Call generate_document ONLY when they explicitly ask to generate/create/finalize the PDF (e.g. "generate the quotation", "create the PDF", "finalize it").
+After one PDF, further tweaks stay in chat until they explicitly ask to regenerate.
 
 IN SCOPE (handle yourself — DO NOT transfer these):
 - Understand the customer's needs and provide a quote or estimate for ${allServices.length ? allServices.slice(0, 3).join(', ') : 'our services'}
@@ -4063,7 +4170,12 @@ ACCURACY RULES:
 ✅ If you're giving general industry guidance, say so naturally: "In most cases..." / "Industry standard is..."
 ❌ NEVER say "I don't have access to that" for something any experienced ${agent.role} would know
 ❌ NEVER invent tenant-specific facts (customer names, exact prices, certifications) — use general guidance instead and invite them to share specifics
-❌ NEVER make up regulations or legal requirements — recommend professional/official verification`
+❌ NEVER make up regulations or legal requirements — recommend professional/official verification
+
+DOCUMENT PDF RULE (ALL ROLES):
+Work out quotes/estimates/reports in chat first. While the user is customizing (currency, company name, prices, scope, address, etc.), confirm updates in chat only.
+Call generate_document ONLY after an explicit generate/create/finalize request from the user.
+Do NOT regenerate a PDF on every small change. Ask: "Ready for me to generate the PDF?" when details look final.`
 
     const footer = `\nAGENT-SPECIFIC INSTRUCTIONS:\n${agent.prompt}`
 

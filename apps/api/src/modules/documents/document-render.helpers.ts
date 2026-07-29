@@ -42,6 +42,106 @@ export function money(n: any): string {
   return Number.isFinite(v) ? v.toFixed(2) : '0.00'
 }
 
+/** ISO currency codes we recognize from AI data, prompts, or tenant settings. */
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: '$',
+  GBP: '£',
+  EUR: '€',
+  CAD: 'C$',
+  AUD: 'A$',
+  NZD: 'NZ$',
+  INR: '₹',
+  PKR: 'Rs',
+  JPY: '¥',
+  CHF: 'CHF ',
+  AED: 'AED ',
+  SAR: 'SAR ',
+}
+
+/** Map free-text / symbols → ISO code. */
+export function resolveCurrencyCode(input?: string | null, fallback = 'USD'): string {
+  if (!input || typeof input !== 'string') return fallback
+  const raw = input.trim()
+  const upper = raw.toUpperCase()
+  if (CURRENCY_SYMBOLS[upper]) return upper
+
+  const lower = raw.toLowerCase()
+  if (raw.includes('£') || /\b(gbp|pound|pounds|sterling|british\s*pound)\b/.test(lower)) return 'GBP'
+  if (raw.includes('€') || /\b(eur|euro|euros)\b/.test(lower)) return 'EUR'
+  if (/\b(cad|canadian\s*dollar|canadian\s*dollars)\b/.test(lower)) return 'CAD'
+  if (/\b(aud|australian\s*dollar|australian\s*dollars)\b/.test(lower)) return 'AUD'
+  if (/\b(nzd|new\s*zealand\s*dollar)\b/.test(lower)) return 'NZD'
+  if (raw.includes('₹') || /\b(inr|rupee|rupees|indian\s*rupee)\b/.test(lower)) return 'INR'
+  if (/\b(pkr|pakistani\s*rupee)\b/.test(lower)) return 'PKR'
+  if (raw.includes('¥') || /\b(jpy|yen|japanese\s*yen)\b/.test(lower)) return 'JPY'
+  if (/\b(chf|swiss\s*franc)\b/.test(lower)) return 'CHF'
+  if (/\b(aed|dirham)\b/.test(lower)) return 'AED'
+  if (/\b(sar|riyal)\b/.test(lower)) return 'SAR'
+  if (raw.includes('$') || /\b(usd|us\s*dollar|dollars?|\$)\b/.test(lower)) return 'USD'
+  return fallback
+}
+
+export function currencySymbol(code?: string | null): string {
+  const c = resolveCurrencyCode(code)
+  return CURRENCY_SYMBOLS[c] ?? `${c} `
+}
+
+/** Format an amount with the correct currency symbol (e.g. £1,234.56). */
+export function fmtMoney(n: any, currency?: string | null): string {
+  const v = Number(n)
+  const amount = Number.isFinite(v)
+    ? v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : '0.00'
+  return `${currencySymbol(currency)}${amount}`
+}
+
+/**
+ * Detect an explicit request to change the document header / letterhead company name.
+ * Only matches clear override phrases so we don't confuse customer names with issuer names.
+ */
+export function detectCompanyNameFromText(text?: string | null): string | null {
+  if (!text) return null
+  const patterns = [
+    /(?:header\s+)?company\s*name\s*(?:to|as|:|=)\s*["']?([^"'\n]+?)["']?(?=\s*(?:\.|,|;|!|\n|$|\band\b|\bwith\b|\bin\b|\bfor\b|\bcurrency\b))/i,
+    /(?:change|set|use|update|replace|put)\s+(?:the\s+)?(?:header\s+)?(?:company|business|letterhead)\s*name\s+(?:to|as|:|=)\s*["']?([^"'\n]+)/i,
+    /(?:letterhead|header)\s*(?:company\s*)?(?:to|as|:|=|should\s+(?:say|be|read)|named?)\s*["']?([^"'\n]+)/i,
+    /(?:with|under|using)\s+(?:the\s+)?(?:letterhead|header)\s+["']?([^"'\n]+)/i,
+    /companyName\s*[:=]\s*["']?([^"'\n]+)/i,
+    /(?:issued\s+by|on\s+behalf\s+of\s+company)\s*["']?([^"'\n]+)/i,
+  ]
+  for (const re of patterns) {
+    const m = text.match(re)
+    if (m?.[1]) {
+      // Stop at common trailing clauses (currency, customer, etc.)
+      let name = m[1]
+        .replace(/\s+\b(?:and|with|in|for|currency|customer|address|phone|email|scope)\b[\s\S]*$/i, '')
+        .trim()
+        .replace(/^["'\s]+|["'\s.,;:!]+$/g, '')
+      if (name.length >= 2 && name.length <= 120) return name
+    }
+  }
+  return null
+}
+
+/** Infer currency from freeform prompt text when AI omits it. */
+export function detectCurrencyFromText(text?: string | null): string | null {
+  if (!text) return null
+  const lower = text.toLowerCase()
+  if (text.includes('£') || /\b(gbp|pound|pounds|sterling|british\s*pound)\b/.test(lower)) return 'GBP'
+  if (text.includes('€') || /\b(eur|euro|euros)\b/.test(lower)) return 'EUR'
+  if (/\b(cad|canadian\s*dollars?)\b/.test(lower)) return 'CAD'
+  if (/\b(aud|australian\s*dollars?)\b/.test(lower)) return 'AUD'
+  if (/\b(nzd|new\s*zealand\s*dollars?)\b/.test(lower)) return 'NZD'
+  if (text.includes('₹') || /\b(inr|rupees?|indian\s*rupees?)\b/.test(lower)) return 'INR'
+  if (/\b(pkr|pakistani\s*rupees?)\b/.test(lower)) return 'PKR'
+  if (text.includes('¥') || /\b(jpy|yen|japanese\s*yen)\b/.test(lower)) return 'JPY'
+  if (/\b(chf|swiss\s*francs?)\b/.test(lower)) return 'CHF'
+  if (/\b(aed|dirhams?)\b/.test(lower)) return 'AED'
+  if (/\b(sar|riyals?)\b/.test(lower)) return 'SAR'
+  if (/\b(usd|us\s*dollars?|in\s+dollars?|american\s*dollars?)\b/.test(lower)) return 'USD'
+  return null
+}
+
 export function escapeHtml(s: any): string {
   return String(s ?? '')
     .replace(/&/g, '&amp;')
@@ -70,6 +170,7 @@ export function brandFooterLine(brand: BrandKit): string {
 /** Normalize AI-extracted data: coerce numbers, recompute line totals & grand totals. */
 export function normalizeDocData(type: string, data: Record<string, any>): Record<string, any> {
   const out = { ...data }
+  out.currency = resolveCurrencyCode(out.currency ?? out.currencyCode ?? out.currencySymbol)
 
   const normalizeLineItems = (items: any[], priceKey: 'unitPrice' | 'rate' = 'unitPrice') =>
     asArray(items).map((li: any, idx: number) => {
@@ -296,6 +397,8 @@ export function wrapHTML(title: string, body: string, brand: BrandKit, docNumber
 }
 
 export function buildEstimateHtml(data: any, brand: BrandKit): string {
+  const currency = resolveCurrencyCode(data.currency)
+  const m = (n: any) => fmtMoney(n, currency)
   return wrapHTML('Estimate / Proposal', `
     <div class="info-grid">
       <div class="info-block"><div class="info-label">Prepared For</div><div class="info-value">${escapeHtml(data.customerName ?? 'N/A')}</div></div>
@@ -303,21 +406,21 @@ export function buildEstimateHtml(data: any, brand: BrandKit): string {
       <div class="info-block"><div class="info-label">Phone</div><div class="info-value">${escapeHtml(data.phone ?? 'N/A')}</div></div>
       <div class="info-block"><div class="info-label">Email</div><div class="info-value">${escapeHtml(data.email ?? 'N/A')}</div></div>
     </div>
-    ${data.validUntil ? `<p style="font-size:11px;color:#64748b">Valid until <strong>${escapeHtml(data.validUntil)}</strong>${data.estimateNumber ? ` · Ref ${escapeHtml(data.estimateNumber)}` : ''}</p>` : ''}
+    ${data.validUntil ? `<p style="font-size:11px;color:#64748b">Valid until <strong>${escapeHtml(data.validUntil)}</strong>${data.estimateNumber ? ` · Ref ${escapeHtml(data.estimateNumber)}` : ''} · ${escapeHtml(currency)}</p>` : `<p style="font-size:11px;color:#64748b">Currency: <strong>${escapeHtml(currency)}</strong></p>`}
     <h2>Scope of Work</h2>
     <p>${escapeHtml(data.scopeOfWork ?? 'To be determined during site inspection.')}</p>
     <h2>Line Items</h2>
     <table>
       <thead><tr><th>#</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>
       <tbody>
-      ${(data.lineItems ?? []).map((li: any, i: number) => `<tr><td>${i + 1}</td><td>${escapeHtml(li.description)}</td><td>${li.qty ?? 1}</td><td>$${money(li.unitPrice)}</td><td>$${money(li.lineTotal ?? (li.qty ?? 1) * (li.unitPrice ?? 0))}</td></tr>`).join('')}
+      ${(data.lineItems ?? []).map((li: any, i: number) => `<tr><td>${i + 1}</td><td>${escapeHtml(li.description)}</td><td>${li.qty ?? 1}</td><td>${m(li.unitPrice)}</td><td>${m(li.lineTotal ?? (li.qty ?? 1) * (li.unitPrice ?? 0))}</td></tr>`).join('')}
       </tbody>
     </table>
     <div class="totals-box">
-      <div class="row muted"><span>Subtotal</span><span>$${money(data.subtotal ?? data.total)}</span></div>
-      ${Number(data.taxRate) ? `<div class="row muted"><span>Tax (${escapeHtml(data.taxRate)}%)</span><span>$${money(data.tax)}</span></div>` : ''}
-      ${Number(data.discount) ? `<div class="row muted"><span>Discount</span><span>−$${money(data.discount)}</span></div>` : ''}
-      <div class="row grand"><span>Grand Total</span><span>$${money(data.total)}</span></div>
+      <div class="row muted"><span>Subtotal</span><span>${m(data.subtotal ?? data.total)}</span></div>
+      ${Number(data.taxRate) ? `<div class="row muted"><span>Tax (${escapeHtml(data.taxRate)}%)</span><span>${m(data.tax)}</span></div>` : ''}
+      ${Number(data.discount) ? `<div class="row muted"><span>Discount</span><span>−${m(data.discount)}</span></div>` : ''}
+      <div class="row grand"><span>Grand Total (${escapeHtml(currency)})</span><span>${m(data.total)}</span></div>
     </div>
     <h2>Notes & Conditions</h2>
     <div class="notes-box">${escapeHtml(data.notes ?? 'This estimate is valid for 30 days from the date above. Pricing may adjust after final site measurements.')}</div>
@@ -386,22 +489,24 @@ export function buildSowHtml(data: any, brand: BrandKit): string {
 }
 
 export function buildInvoiceHtml(data: any, brand: BrandKit): string {
+  const currency = resolveCurrencyCode(data.currency)
+  const m = (n: any) => fmtMoney(n, currency)
   return wrapHTML('Invoice', `
     <div class="info-grid">
       <div class="info-block"><div class="info-label">Bill To</div><div class="info-value">${escapeHtml(data.customerName ?? 'N/A')}<br><span style="font-weight:400;color:#64748b">${escapeHtml(data.address ?? '')}</span></div></div>
-      <div class="info-block"><div class="info-label">Invoice Details</div><div class="info-value">Due: ${escapeHtml(data.dueDate ?? '30 days')}<br>Status: <span class="badge badge-blue">${escapeHtml(data.status ?? 'Unpaid')}</span>${data.invoiceNumber ? `<br>Ref: ${escapeHtml(data.invoiceNumber)}` : ''}</div></div>
+      <div class="info-block"><div class="info-label">Invoice Details</div><div class="info-value">Due: ${escapeHtml(data.dueDate ?? '30 days')}<br>Status: <span class="badge badge-blue">${escapeHtml(data.status ?? 'Unpaid')}</span>${data.invoiceNumber ? `<br>Ref: ${escapeHtml(data.invoiceNumber)}` : ''}<br>Currency: ${escapeHtml(currency)}</div></div>
     </div>
     <h2>Services Rendered</h2>
     <table>
       <thead><tr><th>#</th><th>Description</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead>
       <tbody>
-      ${(data.lineItems ?? []).map((li: any, i: number) => `<tr><td>${i + 1}</td><td>${escapeHtml(li.description)}</td><td>${li.qty ?? 1}</td><td>$${money(li.rate ?? li.unitPrice)}</td><td>$${money(li.lineTotal ?? (li.qty ?? 1) * (li.rate ?? li.unitPrice ?? 0))}</td></tr>`).join('')}
+      ${(data.lineItems ?? []).map((li: any, i: number) => `<tr><td>${i + 1}</td><td>${escapeHtml(li.description)}</td><td>${li.qty ?? 1}</td><td>${m(li.rate ?? li.unitPrice)}</td><td>${m(li.lineTotal ?? (li.qty ?? 1) * (li.rate ?? li.unitPrice ?? 0))}</td></tr>`).join('')}
       </tbody>
     </table>
     <div class="totals-box">
-      <div class="row muted"><span>Subtotal</span><span>$${money(data.subtotal ?? data.total)}</span></div>
-      ${Number(data.taxRate) ? `<div class="row muted"><span>Tax (${escapeHtml(data.taxRate)}%)</span><span>$${money(data.tax)}</span></div>` : ''}
-      <div class="row grand"><span>Total Due</span><span>$${money(data.total)}</span></div>
+      <div class="row muted"><span>Subtotal</span><span>${m(data.subtotal ?? data.total)}</span></div>
+      ${Number(data.taxRate) ? `<div class="row muted"><span>Tax (${escapeHtml(data.taxRate)}%)</span><span>${m(data.tax)}</span></div>` : ''}
+      <div class="row grand"><span>Total Due (${escapeHtml(currency)})</span><span>${m(data.total)}</span></div>
     </div>
     <h2>Payment Instructions</h2>
     <div class="notes-box">${escapeHtml(data.paymentInstructions ?? `Please make payment via bank transfer or check. Include invoice number as reference.${brand.email ? ` Questions: ${brand.email}` : ''}`)}</div>
@@ -411,6 +516,8 @@ export function buildInvoiceHtml(data: any, brand: BrandKit): string {
 export function buildSupplementHtml(data: any, brand: BrandKit): string {
   const company = brand.companyName
   const accent = brand.accentColor
+  const currency = resolveCurrencyCode(data.currency)
+  const m = (n: any) => fmtMoney(n, currency)
   const allItems = asArray(data.recommendedLineItems)
   const sectionOrder = [
     { key: 'underlayment', label: 'UNDERLAYMENT AND VALLEY / EAVE PROTECTION', keywords: ['iws', 'ice', 'felt', 'synthetic', 'underlayment', 'valley', 'eave'] },
@@ -464,10 +571,10 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
         <div class="supp-section-title">CARRIER APPROVED SCOPE</div>
         <table class="pricing-table">
           <tr><th>#</th><th>Description</th><th>Code</th><th>Qty</th><th>Unit</th><th>RCV Amount</th></tr>
-          ${approvedScopeItems.map((item: any, idx: number) => `<tr><td>${idx + 1}</td><td>${escapeHtml(item.description ?? '')}</td><td>${escapeHtml(item.xactimateCode ?? '—')}</td><td>${escapeHtml(item.qty ?? '—')}</td><td>${escapeHtml(item.unit ?? '—')}</td><td>${item.amount ? `$${money(item.amount)}` : '—'}</td></tr>`).join('')}
-          <tr class="total-row"><td colspan="5"><strong>Carrier Approved Total (RCV)</strong></td><td><strong>$${money(data.carrierApprovedTotal)}</strong></td></tr>
+          ${approvedScopeItems.map((item: any, idx: number) => `<tr><td>${idx + 1}</td><td>${escapeHtml(item.description ?? '')}</td><td>${escapeHtml(item.xactimateCode ?? '—')}</td><td>${escapeHtml(item.qty ?? '—')}</td><td>${escapeHtml(item.unit ?? '—')}</td><td>${item.amount ? `${m(item.amount)}` : '—'}</td></tr>`).join('')}
+          <tr class="total-row"><td colspan="5"><strong>Carrier Approved Total (RCV)</strong></td><td><strong>${m(data.carrierApprovedTotal)}</strong></td></tr>
         </table>
-        <p style="font-size:11px;color:#64748b;margin-top:4px">O&amp;P Included: ${escapeHtml(data.opIncluded ?? 'Unknown')} &nbsp;|&nbsp; Depreciation Held: $${money(data.depreciationHeld)} &nbsp;|&nbsp; ACV Paid: $${money(data.acvPaid)}</p>
+        <p style="font-size:11px;color:#64748b;margin-top:4px">O&amp;P Included: ${escapeHtml(data.opIncluded ?? 'Unknown')} &nbsp;|&nbsp; Depreciation Held: ${m(data.depreciationHeld)} &nbsp;|&nbsp; ACV Paid: ${m(data.acvPaid)}</p>
       </div>`
     : ''
 
@@ -507,15 +614,15 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
             const gap = Number(item.gap ?? Number(item.recommendedAmount ?? 0) - Number(item.approvedAmount ?? 0))
             return `<tr>
               <td><strong>${escapeHtml(item.xactimateCode ?? '—')}</strong><br><span style="font-size:10px">${escapeHtml(item.description ?? '')}</span></td>
-              <td style="background:#fafafa">${escapeHtml(item.approvedQty ?? '—')}<br><span style="color:#64748b">$${money(item.approvedAmount)}</span></td>
-              <td style="background:#eff6ff">${escapeHtml(item.recommendedQty ?? '—')}<br><span style="color:#1d4ed8">$${money(item.recommendedAmount)}</span></td>
-              <td style="background:#f0fdf4;font-weight:700;color:#15803d">+ $${money(gap)}</td>
+              <td style="background:#fafafa">${escapeHtml(item.approvedQty ?? '—')}<br><span style="color:#64748b">${m(item.approvedAmount)}</span></td>
+              <td style="background:#eff6ff">${escapeHtml(item.recommendedQty ?? '—')}<br><span style="color:#1d4ed8">${m(item.recommendedAmount)}</span></td>
+              <td style="background:#f0fdf4;font-weight:700;color:#15803d">+ ${m(gap)}</td>
               <td style="font-size:10px">${escapeHtml(item.reason ?? '')}</td>
             </tr>`
           }).join('')}
           <tr class="total-row">
             <td colspan="3"><strong>Total Underpaid Gap</strong></td>
-            <td><strong>$${money(underpaidItems.reduce((s: number, i: any) => s + Number(i.gap ?? Number(i.recommendedAmount ?? 0) - Number(i.approvedAmount ?? 0)), 0))}</strong></td>
+            <td><strong>${m(underpaidItems.reduce((s: number, i: any) => s + Number(i.gap ?? Number(i.recommendedAmount ?? 0) - Number(i.approvedAmount ?? 0)), 0))}</strong></td>
             <td></td>
           </tr>
         </table>
@@ -623,7 +730,7 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
     <div class="claim-label">Claim No.</div>       <div class="claim-value">${escapeHtml(data.claimNumber ?? 'N/A')}</div>
     <div class="claim-label">Policy No.</div>      <div class="claim-value">${escapeHtml(data.policyNumber ?? 'N/A')}</div>
     <div class="claim-label">Insured</div>         <div class="claim-value">${escapeHtml(data.customerName ?? 'N/A')}</div>
-    <div class="claim-label">Deductible</div>      <div class="claim-value">${data.deductible ? `$${money(data.deductible)}` : 'N/A'}</div>
+    <div class="claim-label">Deductible</div>      <div class="claim-value">${data.deductible ? `${m(data.deductible)}` : 'N/A'}</div>
     <div class="claim-label">Loss Type</div>       <div class="claim-value">${escapeHtml(data.causeOfLoss ?? 'N/A')}</div>
     <div class="claim-label">Property Address</div><div class="claim-value">${escapeHtml(data.propertyAddress ?? data.address ?? 'N/A')}</div>
     <div class="claim-label">Date of Loss</div>    <div class="claim-value">${escapeHtml(data.dateOfLoss ?? 'N/A')}</div>
@@ -665,22 +772,22 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
   <h3>Summary of Requested Adjustments — Priced Line Items</h3>
   <table class="pricing-table">
     <tr><th>Xactimate Code</th><th>Description</th><th>Qty</th><th>Unit</th><th>Unit Price</th><th>Ht. Factor</th><th>O&amp;P</th><th>RCV Amount</th></tr>
-    ${allItems.map((item: any) => `<tr><td>${escapeHtml(item.xactimateCode ?? '—')}</td><td>${escapeHtml(item.description ?? '')}</td><td>${escapeHtml(item.qty ?? '—')}</td><td>${escapeHtml(item.unit ?? '—')}</td><td>${item.unitPrice ? `$${money(item.unitPrice)}` : '—'}</td><td>${escapeHtml(item.heightFactor ?? '1.0x')}</td><td>${escapeHtml(item.opApplied ?? '—')}</td><td>${item.estimatedValue ? `$${money(item.estimatedValue)}` : 'N/A'}</td></tr>`).join('')}
-    <tr class="total-row"><td colspan="7"><strong>TOTAL SUPPLEMENT REQUEST</strong></td><td><strong>$${money(data.supplementTotal)}</strong></td></tr>
+    ${allItems.map((item: any) => `<tr><td>${escapeHtml(item.xactimateCode ?? '—')}</td><td>${escapeHtml(item.description ?? '')}</td><td>${escapeHtml(item.qty ?? '—')}</td><td>${escapeHtml(item.unit ?? '—')}</td><td>${item.unitPrice ? `${m(item.unitPrice)}` : '—'}</td><td>${escapeHtml(item.heightFactor ?? '1.0x')}</td><td>${escapeHtml(item.opApplied ?? '—')}</td><td>${item.estimatedValue ? `${m(item.estimatedValue)}` : 'N/A'}</td></tr>`).join('')}
+    <tr class="total-row"><td colspan="7"><strong>TOTAL SUPPLEMENT REQUEST</strong></td><td><strong>${m(data.supplementTotal)}</strong></td></tr>
   </table>
 
   <h3>Revised Payment Summary</h3>
   <table class="summary-table">
-    <tr><td>Original Carrier Estimate (RCV)</td><td style="text-align:right">$${money(data.carrierApprovedTotal)}</td></tr>
-    <tr class="highlight"><td><strong>Requested Supplement Amount</strong></td><td style="text-align:right"><strong>+ $${money(data.supplementTotal)}</strong></td></tr>
-    <tr class="highlight"><td><strong>Revised Total RCV</strong></td><td style="text-align:right"><strong>$${money(revisedRcv)}</strong></td></tr>
-    ${Number(data.depreciationHeld) > 0 ? `<tr><td>Less Depreciation Held</td><td style="text-align:right">− $${money(data.depreciationHeld)}</td></tr>` : ''}
-    ${Number(data.depreciationHeld) > 0 ? `<tr><td>Revised ACV</td><td style="text-align:right">$${money(data.revisedAcv ?? revisedRcv - Number(data.depreciationHeld ?? 0))}</td></tr>` : ''}
+    <tr><td>Original Carrier Estimate (RCV)</td><td style="text-align:right">${m(data.carrierApprovedTotal)}</td></tr>
+    <tr class="highlight"><td><strong>Requested Supplement Amount</strong></td><td style="text-align:right"><strong>+ ${m(data.supplementTotal)}</strong></td></tr>
+    <tr class="highlight"><td><strong>Revised Total RCV</strong></td><td style="text-align:right"><strong>${m(revisedRcv)}</strong></td></tr>
+    ${Number(data.depreciationHeld) > 0 ? `<tr><td>Less Depreciation Held</td><td style="text-align:right">− ${m(data.depreciationHeld)}</td></tr>` : ''}
+    ${Number(data.depreciationHeld) > 0 ? `<tr><td>Revised ACV</td><td style="text-align:right">${m(data.revisedAcv ?? revisedRcv - Number(data.depreciationHeld ?? 0))}</td></tr>` : ''}
     ${(Number(data.acvPaid) > 0 && Number(data.deductible) > 0)
-      ? `<tr><td>Less ACV Already Paid</td><td style="text-align:right">− $${money(data.acvPaid)}</td></tr>
-         <tr><td>Less Deductible</td><td style="text-align:right">− $${money(data.deductible)}</td></tr>
-         <tr class="grand-total"><td><strong>NET ADDITIONAL PAYMENT DUE</strong></td><td style="text-align:right"><strong>$${money(data.netAdditionalPaymentDue)}</strong></td></tr>`
-      : `<tr class="grand-total"><td><strong>TOTAL SUPPLEMENT REQUESTED</strong></td><td style="text-align:right"><strong>$${money(data.supplementTotal)}</strong></td></tr>
+      ? `<tr><td>Less ACV Already Paid</td><td style="text-align:right">− ${m(data.acvPaid)}</td></tr>
+         <tr><td>Less Deductible</td><td style="text-align:right">− ${m(data.deductible)}</td></tr>
+         <tr class="grand-total"><td><strong>NET ADDITIONAL PAYMENT DUE</strong></td><td style="text-align:right"><strong>${m(data.netAdditionalPaymentDue)}</strong></td></tr>`
+      : `<tr class="grand-total"><td><strong>TOTAL SUPPLEMENT REQUESTED</strong></td><td style="text-align:right"><strong>${m(data.supplementTotal)}</strong></td></tr>
          <tr><td colspan="2" style="font-size:10px;color:#94a3b8;padding-top:4px">Note: Net payment calculation requires confirmed ACV paid and deductible — verify with carrier and homeowner before finalizing.</td></tr>`}
   </table>
 

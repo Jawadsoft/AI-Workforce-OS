@@ -6,8 +6,13 @@ import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import {
   BUILTIN_TEMPLATES,
   brandFooterLine,
+  currencySymbol,
+  detectCompanyNameFromText,
+  detectCurrencyFromText,
+  fmtMoney,
   normalizeDocData,
   resolveBrandKit,
+  resolveCurrencyCode,
   wrapHTML,
   type BrandKit,
 } from './document-render.helpers'
@@ -37,6 +42,59 @@ export class DocumentsService {
     })
   }
 
+  async findOne(tenantId: string, id: string) {
+    return this.prisma.generatedDocument.findFirst({ where: { id, tenantId } })
+  }
+
+  /** Latest generated document for a tenant (optionally scoped to an agent). */
+  async findLatest(tenantId: string, agentId?: string) {
+    return this.prisma.generatedDocument.findFirst({
+      where: {
+        tenantId,
+        ...(agentId ? { agentId } : {}),
+        fileUrl: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+  }
+
+  /**
+   * Download a generated document as an email attachment buffer.
+   * Supports Cloudinary/remote URLs and legacy local paths.
+   */
+  async getEmailAttachment(tenantId: string, id: string): Promise<{
+    filename: string
+    content: Buffer
+    contentType: string
+    title: string
+  } | null> {
+    const doc = await this.findOne(tenantId, id)
+    if (!doc?.fileUrl) return null
+
+    const isPdf = doc.format?.toUpperCase() === 'PDF' || doc.fileUrl.toLowerCase().endsWith('.pdf')
+    const ext = isPdf ? '.pdf' : (path.extname(doc.fileUrl.split('?')[0]) || '.html')
+    const contentType = isPdf ? 'application/pdf' : (ext === '.html' ? 'text/html' : 'application/octet-stream')
+    const safeTitle = (doc.title || 'document').replace(/[^a-z0-9._ -]/gi, '_').trim() || 'document'
+    const filename = safeTitle.toLowerCase().endsWith(ext) ? safeTitle : `${safeTitle}${ext}`
+
+    let content: Buffer
+    if (doc.fileUrl.startsWith('http://') || doc.fileUrl.startsWith('https://')) {
+      const res = await fetch(doc.fileUrl)
+      if (!res.ok) {
+        throw new Error(`Failed to download document file (${res.status})`)
+      }
+      content = Buffer.from(await res.arrayBuffer())
+    } else {
+      const filePath = this.resolveStoredFile(doc.fileUrl)
+      if (!fs.existsSync(filePath)) {
+        throw new Error('Document file not found on disk')
+      }
+      content = fs.readFileSync(filePath)
+    }
+
+    return { filename, content, contentType, title: doc.title }
+  }
+
   async generate(tenantId: string, agentId: string | undefined, input: {
     type: string   // 'estimate' | 'inspection' | 'sow' | 'invoice' | 'supplement' | 'custom'
     title: string
@@ -48,31 +106,37 @@ export class DocumentsService {
       this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true, settings: true, industry: true } }),
       agentId ? this.prisma.agent.findUnique({ where: { id: agentId }, select: { name: true, role: true } }) : Promise.resolve(null),
     ])
-    const brand = resolveBrandKit(tenant)
-    const company = brand.companyName
-    const agentLabel = agent ? `${agent.name} — ${agent.role}` : company
+    let brand = resolveBrandKit(tenant)
+    const defaultCompany = brand.companyName
+    const agentLabel = agent ? `${agent.name} — ${agent.role}` : defaultCompany
 
     let docData = input.data ?? {}
 
     // If a freeform prompt is provided, use AI to generate the document data
     if (input.prompt && (!input.data || Object.keys(input.data).length === 0)) {
+      const companyNameField =
+        `"companyName": "string — YOUR company / letterhead name shown in the document HEADER. Set this when the user asks to change the header/company name (e.g. 'change company name to Acme Ltd'). Do NOT put the customer name here. Default: \\"${defaultCompany}\\""`
+
       const SCHEMA_HINTS: Record<string, string> = {
         estimate: `{
   "customerName": "string",
   "address": "string",
   "phone": "string (optional)",
   "email": "string (optional)",
+  ${companyNameField},
   "scopeOfWork": "string describing the work",
   "lineItems": [{ "description": "string", "qty": number, "unitPrice": number }],
   "notes": "string (optional, e.g. validity period)",
   "taxRate": number (optional percent, default 0),
-  "discount": number (optional dollar discount, default 0),
+  "discount": number (optional discount amount, default 0),
+  "currency": "ISO currency code — REQUIRED. Use GBP for pounds/£, EUR for euros/€, USD for dollars/$, CAD, AUD, etc. Infer from the user's request (e.g. 'pounds' → GBP). Default USD only if no currency is mentioned.",
   "subtotal": number (sum of line items before tax),
   "total": number (subtotal + tax - discount)
 }`,
         inspection: `{
   "customerName": "string",
   "address": "string",
+  ${companyNameField},
   "inspector": "string",
   "inspectionDate": "string (date)",
   "overallCondition": "string e.g. Good / Fair / Poor",
@@ -84,6 +148,7 @@ export class DocumentsService {
         sow: `{
   "projectTitle": "string",
   "customerName": "string",
+  ${companyNameField},
   "startDate": "string",
   "endDate": "string",
   "overview": "string",
@@ -94,10 +159,12 @@ export class DocumentsService {
         invoice: `{
   "customerName": "string",
   "address": "string",
+  ${companyNameField},
   "dueDate": "string e.g. 30 days",
   "status": "Unpaid|Paid",
   "lineItems": [{ "description": "string", "qty": number, "rate": number }],
   "taxRate": number (optional percent, default 0),
+  "currency": "ISO currency code — REQUIRED. Use GBP for pounds/£, EUR for euros/€, USD for dollars/$. Infer from the user's request. Default USD only if no currency is mentioned.",
   "subtotal": number,
   "total": number,
   "paymentInstructions": "string (optional)"
@@ -105,6 +172,7 @@ export class DocumentsService {
         supplement: `{
   "preparedBy": "string — look for 'Prepared By' label, agent name, or specialist name",
   "customerName": "string — look for 'Insured', 'Customer', or homeowner name",
+  ${companyNameField},
   "propertyAddress": "string — look for 'Property Address'",
   "carrier": "string — look for 'Carrier' or insurance company name (e.g. USAA, State Farm, Allstate, Safeco)",
   "carrierAddress": "string — carrier mailing address if present",
@@ -113,6 +181,7 @@ export class DocumentsService {
   "dateOfLoss": "string — look for 'Date of Loss' or 'DOL'",
   "causeOfLoss": "string — look for 'Cause of Loss', 'Peril', wind/hail/water/fire",
   "deductible": number — policy deductible amount,
+  "currency": "ISO currency code — GBP/EUR/USD/etc. Infer from request; default USD",
   "adjuster": "string — full name of adjuster/claim rep",
   "adjusterTitle": "string — e.g. 'Claim Rep/Estimator'",
   "adjusterPhone": "string — adjuster phone number",
@@ -185,13 +254,19 @@ SUPPLEMENT EXTRACTION RULES — READ CAREFULLY:
 - "opportunityScoreBreakdown" — extract the full score breakdown explanation line.
 - Never leave a field as empty string or 0 if the information is present anywhere in the text.` : ''
 
-      const systemPrompt = `You are a document data extraction assistant for ${company}.
+      const systemPrompt = `You are a document data extraction assistant for ${defaultCompany}.
 Extract structured data from the provided text and return ONLY valid JSON matching this exact schema:
 ${schemaHint}
 ${supplementExtra}
 GENERAL RULES:
 - Use ONLY the field names shown above — do not add or rename fields
 - Calculate "total" as the sum of all line items (qty * unitPrice or qty * rate)
+- CURRENCY IS CRITICAL: set "currency" to the ISO code the user asked for.
+  Examples: "pounds" / "£" / "GBP" → "GBP"; "euros" / "€" → "EUR"; "dollars" / "$" → "USD".
+  Never force USD when the user requested another currency.
+- HEADER COMPANY NAME: if the user asks to change/set/use a different company name in the header/letterhead,
+  put that exact name in "companyName". Never confuse this with "customerName".
+  Default company name is "${defaultCompany}".
 - If a value is not mentioned, use a sensible default or empty string — never null
 - Respond with ONLY the JSON object, no explanation, no markdown, no code fences`
 
@@ -203,6 +278,21 @@ GENERAL RULES:
       } catch (err: any) {
         this.logger.warn(`AI doc generation failed: ${err.message}`)
       }
+
+      // Hard fallback: if the user asked for pounds/euros/etc but AI omitted or forced USD
+      const promptedCurrency = detectCurrencyFromText(input.prompt)
+      if (promptedCurrency) {
+        docData.currency = promptedCurrency
+      }
+    }
+
+    // Tenant default currency (used when neither prompt nor AI specifies one)
+    const tenantCurrency =
+      detectCurrencyFromText((tenant?.settings as any)?.currency) ||
+      detectCurrencyFromText((tenant?.settings as any)?.brain?.currency) ||
+      null
+    if (!docData.currency && tenantCurrency) {
+      docData.currency = tenantCurrency
     }
 
     // Always ensure preparedBy is set for supplement documents
@@ -212,14 +302,40 @@ GENERAL RULES:
 
     // Recompute totals / coerce arrays — never trust AI math alone
     docData = normalizeDocData(input.type, docData)
+    this.logger.log(`Document currency resolved to ${docData.currency} for type=${input.type}`)
+
+    // Allow chat/prompt overrides of the letterhead company name (brand kit is only the default)
+    const promptedCompany = detectCompanyNameFromText(input.prompt)
+    const aiCompany =
+      (typeof docData.companyName === 'string' && docData.companyName.trim()) ||
+      (typeof docData.headerCompanyName === 'string' && docData.headerCompanyName.trim()) ||
+      ''
+    const overrideCompany = promptedCompany || (
+      aiCompany && aiCompany.toLowerCase() !== defaultCompany.toLowerCase() ? aiCompany : null
+    )
+    if (overrideCompany) {
+      brand = { ...brand, companyName: overrideCompany }
+      docData.companyName = overrideCompany
+      this.logger.log(`Document header company overridden to "${overrideCompany}" (default was "${defaultCompany}")`)
+    } else if (!docData.companyName) {
+      docData.companyName = brand.companyName
+    }
 
     // Prefer print-grade built-ins. Use a tenant template only if it was manually saved
     // (skip legacy "Auto-generated …" defaults so everyone gets the upgraded design).
     let html: string
     const resolvedTemplate = await this.docTemplates.findDefault(tenantId, input.type)
     const isManualTemplate = !!resolvedTemplate && !String(resolvedTemplate.description ?? '').startsWith('Auto-generated')
+    const currency = resolveCurrencyCode(docData.currency)
     const brandTemplateData = {
       ...docData,
+      currency,
+      currencySymbol: currencySymbol(currency),
+      // Pre-format common money fields so Mustache templates show the right symbol
+      totalFormatted: fmtMoney(docData.total, currency),
+      subtotalFormatted: fmtMoney(docData.subtotal ?? docData.total, currency),
+      taxFormatted: fmtMoney(docData.tax, currency),
+      discountFormatted: fmtMoney(docData.discount, currency),
       companyName: brand.companyName,
       companyPhone: brand.phone ?? '',
       companyEmail: brand.email ?? '',
@@ -230,6 +346,14 @@ GENERAL RULES:
       accentColor: brand.accentColor,
       licenseNumber: brand.licenseNumber ?? '',
       date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+      lineItems: Array.isArray(docData.lineItems)
+        ? docData.lineItems.map((li: any) => ({
+            ...li,
+            unitPriceFormatted: fmtMoney(li.unitPrice ?? li.rate, currency),
+            rateFormatted: fmtMoney(li.rate ?? li.unitPrice, currency),
+            lineTotalFormatted: fmtMoney(li.lineTotal ?? (li.qty ?? 1) * (li.unitPrice ?? li.rate ?? 0), currency),
+          }))
+        : docData.lineItems,
     }
 
     if (isManualTemplate && resolvedTemplate) {
@@ -249,7 +373,11 @@ GENERAL RULES:
       fileUrl = await this.renderPDF(html, input.title, tenantId, brand)
       format = 'PDF'
     } catch (err: any) {
-      this.logger.warn(`PDF render failed, saving HTML: ${err?.message ?? err}`)
+      const message = err?.message ?? String(err)
+      const hint = /could not find (chrome|chromium|expected browser)/i.test(message)
+        ? ' — Chromium is not installed for Puppeteer. Run "npx puppeteer browsers install chrome" inside apps/api to fix this.'
+        : ''
+      this.logger.error(`PDF render failed, falling back to HTML: ${message}${hint}`, err?.stack)
       const filename = `${crypto.randomUUID()}.html`
       const buffer = Buffer.from(html, 'utf8')
       fileUrl = await this.cloudinary.upload(tenantId, 'generated-docs', filename, buffer, 'text/html', 'raw')

@@ -213,11 +213,13 @@ export class SocialController {
     // and the linked Instagram Business Account, never the user's email. Requesting
     // it anyway causes Meta to reject the whole dialog with "Invalid Scopes: email"
     // on apps where that permission hasn't been granted Advanced Access.
-    // Do NOT include Instagram scopes unless the Meta app has the Instagram product
-    // added — Meta returns "Invalid Scopes: instagram_content_publish" to developers
-    // when that product/permission is missing from the app.
-    // To enable Instagram publish later:
-    // 1) Meta App Dashboard → add "Instagram" / Instagram Graph API product
+    // Instagram discovery (Page → linked IG) needs instagram_basic only.
+    // Do NOT request instagram_content_publish until the Meta app has Instagram
+    // Graph API / content publishing configured — Meta returns
+    // "Invalid Scopes: instagram_content_publish" otherwise.
+    // To enable Instagram discovery:
+    // 1) Meta App Dashboard → Use Cases: Facebook Login for Business + Instagram API with Facebook Login
+    //    (not Instagram Business Login — that is a different product/permission set)
     // 2) set FACEBOOK_INSTAGRAM_SCOPES=true
     // 3) reconnect Facebook
     const scopes = [
@@ -228,7 +230,7 @@ export class SocialController {
       'pages_manage_engagement',
     ]
     if (this.config.get('FACEBOOK_INSTAGRAM_SCOPES') === 'true') {
-      scopes.push('instagram_basic', 'instagram_content_publish')
+      scopes.push('instagram_basic')
     }
     const scope = scopes.join(',')
     const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64')

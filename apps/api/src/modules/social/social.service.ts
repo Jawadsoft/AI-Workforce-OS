@@ -506,7 +506,8 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
           'Facebook rejected the publish: missing Page publish permissions. ' +
             'Disconnect Facebook in Social → Connections, then reconnect and approve ' +
             'pages_manage_posts / pages_read_engagement (and Instagram publish scopes if needed). ' +
-            'If your Meta app is Live, these permissions also need App Review approval.',
+            'If your Meta app is Live, these permissions also need App Review approval. ' +
+            `Meta detail: ${msg}`,
         )
       }
       throw new BadRequestException(`Publish failed: ${msg}`)
@@ -812,11 +813,14 @@ Return only the JSON array.`
     })
     const json = await res.json()
     // Facebook Graph API returns HTTP 200 even for errors — check the body.
-    // Error code 200 = permission error (requires pages_manage_posts).
+    // Error code 200 = permission error (requires pages_manage_posts / Advanced Access).
     if (json?.error) {
       const fbErr = json.error
       const isPermission = fbErr.code === 200 || (fbErr.message ?? '').toLowerCase().includes('permission')
-      const err: any = new Error(`Facebook API error (#${fbErr.code}): ${fbErr.message}`)
+      const detail = [fbErr.message, fbErr.error_user_msg, fbErr.error_user_title]
+        .filter(Boolean)
+        .join(' — ')
+      const err: any = new Error(`Facebook API error (#${fbErr.code}): ${detail}`)
       if (isPermission) err.status = 403
       throw err
     }
@@ -905,16 +909,24 @@ Return only the JSON array.`
     if (!longRes.ok) throw new Error(`Facebook long-lived token failed: ${await longRes.text()}`)
     const { access_token: userToken } = await longRes.json()
 
-    // Get the user's Pages (pick first one)
+    // Get the user's Pages + Page tasks (CREATE_CONTENT required to publish)
     const pagesRes = await fetch(
-      `https://graph.facebook.com/v21.0/me/accounts?access_token=${userToken}`,
+      `https://graph.facebook.com/v21.0/me/accounts?fields=id,name,access_token,tasks&access_token=${userToken}`,
     )
     if (!pagesRes.ok) throw new Error(`Facebook Pages fetch failed: ${await pagesRes.text()}`)
     const { data: pages } = await pagesRes.json()
     if (!pages?.length) throw new Error('No Facebook Pages found. Make sure your account manages at least one Facebook Page and that pages_show_list permission was granted.')
 
-    // Use first page (most tenants only have one business page)
-    const page = pages[0]
+    // Prefer a Page where this user can create content; fall back to first
+    const page =
+      pages.find((p: any) =>
+        Array.isArray(p.tasks) &&
+        p.tasks.some((t: string) =>
+          ['CREATE_CONTENT', 'MANAGE', 'PROFILE_PLUS_CREATE_CONTENT', 'PROFILE_PLUS_FULL_CONTROL'].includes(t),
+        ),
+      ) ?? pages[0]
+    const tasks = Array.isArray(page.tasks) ? page.tasks.join(',') : 'none'
+    this.logger.log(`Facebook OAuth: connected Page "${page.name}" (${page.id}) tasks=[${tasks}]`)
     await this.prisma.socialAccount.upsert({
       where: { tenantId_platform: { tenantId, platform: 'facebook' } },
       create: {

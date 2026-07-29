@@ -234,7 +234,12 @@ export class SocialController {
     }
     const scope = scopes.join(',')
     const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64')
-    const url = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&response_type=code`
+    // auth_type=rerequest forces Meta to re-prompt for declined/missing permissions
+    // on reconnect (otherwise an old grant without pages_manage_posts is reused silently).
+    const url =
+      `https://www.facebook.com/v21.0/dialog/oauth?client_id=${appId}` +
+      `&redirect_uri=${redirectUri}&scope=${scope}&state=${state}` +
+      `&response_type=code&auth_type=rerequest`
     return res.redirect(url)
   }
 

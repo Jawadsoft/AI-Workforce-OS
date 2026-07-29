@@ -496,19 +496,28 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
       await this.publishToPlatform({ ...post, socialAccount: account })
     } catch (err: any) {
       const msg = String(err?.message ?? err)
+      const lower = msg.toLowerCase()
       const isPermission =
         err?.status === 403 ||
         msg.includes('#200') ||
-        msg.toLowerCase().includes('permission') ||
-        msg.toLowerCase().includes('pages_manage_posts')
+        msg.includes('#10') ||
+        lower.includes('permission') ||
+        lower.includes('pages_manage_posts') ||
+        lower.includes('instagram_content_publish')
       if (isPermission) {
-        throw new BadRequestException(
-          'Facebook rejected the publish: missing Page publish permissions. ' +
+        const isInstagramPublish =
+          lower.includes('instagram_content_publish') ||
+          (post.platform === 'instagram' && lower.includes('permission'))
+        const hint = isInstagramPublish
+          ? 'Instagram rejected the publish: missing instagram_content_publish. ' +
+            'In Meta App Dashboard ensure "Instagram API with Facebook Login" exposes ' +
+            'instagram_content_publish (Ready for testing). Then disconnect Facebook in ' +
+            'Social → Connections, reconnect, and approve Instagram + Page permissions.'
+          : 'Facebook rejected the publish: missing Page publish permissions. ' +
             'Disconnect Facebook in Social → Connections, then reconnect and approve ' +
-            'pages_manage_posts / pages_read_engagement (and Instagram publish scopes if needed). ' +
-            'If your Meta app is Live, these permissions also need App Review approval. ' +
-            `Meta detail: ${msg}`,
-        )
+            'pages_manage_posts / pages_read_engagement. ' +
+            'If your Meta app is Live, these permissions also need App Review approval.'
+        throw new BadRequestException(`${hint} Meta detail: ${msg}`)
       }
       throw new BadRequestException(`Publish failed: ${msg}`)
     }

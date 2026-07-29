@@ -209,6 +209,10 @@ export class SocialController {
     const redirectBase = this.config.get('SOCIAL_OAUTH_REDIRECT_BASE')
     const redirectUri = encodeURIComponent(`${redirectBase}/social/oauth/facebook/callback`)
     // Facebook Page publish scopes (required for /{page-id}/feed).
+    // We never request "email" — the callback flow only reads Page name/id/token
+    // and the linked Instagram Business Account, never the user's email. Requesting
+    // it anyway causes Meta to reject the whole dialog with "Invalid Scopes: email"
+    // on apps where that permission hasn't been granted Advanced Access.
     // Do NOT include Instagram scopes unless the Meta app has the Instagram product
     // added — Meta returns "Invalid Scopes: instagram_content_publish" to developers
     // when that product/permission is missing from the app.
@@ -218,7 +222,6 @@ export class SocialController {
     // 3) reconnect Facebook
     const scopes = [
       'public_profile',
-      'email',
       'pages_show_list',
       'pages_read_engagement',
       'pages_manage_posts',

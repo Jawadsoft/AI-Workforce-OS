@@ -11,21 +11,21 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-8)
 }
 
+export type MemorySubject = {
+  userId?: string | null
+  customerId?: string | null
+  phone?: string | null
+  email?: string | null
+  conversationId?: string | null
+}
+
 /**
- * MemoryService — gives every agent human-like memory across conversations.
+ * MemoryService — ChatGPT-like multi-layer agent memory.
  *
- * Three capabilities:
- *  1. summariseConversation — auto-generates a 2-4 sentence summary of a
- *     finished conversation, embeds it, and stores it per agent.
- *
- *  2. searchMemory — intent-based retrieval: given a new user message,
- *     finds relevant prior conversations + tickets for this agent within
- *     the last 30 days and returns a context block for the system prompt.
- *
- *  3. embedTicket — embeds a ticket's title + description + notes so it
- *     can be found by the intent search.
- *
- *  4. Nightly cleanup — removes summaries older than 30 days.
+ * 1) Working memory — Conversation.runningSummary (always injected for this thread)
+ * 2) Profile memory — AgentMemoryFact durable facts for a subject (always injected)
+ * 3) Episodic memory — ConversationSummary vectors (intent search, last 90 days)
+ * 4) Task memory — ticket embeddings (existing)
  */
 @Injectable()
 export class MemoryService {
@@ -36,11 +36,27 @@ export class MemoryService {
     private readonly ai: AIService,
   ) {}
 
-  // ── 1. Summarise a conversation and store the summary ─────────────
+  // ── Identity binding ──────────────────────────────────────────────
 
-  async summariseConversation(conversationId: string): Promise<void> {
+  resolveSubjectKey(subject: MemorySubject): string {
+    if (subject.customerId) return `customer:${subject.customerId}`
+    if (subject.userId) return `user:${subject.userId}`
+    if (subject.phone) {
+      const digits = subject.phone.replace(/\D/g, '')
+      if (digits.length >= 7) return `phone:${digits}`
+    }
+    if (subject.email) return `email:${subject.email.trim().toLowerCase()}`
+    if (subject.conversationId) return `anon:${subject.conversationId}`
+    return 'anon:unknown'
+  }
+
+  // ── 1. Summarise conversation + update running summary + extract facts ─
+
+  async summariseConversation(
+    conversationId: string,
+    subject?: MemorySubject,
+  ): Promise<void> {
     try {
-      // Load conversation + messages
       const conv = await this.prisma.conversation.findUnique({
         where: { id: conversationId },
         include: {
@@ -48,24 +64,31 @@ export class MemoryService {
           messages: {
             where: { role: { in: ['USER', 'ASSISTANT'] } },
             orderBy: { createdAt: 'asc' },
-            take: 40,
+            take: 60,
           },
-          summary: true,
         },
       })
       if (!conv || !conv.agent) return
-      if (conv.messages.length < 2) return  // nothing worth summarising
-      if (conv.summary) return               // already summarised
+      if (conv.messages.length < 2) return
 
+      const subjectKey = this.resolveSubjectKey({
+        userId: conv.userId,
+        phone: subject?.phone ?? conv.callerPhone,
+        email: subject?.email ?? conv.callerEmail,
+        customerId: subject?.customerId,
+        conversationId,
+      })
+
+      const agentLabel = conv.agent.name.split('—')[0].trim()
       const transcript = conv.messages
-        .map(m => `${m.role === 'USER' ? 'User' : conv.agent.name.split('—')[0].trim()}: ${m.content.slice(0, 400)}`)
+        .map(m => `${m.role === 'USER' ? 'User' : agentLabel}: ${m.content.slice(0, 500)}`)
         .join('\n')
 
       const prompt = `You are summarising a conversation for an AI agent's long-term memory.
-Write a 2-4 sentence summary that captures:
-- What the customer needed
+Write a 2-5 sentence summary that captures:
+- What the customer/user needed
 - What was agreed, quoted, or decided
-- Any specific numbers, names, dates, or materials mentioned
+- Any specific numbers, names, dates, materials, or preferences
 - Current status / what happens next
 
 Be specific and factual. No fluff. Write from the agent's perspective (first person).
@@ -78,41 +101,76 @@ Summary:`
       const summary = await this.ai.chat(prompt, [])
       if (!summary || summary.length < 20) return
 
-      // Extract key entities for fast pre-filtering
-      const entityPrompt = `Extract 5-10 key nouns/terms from this text as a JSON array of lowercase strings. Only the array, no explanation.
-Text: "${summary}"
-Example output: ["gutter", "aluminum", "120ft", "john", "estimate"]`
-
-      let keyEntities: string[] = []
-      try {
-        const raw = await this.ai.chat(entityPrompt, [])
-        const match = raw.match(/\[.*?\]/s)
-        if (match) keyEntities = JSON.parse(match[0])
-      } catch { /* non-fatal */ }
-
-      // Embed the summary
+      const keyEntities = await this.extractEntities(summary)
       const embedding = await this.ai.embed(summary).catch(() => null)
 
-      await this.prisma.conversationSummary.upsert({
-        where: { conversationId },
-        create: {
-          tenantId: conv.agent.tenantId,
-          agentId: conv.agent.id,
-          conversationId,
-          summaryType: 'CONVERSATION',
-          summary,
-          keyEntities,
-          embedding: embedding as any,
-          messageCount: conv.messages.length,
-        },
-        update: {
-          summary,
-          keyEntities,
-          embedding: embedding as any,
-          messageCount: conv.messages.length,
-          updatedAt: new Date(),
-        },
+      // Always refresh the in-thread running summary (working memory)
+      await this.prisma.conversation.update({
+        where: { id: conversationId },
+        data: { runningSummary: summary },
       })
+
+      // Upsert the primary CONVERSATION summary row for this thread
+      const existing = await this.prisma.conversationSummary.findFirst({
+        where: { conversationId, summaryType: 'CONVERSATION', deletedAt: null },
+        orderBy: { createdAt: 'asc' },
+      })
+
+      if (existing) {
+        // Archive previous version as an EPISODE when content meaningfully changed
+        const changed = existing.summary.trim() !== summary.trim()
+        if (changed && existing.messageCount > 0 && conv.messages.length - existing.messageCount >= 4) {
+          await this.prisma.conversationSummary.create({
+            data: {
+              tenantId: conv.agent.tenantId,
+              agentId: conv.agent.id,
+              conversationId,
+              summaryType: 'EPISODE',
+              summary: existing.summary,
+              keyEntities: existing.keyEntities,
+              embedding: existing.embedding as any,
+              messageCount: existing.messageCount,
+              subjectKey: existing.subjectKey ?? subjectKey,
+              importance: existing.importance,
+            },
+          })
+        }
+        await this.prisma.conversationSummary.update({
+          where: { id: existing.id },
+          data: {
+            summary,
+            keyEntities,
+            embedding: embedding as any,
+            messageCount: conv.messages.length,
+            subjectKey,
+            updatedAt: new Date(),
+          },
+        })
+      } else {
+        await this.prisma.conversationSummary.create({
+          data: {
+            tenantId: conv.agent.tenantId,
+            agentId: conv.agent.id,
+            conversationId,
+            summaryType: 'CONVERSATION',
+            summary,
+            keyEntities,
+            embedding: embedding as any,
+            messageCount: conv.messages.length,
+            subjectKey,
+          },
+        })
+      }
+
+      // Extract durable profile facts (non-blocking failure)
+      await this.extractAndStoreFacts(
+        conv.agent.tenantId,
+        conv.agent.id,
+        subjectKey,
+        conversationId,
+        transcript,
+        summary,
+      ).catch((e) => this.logger.warn(`[Memory] Fact extract failed: ${e.message}`))
 
       this.logger.log(`[Memory] Summarised conversation ${conversationId.slice(-6)} for ${conv.agent.name}`)
     } catch (err: any) {
@@ -120,34 +178,270 @@ Example output: ["gutter", "aluminum", "120ft", "john", "estimate"]`
     }
   }
 
-  // ── 2. Intent search — find relevant past context for current message ──
-  //
-  // Returns a formatted block to inject into the system prompt.
-  // Returns '' if nothing relevant found (agent starts fresh).
+  private async extractEntities(text: string): Promise<string[]> {
+    try {
+      const raw = await this.ai.chat(
+        `Extract 5-10 key nouns/terms from this text as a JSON array of lowercase strings. Only the array, no explanation.
+Text: "${text.slice(0, 600)}"
+Example output: ["gutter", "aluminum", "120ft", "john", "estimate"]`,
+        [],
+      )
+      const match = raw.match(/\[.*?\]/s)
+      if (match) return JSON.parse(match[0])
+    } catch { /* non-fatal */ }
+    return []
+  }
 
+  private async extractAndStoreFacts(
+    tenantId: string,
+    agentId: string,
+    subjectKey: string,
+    conversationId: string,
+    transcript: string,
+    summary: string,
+  ): Promise<void> {
+    const prompt = `Extract durable facts worth remembering long-term about this person / conversation.
+Return ONLY a JSON array (max 6 items). Each item:
+{"fact":"...","category":"identity|preference|decision|constraint|general","importance":1-5}
+
+Rules:
+- Only stable facts (name, prefs, quoted prices agreed, constraints, decisions)
+- Skip greetings, one-off small talk, and temporary status
+- importance 4-5 = must never forget; 1-2 = nice to have
+- Empty array [] if nothing durable
+
+Summary: ${summary}
+
+Recent transcript (truncated):
+${transcript.slice(-2500)}`
+
+    const raw = await this.ai.chat(prompt, [])
+    const match = raw.match(/\[[\s\S]*\]/)
+    if (!match) return
+    let items: { fact: string; category?: string; importance?: number }[] = []
+    try {
+      items = JSON.parse(match[0])
+    } catch {
+      return
+    }
+    if (!Array.isArray(items) || !items.length) return
+
+    for (const item of items.slice(0, 6)) {
+      const fact = String(item.fact ?? '').trim()
+      if (fact.length < 8) continue
+      await this.rememberFact(tenantId, agentId, subjectKey, fact, {
+        category: item.category ?? 'general',
+        importance: Math.min(5, Math.max(1, Number(item.importance) || 2)),
+        sourceConversationId: conversationId,
+        confidence: 0.75,
+      })
+    }
+  }
+
+  // ── 2. Profile facts ──────────────────────────────────────────────
+
+  async rememberFact(
+    tenantId: string,
+    agentId: string,
+    subjectKey: string,
+    fact: string,
+    opts?: {
+      category?: string
+      importance?: number
+      sourceConversationId?: string
+      confidence?: number
+    },
+  ): Promise<{ id: string; fact: string }> {
+    const clean = fact.trim().slice(0, 500)
+    const category = (opts?.category ?? 'general').toLowerCase()
+    const importance = opts?.importance ?? 3
+
+    // Dedupe: if a very similar active fact exists, update it
+    const existing = await this.prisma.agentMemoryFact.findMany({
+      where: { tenantId, agentId, subjectKey, deletedAt: null },
+      select: { id: true, fact: true },
+      take: 40,
+    })
+    const lower = clean.toLowerCase()
+    const dup = existing.find((f) => {
+      const a = f.fact.toLowerCase()
+      return a === lower || a.includes(lower) || lower.includes(a)
+    })
+
+    const embedding = await this.ai.embed(clean).catch(() => null)
+
+    if (dup) {
+      const updated = await this.prisma.agentMemoryFact.update({
+        where: { id: dup.id },
+        data: {
+          fact: clean,
+          category,
+          importance: Math.max(importance, 1),
+          embedding: embedding as any,
+          confidence: opts?.confidence ?? 0.85,
+          sourceConversationId: opts?.sourceConversationId,
+          updatedAt: new Date(),
+        },
+      })
+      return { id: updated.id, fact: updated.fact }
+    }
+
+    const created = await this.prisma.agentMemoryFact.create({
+      data: {
+        tenantId,
+        agentId,
+        subjectKey,
+        fact: clean,
+        category,
+        importance,
+        embedding: embedding as any,
+        confidence: opts?.confidence ?? 0.85,
+        sourceConversationId: opts?.sourceConversationId,
+      },
+    })
+    this.logger.log(`[Memory] Stored fact for ${subjectKey}: ${clean.slice(0, 80)}`)
+    return { id: created.id, fact: created.fact }
+  }
+
+  async forgetFact(
+    tenantId: string,
+    agentId: string,
+    opts: { factId?: string; query?: string; subjectKey?: string },
+  ): Promise<string> {
+    if (opts.factId) {
+      const row = await this.prisma.agentMemoryFact.findFirst({
+        where: { id: opts.factId, tenantId, agentId, deletedAt: null },
+      })
+      if (!row) return 'No matching memory fact found to forget.'
+      await this.prisma.agentMemoryFact.update({
+        where: { id: row.id },
+        data: { deletedAt: new Date() },
+      })
+      return `Forgot: "${row.fact}"`
+    }
+
+    if (!opts.query) return 'Provide a factId or a short description of what to forget.'
+
+    const facts = await this.prisma.agentMemoryFact.findMany({
+      where: {
+        tenantId,
+        agentId,
+        deletedAt: null,
+        ...(opts.subjectKey ? { subjectKey: opts.subjectKey } : {}),
+      },
+      take: 80,
+      orderBy: { updatedAt: 'desc' },
+    })
+    const q = opts.query.toLowerCase()
+    const words = q.split(/\s+/).filter((w) => w.length > 3)
+    const matches = facts.filter((f) => {
+      const text = f.fact.toLowerCase()
+      return text.includes(q) || words.some((w) => text.includes(w))
+    })
+
+    if (!matches.length) return `I couldn't find a saved memory matching "${opts.query}".`
+
+    await this.prisma.agentMemoryFact.updateMany({
+      where: { id: { in: matches.map((m) => m.id) } },
+      data: { deletedAt: new Date() },
+    })
+    if (matches.length === 1) return `Forgot: "${matches[0].fact}"`
+    return `Forgot ${matches.length} related memories, including: "${matches[0].fact}"`
+  }
+
+  async getProfileFacts(
+    agentId: string,
+    tenantId: string,
+    subjectKey: string,
+    limit = 12,
+  ): Promise<{ id: string; fact: string; category: string; importance: number }[]> {
+    if (!subjectKey || subjectKey.startsWith('anon:unknown')) return []
+    return this.prisma.agentMemoryFact.findMany({
+      where: { tenantId, agentId, subjectKey, deletedAt: null },
+      orderBy: [{ importance: 'desc' }, { updatedAt: 'desc' }],
+      take: limit,
+      select: { id: true, fact: true, category: true, importance: true },
+    })
+  }
+
+  // ── 3. Intent search + full memory block for the prompt ───────────
+
+  async buildMemoryContext(
+    agentId: string,
+    tenantId: string,
+    userMessage: string,
+    opts?: {
+      subjectKey?: string
+      runningSummary?: string | null
+      topK?: number
+    },
+  ): Promise<string> {
+    const subjectKey = opts?.subjectKey
+    const topK = opts?.topK ?? 5
+
+    const [profileFacts, episodic] = await Promise.all([
+      subjectKey ? this.getProfileFacts(agentId, tenantId, subjectKey) : Promise.resolve([]),
+      this.searchMemory(agentId, tenantId, userMessage, topK, subjectKey),
+    ])
+
+    const parts: string[] = []
+
+    if (opts?.runningSummary?.trim()) {
+      parts.push(
+        `THIS CONVERSATION SO FAR (working memory — do not re-ask what you already know):\n${opts.runningSummary.trim()}`,
+      )
+    }
+
+    if (profileFacts.length) {
+      const lines = profileFacts.map((f) => `- [${f.category}] ${f.fact}`)
+      parts.push(
+        `WHAT YOU REMEMBER ABOUT THIS PERSON (durable profile — treat as known facts):\n${lines.join('\n')}`,
+      )
+    }
+
+    if (episodic) parts.push(episodic.trim())
+
+    if (!parts.length) return ''
+    return `\n\nYOUR MEMORY (use this; do not pretend you forgot):\n${parts.join('\n\n')}`
+  }
+
+  /**
+   * Intent-based episodic + ticket retrieval.
+   * Returns a formatted block (or '') for the system prompt.
+   */
   async searchMemory(
     agentId: string,
     tenantId: string,
     userMessage: string,
-    topK = 2,
+    topK = 5,
+    subjectKey?: string,
   ): Promise<string> {
     try {
-      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+      const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
 
-      // Run ticket search + summary search in parallel
+      const summaryWhere: any = {
+        agentId,
+        tenantId,
+        deletedAt: null,
+        createdAt: { gte: ninetyDaysAgo },
+      }
+
       const [summaries, tickets] = await Promise.all([
-        // Conversation summaries from last 30 days for this agent
         this.prisma.conversationSummary.findMany({
-          where: {
-            agentId,
-            tenantId,
-            createdAt: { gte: thirtyDaysAgo },
+          where: summaryWhere,
+          select: {
+            conversationId: true,
+            summary: true,
+            embedding: true,
+            keyEntities: true,
+            createdAt: true,
+            subjectKey: true,
+            importance: true,
+            summaryType: true,
           },
-          select: { conversationId: true, summary: true, embedding: true, keyEntities: true, createdAt: true },
           orderBy: { createdAt: 'desc' },
-          take: 50,
+          take: 80,
         }),
-        // Open/recent tickets for this agent — assigned to OR created by them
         this.prisma.activityTicket.findMany({
           where: {
             tenantId,
@@ -156,7 +450,7 @@ Example output: ["gutter", "aluminum", "120ft", "john", "estimate"]`
               { createdByAgentId: agentId },
             ],
             status: { not: 'CANCELLED' },
-            createdAt: { gte: thirtyDaysAgo },
+            createdAt: { gte: ninetyDaysAgo },
           },
           select: {
             id: true, title: true, description: true, notes: true,
@@ -164,47 +458,48 @@ Example output: ["gutter", "aluminum", "120ft", "john", "estimate"]`
             nextAction: true, createdAt: true,
           },
           orderBy: { updatedAt: 'desc' },
-          take: 30,
+          take: 40,
         }),
       ])
 
       if (!summaries.length && !tickets.length) return ''
 
-      // Embed the user's message once, use for both searches
       const queryEmbedding = await this.ai.embed(userMessage)
-
       const queryLC = userMessage.toLowerCase()
-      const results: { text: string; score: number; age: string }[] = []
+      const results: { text: string; score: number }[] = []
 
-      // ── Score conversation summaries ──
       for (const s of summaries) {
-        // Fast keyword pre-filter — skip cosine if no entity overlap
-        const hasKeywordMatch = s.keyEntities.some(e => queryLC.includes(e))
+        const sameSubject = !!(subjectKey && s.subjectKey && s.subjectKey === subjectKey)
+        const hasKeywordMatch = s.keyEntities.some((e) => e && queryLC.includes(e.toLowerCase()))
 
         let score = 0
         if (Array.isArray(s.embedding) && s.embedding.length > 0) {
           score = cosineSimilarity(queryEmbedding, s.embedding as number[])
-        } else if (hasKeywordMatch) {
-          score = 0.5  // keyword match but no embedding — give moderate score
+        } else if (hasKeywordMatch || sameSubject) {
+          score = sameSubject ? 0.55 : 0.45
         }
 
-        if (score > 0.62 || hasKeywordMatch) {
+        if (sameSubject) score += 0.12
+        if (hasKeywordMatch) score += 0.05
+        if (s.importance >= 4) score += 0.03
+
+        // Lower threshold when same identity; slightly lower overall than before
+        const threshold = sameSubject ? 0.48 : 0.55
+        if (score > threshold || hasKeywordMatch || (sameSubject && score > 0.35)) {
           const daysAgo = Math.floor((Date.now() - s.createdAt.getTime()) / (1000 * 60 * 60 * 24))
           const age = daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo} days ago`
+          const kind = s.summaryType === 'HANDOFF' ? 'Handoff note' : 'Prior conversation'
           results.push({
-            text: `[Prior conversation — ${age}]: ${s.summary}`,
-            score: score + (hasKeywordMatch ? 0.05 : 0), // slight boost for keyword match
-            age,
+            text: `[${kind} — ${age}]: ${s.summary}`,
+            score,
           })
         }
       }
 
-      // ── Score tickets ──
       for (const t of tickets) {
         const ticketText = [t.title, t.description, t.notes, t.nextAction].filter(Boolean).join(' ')
         const ticketLC = ticketText.toLowerCase()
-
-        const hasKeywordMatch = queryLC.split(/\s+/).some(w => w.length > 3 && ticketLC.includes(w))
+        const hasKeywordMatch = queryLC.split(/\s+/).some((w) => w.length > 3 && ticketLC.includes(w))
 
         let score = 0
         if (Array.isArray(t.searchEmbedding) && (t.searchEmbedding as number[]).length > 0) {
@@ -213,35 +508,28 @@ Example output: ["gutter", "aluminum", "120ft", "john", "estimate"]`
           score = 0.45
         }
 
-        if (score > 0.58 || hasKeywordMatch) {
+        if (score > 0.52 || hasKeywordMatch) {
           const contact = t.contactRef ? ` | Customer: ${t.contactRef}` : ''
           const next = t.nextAction ? `\n  → What's left: ${t.nextAction}` : ''
           const notes = t.notes ? `\n  → Notes: ${t.notes.slice(0, 200)}` : ''
           results.push({
             text: `[Open ticket #${t.id.slice(-6)} (${t.status})${contact}]: ${t.title}${t.description ? `\n  → ${t.description.slice(0, 200)}` : ''}${notes}${next}`,
             score: score + (hasKeywordMatch ? 0.05 : 0),
-            age: '',
           })
         }
       }
 
       if (!results.length) return ''
 
-      // Sort by score and take top-K
-      const top = results
-        .sort((a, b) => b.score - a.score)
-        .slice(0, topK)
-
-      return `\n\nYOUR RELEVANT MEMORY (from past 30 days — use this context, do not re-ask what you already know):\n${top.map(r => r.text).join('\n\n')}`
+      const top = results.sort((a, b) => b.score - a.score).slice(0, topK)
+      return `\nRELEVANT PAST CONTEXT (episodic — last 90 days):\n${top.map((r) => r.text).join('\n\n')}`
     } catch (err: any) {
       this.logger.warn(`[Memory] Intent search failed for agent ${agentId}: ${err.message}`)
       return ''
     }
   }
 
-  // ── 3. Embed a ticket for future intent searches ──────────────────
-  //
-  // Call this async (non-blocking) when a ticket is created or updated.
+  // ── 4. Embed a ticket for future intent searches ──────────────────
 
   async embedTicket(ticketId: string): Promise<void> {
     try {
@@ -263,29 +551,23 @@ Example output: ["gutter", "aluminum", "120ft", "john", "estimate"]`
     }
   }
 
-  // ── 3b. Store a handoff memory entry for the specialist ──────────
-  //
-  // Called when an agent is consulted via handoff_to_agent.
-  // Creates a ConversationSummary entry under the specialist's agentId
-  // so they remember what they were asked and what they answered.
+  // ── 5. Handoff memory for specialists ─────────────────────────────
 
-  async storeHandoffMemory(tenantId: string, specialistAgentId: string, conversationId: string, summaryText: string): Promise<void> {
+  async storeHandoffMemory(
+    tenantId: string,
+    specialistAgentId: string,
+    conversationId: string,
+    summaryText: string,
+    subject?: MemorySubject,
+  ): Promise<void> {
     try {
-      // Extract key entities
-      const entityPrompt = `Extract 5-8 key nouns/terms from this text as a JSON array of lowercase strings. Only the array, no explanation.
-Text: "${summaryText.slice(0, 300)}"
-Example: ["gutter", "aluminum", "estimate", "120ft"]`
-
-      let keyEntities: string[] = []
-      try {
-        const raw = await this.ai.chat(entityPrompt, [])
-        const match = raw.match(/\[.*?\]/s)
-        if (match) keyEntities = JSON.parse(match[0])
-      } catch { /* non-fatal */ }
-
+      const keyEntities = await this.extractEntities(summaryText)
       const embedding = await this.ai.embed(summaryText).catch(() => null)
+      const subjectKey = this.resolveSubjectKey({
+        ...subject,
+        conversationId,
+      })
 
-      // Store as a HANDOFF type memory (no conversationId — specialist wasn't in this conversation)
       await this.prisma.conversationSummary.create({
         data: {
           tenantId,
@@ -296,8 +578,18 @@ Example: ["gutter", "aluminum", "estimate", "120ft"]`
           keyEntities,
           embedding: embedding as any,
           messageCount: 1,
+          subjectKey,
+          importance: 3,
         },
       })
+
+      // Also store high-signal handoff content as a fact for the specialist
+      await this.rememberFact(tenantId, specialistAgentId, subjectKey, summaryText.slice(0, 400), {
+        category: 'decision',
+        importance: 3,
+        sourceConversationId: conversationId,
+        confidence: 0.7,
+      }).catch(() => {})
 
       this.logger.log(`[Memory] Stored handoff memory for specialist ${specialistAgentId.slice(-6)}`)
     } catch (err: any) {
@@ -305,14 +597,44 @@ Example: ["gutter", "aluminum", "estimate", "120ft"]`
     }
   }
 
-  // ── 4. Nightly cleanup — remove summaries older than 30 days ─────
+  // ── 6. Nightly cleanup — soft-delete low-importance memories > 90 days ─
 
-  @Cron('0 2 * * *')  // 2 AM every day
+  @Cron('0 2 * * *')
   async cleanupOldSummaries(): Promise<void> {
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-    const { count } = await this.prisma.conversationSummary.deleteMany({
-      where: { createdAt: { lt: thirtyDaysAgo } },
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
+
+    const summaries = await this.prisma.conversationSummary.updateMany({
+      where: {
+        createdAt: { lt: ninetyDaysAgo },
+        importance: { lt: 4 },
+        deletedAt: null,
+      },
+      data: { deletedAt: new Date() },
     })
-    if (count > 0) this.logger.log(`[Memory] Cleaned up ${count} old conversation summaries`)
+
+    const facts = await this.prisma.agentMemoryFact.updateMany({
+      where: {
+        updatedAt: { lt: ninetyDaysAgo },
+        importance: { lt: 4 },
+        deletedAt: null,
+      },
+      data: { deletedAt: new Date() },
+    })
+
+    // Hard-delete soft-deleted rows older than 180 days
+    const hardCut = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000)
+    const hardSummaries = await this.prisma.conversationSummary.deleteMany({
+      where: { deletedAt: { lt: hardCut } },
+    })
+    const hardFacts = await this.prisma.agentMemoryFact.deleteMany({
+      where: { deletedAt: { lt: hardCut } },
+    })
+
+    if (summaries.count || facts.count || hardSummaries.count || hardFacts.count) {
+      this.logger.log(
+        `[Memory] Cleanup: soft ${summaries.count} summaries / ${facts.count} facts; ` +
+        `hard ${hardSummaries.count} summaries / ${hardFacts.count} facts`,
+      )
+    }
   }
 }

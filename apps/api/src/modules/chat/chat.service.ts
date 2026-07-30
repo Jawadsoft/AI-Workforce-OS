@@ -361,6 +361,31 @@ const CRM_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'remember_fact',
+    description: 'Save a durable fact to long-term memory about this person (like ChatGPT memory). Use when they say "remember that…", share a lasting preference, name, constraint, quoted decision, or anything you must not forget across future chats. Do NOT use for temporary status.',
+    parameters: {
+      type: 'object',
+      properties: {
+        fact: { type: 'string', description: 'Clear factual statement to remember e.g. "Prefers morning appointments" or "Quoted $4,200 for 120ft K-style aluminum gutters"' },
+        category: { type: 'string', enum: ['identity', 'preference', 'decision', 'constraint', 'general'], description: 'Fact category' },
+        importance: { type: 'number', description: '1-5; use 4-5 for must-never-forget facts' },
+      },
+      required: ['fact'],
+    },
+  },
+  {
+    name: 'forget_fact',
+    description: 'Remove a previously saved long-term memory when the user says to forget something or a fact is no longer true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Short description of the memory to forget e.g. "morning appointments"' },
+        factId: { type: 'string', description: 'Optional exact fact id if known' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'fetch_storm_data',
     description: 'Query NOAA storm reports stored in the system. Use this to look up hail, tornado, or wind events by state, county, size, and date range. If the user asks about a specific date or date range, pass that date. If they ask about "last 7 days" or "recent", use the days parameter.',
     parameters: {
@@ -921,14 +946,12 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       data: { conversationId, role: 'USER', content },
     })
 
-    // Fetch the most recent 14 messages in reverse order, then re-sort ascending
-    // so the LLM sees them oldest-first.  Using desc+take ensures we always get
-    // the LATEST messages (not the oldest) when conversations exceed the window.
-    // 14 keeps multi-customer context tight — each customer typically needs 4-6 turns.
+    // Recent messages (desc+take+reverse = latest window, oldest-first for the LLM).
+    // 40 turns ≈ ChatGPT-like working context; older detail lives in runningSummary + facts.
     const historyRaw = await this.prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: 'desc' },
-      take: 14,
+      take: 40,
     })
     const history = historyRaw.reverse()
 
@@ -950,27 +973,36 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     let callerCustomerId: string | undefined
 
     const isFirstMessage = history.filter(m => m.role === 'USER').length <= 1
-    if (isFirstMessage) {
-      const meta = conv.metadata as any
-      const phone = meta?.callerPhone ?? content.match(PHONE_RE)?.[0]
-      const email = meta?.callerEmail ?? content.match(EMAIL_RE)?.[0]
-
-      if (phone || email) {
-        const crmData = await this.crmCtx.fetchContext(tenantId, {
-          phone,
-          email,
-          agentRole: conv.agent.role,
-          agentId: conv.agent.id,
-        })
-        crmContextBlock = this.crmCtx.formatForPrompt(crmData)
-        callerCustomerId = crmData.customer?.id
-      }
+    const meta = conv.metadata as any
+    const phone = meta?.callerPhone ?? conv.callerPhone ?? content.match(PHONE_RE)?.[0]
+    const email = meta?.callerEmail ?? conv.callerEmail ?? content.match(EMAIL_RE)?.[0]
+    if (isFirstMessage && (phone || email)) {
+      const crmData = await this.crmCtx.fetchContext(tenantId, {
+        phone,
+        email,
+        agentRole: conv.agent.role,
+        agentId: conv.agent.id,
+      })
+      crmContextBlock = this.crmCtx.formatForPrompt(crmData)
+      callerCustomerId = crmData.customer?.id
     }
+
+    const memorySubjectKey = this.memory.resolveSubjectKey({
+      userId: conv.userId,
+      customerId: callerCustomerId,
+      phone,
+      email,
+      conversationId,
+    })
 
     // ── RAG + Memory + ticket fetch (all in parallel) ──────────────
     const [ragContext, memoryContext, ticketsBlock, teamRoster] = await Promise.all([
       this.knowledge.retrieveContext(conv.agent.id, content, mergedSettings.industry, conv.agent.role),
-      this.memory.searchMemory(conv.agent.id, tenantId, content),
+      this.memory.buildMemoryContext(conv.agent.id, tenantId, content, {
+        subjectKey: memorySubjectKey,
+        runningSummary: (conv as any).runningSummary,
+        topK: 5,
+      }),
       this.tickets.buildPromptBlock(tenantId, conv.agent.id, conversationId),
       this.prisma.agent.findMany({
         where: { tenantId, status: 'ACTIVE' },
@@ -1045,6 +1077,18 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       }).catch(() => {})
     }
 
+    // Refresh working + episodic + profile memory (async)
+    const assistantCount = await this.prisma.message.count({ where: { conversationId, role: 'ASSISTANT' } })
+    if (assistantCount === 1 || assistantCount === 2 || assistantCount % 3 === 0) {
+      this.memory.summariseConversation(conversationId, {
+        userId: conv.userId,
+        customerId: callerCustomerId,
+        phone,
+        email,
+        conversationId,
+      }).catch(() => {})
+    }
+
     return { userMessage: history[history.length - 1], aiMessage }
   }
 
@@ -1109,29 +1153,31 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     // Specialists can update/view tickets but NEVER create new ones (prevents duplicates during auto-wake/handoff)
     const specialistTicketTools = ['update_ticket', 'get_my_tickets', 'get_team_activity']
 
+    const memoryTools = ['remember_fact', 'forget_fact']
+
     const internalToolNames = isSpecialist
       // Called via handoff or auto-wake: update existing tickets only, no create_ticket.
       // Lead qual agents (Charlie) keep their storm/CRM tools even in specialist mode —
       // without them Charlie cannot qualify leads and is completely useless when woken by the scheduler.
       ? [
           'reply_to_widget_session', 'contact_customer', 'generate_document', 'ask_user',
-          ...specialistTicketTools, ...schedulingTools, ...socialTools,
+          ...memoryTools, ...specialistTicketTools, ...schedulingTools, ...socialTools,
           ...(isLeadQualAgent ? ['fetch_storm_data', 'crm_search_leads', 'handoff_to_agent'] : []),
         ]
       : isLeadQualAgent
         // Lead qualification (Charlie): storm lookup + CRM search + routing
-        ? ['handoff_to_agent', 'suggest_transfer', 'ask_user', 'fetch_storm_data', 'crm_search_leads', ...ticketToolNames, ...taskTools]
+        ? ['handoff_to_agent', 'suggest_transfer', 'ask_user', ...memoryTools, 'fetch_storm_data', 'crm_search_leads', ...ticketToolNames, ...taskTools]
         : isExecAssistant
           // Executive assistant (Hanna): full ticket management + contact + scheduling, no silent relay
-          ? ['request_approval', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...ticketToolNames, 'get_available_slots', ...taskTools]
+          ? ['request_approval', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, ...ticketToolNames, 'get_available_slots', ...taskTools]
       : isIntakeAgent
         // Intake agent: silent relay + explicit transfer when user requests it
-            ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...taskTools, ...socialTools]
+            ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'suggest_transfer', 'ask_user', ...memoryTools, ...ticketToolNames, ...taskTools, ...socialTools]
         : isStormAnalyst
           // Storm analyst: gets storm data tool + standard specialist tools
-              ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', 'fetch_storm_data', ...ticketToolNames, ...taskTools, ...socialTools]
+              ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, 'fetch_storm_data', ...ticketToolNames, ...taskTools, ...socialTools]
           // Specialist agent (estimator, inspector, etc.): offer transfers, no silent relay
-              : ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...ticketToolNames, ...schedulingTools, ...taskTools, ...socialTools]
+              : ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, ...ticketToolNames, ...schedulingTools, ...taskTools, ...socialTools]
 
     const allowedTools = CRM_TOOL_DEFINITIONS.filter(t =>
       agent.tools?.includes(t.name) || agent.tools?.includes('crm_all') || internalToolNames.includes(t.name)
@@ -2010,6 +2056,65 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
           return `[Waiting for user response to: "${params.question}"]`
         }
 
+        if (toolName === 'remember_fact') {
+          try {
+            const c = conversationId
+              ? await this.prisma.conversation.findUnique({
+                  where: { id: conversationId },
+                  select: { userId: true, callerPhone: true, callerEmail: true, metadata: true },
+                })
+              : null
+            const meta = (c?.metadata ?? {}) as any
+            const subjectKey = this.memory.resolveSubjectKey({
+              conversationId,
+              customerId: defaultCustomerId,
+              userId: c?.userId,
+              phone: c?.callerPhone ?? meta?.callerPhone,
+              email: c?.callerEmail ?? meta?.callerEmail,
+            })
+            const saved = await this.memory.rememberFact(
+              tenantId,
+              agent.id,
+              subjectKey,
+              params.fact,
+              {
+                category: params.category,
+                importance: params.importance,
+                sourceConversationId: conversationId,
+              },
+            )
+            return `Saved to long-term memory: "${saved.fact}"`
+          } catch (err: any) {
+            return `Could not save memory: ${err.message}`
+          }
+        }
+
+        if (toolName === 'forget_fact') {
+          try {
+            const c = conversationId
+              ? await this.prisma.conversation.findUnique({
+                  where: { id: conversationId },
+                  select: { userId: true, callerPhone: true, callerEmail: true, metadata: true },
+                })
+              : null
+            const meta = (c?.metadata ?? {}) as any
+            const subjectKey = this.memory.resolveSubjectKey({
+              conversationId,
+              customerId: defaultCustomerId,
+              userId: c?.userId,
+              phone: c?.callerPhone ?? meta?.callerPhone,
+              email: c?.callerEmail ?? meta?.callerEmail,
+            })
+            return await this.memory.forgetFact(tenantId, agent.id, {
+              factId: params.factId,
+              query: params.query,
+              subjectKey,
+            })
+          } catch (err: any) {
+            return `Could not forget memory: ${err.message}`
+          }
+        }
+
         // ── Suggest transfer to a colleague ────────────────
         if (toolName === 'suggest_transfer') {
           try {
@@ -2290,11 +2395,11 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       return
     }
 
-    // Get most recent 14 messages (desc + reverse = latest messages in chronological order)
+    // Recent messages — 40-turn working window; older detail in runningSummary + facts
     const historyRaw2 = await this.prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: 'desc' },
-      take: 14,
+      take: 40,
     })
     const history = historyRaw2.reverse()
 
@@ -2312,20 +2417,37 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
 
     // CRM context on first message
     let crmContextBlock = ''
+    let streamCustomerId: string | undefined
     const isFirstMessage = history.filter(m => m.role === 'USER').length <= 1
-    if (isFirstMessage) {
-      const meta = conv.metadata as any
-      const phone = meta?.callerPhone ?? content.match(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/)?.[0]
-      const email = meta?.callerEmail ?? content.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/)?.[0]
-      if (phone || email) {
-        const crmData = await this.crmCtx.fetchContext(tenantId, { phone, email, agentRole: conv.agent.role, agentId: conv.agent.id })
-        crmContextBlock = this.crmCtx.formatForPrompt(crmData)
-      }
+    const streamMeta = conv.metadata as any
+    const streamPhone = streamMeta?.callerPhone ?? conv.callerPhone ?? content.match(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/)?.[0]
+    const streamEmail = streamMeta?.callerEmail ?? conv.callerEmail ?? content.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/)?.[0]
+    if (isFirstMessage && (streamPhone || streamEmail)) {
+      const crmData = await this.crmCtx.fetchContext(tenantId, {
+        phone: streamPhone,
+        email: streamEmail,
+        agentRole: conv.agent.role,
+        agentId: conv.agent.id,
+      })
+      crmContextBlock = this.crmCtx.formatForPrompt(crmData)
+      streamCustomerId = crmData.customer?.id
     }
+
+    const streamSubjectKey = this.memory.resolveSubjectKey({
+      userId: conv.userId,
+      customerId: streamCustomerId,
+      phone: streamPhone,
+      email: streamEmail,
+      conversationId,
+    })
 
     const [ragContext, memoryContext, streamTicketsBlock, streamTeamRoster] = await Promise.all([
       this.knowledge.retrieveContext(conv.agent.id, content, mergedSettings.industry, conv.agent.role),
-      this.memory.searchMemory(conv.agent.id, tenantId, content),
+      this.memory.buildMemoryContext(conv.agent.id, tenantId, content, {
+        subjectKey: streamSubjectKey,
+        runningSummary: (conv as any).runningSummary,
+        topK: 5,
+      }),
       this.tickets.buildPromptBlock(tenantId, conv.agent.id, conversationId),
       this.prisma.agent.findMany({
         where: { tenantId, status: 'ACTIVE' },
@@ -2454,7 +2576,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       emit(payload)
     }
     try {
-      fullReply = await this.runWithToolDispatch(tenantId, conv.agent, systemPrompt, messages, undefined, trackingEmit, 0, undefined, conversationId, streamSource)
+      fullReply = await this.runWithToolDispatch(tenantId, conv.agent, systemPrompt, messages, streamCustomerId, trackingEmit, 0, undefined, conversationId, streamSource)
     } catch (err: any) {
       fullReply = `I encountered an issue fetching data: ${err?.message ?? 'Unknown error'}.`
     }
@@ -2484,11 +2606,16 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       this.crm.createNote(tenantId, { content: `[AI] ${conv.agent.name}: ${fullReply.slice(0, 400)}` }).catch(() => {})
     }
 
-    // Trigger conversation summary after every 4th agent reply (async, non-blocking)
-    // This keeps the agent's episodic memory up-to-date without blocking the response
+    // Refresh working + episodic + profile memory more often (async, non-blocking)
     const msgCount = await this.prisma.message.count({ where: { conversationId, role: 'ASSISTANT' } })
-    if (msgCount % 4 === 0 || msgCount === 2) {
-      this.memory.summariseConversation(conversationId).catch(() => {})
+    if (msgCount === 1 || msgCount === 2 || msgCount % 3 === 0) {
+      this.memory.summariseConversation(conversationId, {
+        userId: conv.userId,
+        customerId: streamCustomerId,
+        phone: streamPhone,
+        email: streamEmail,
+        conversationId,
+      }).catch(() => {})
     }
 
     emit({ done: true, messageId: aiMessage.id })
@@ -2618,6 +2745,15 @@ WHAT MAKES YOU SOUND HUMAN (follow these always):
 ❌ NEVER: sound like a FAQ page, repeat the same opener, use corporate filler like "Certainly!" or "Of course I'd be happy to assist you with that today!"
 ❌ NEVER: give a wall of unbroken text — use white space, short paragraphs, or bullets
 ❌ NEVER: say "As an AI..." — you are ${agent.name}, full stop
+
+LONG-TERM MEMORY — CRITICAL:
+You have human-like memory across conversations.
+✅ When "YOUR MEMORY" / profile facts / prior conversations appear in context, treat them as things you already know — do not re-ask
+✅ When the user says "remember that…", call remember_fact
+✅ When the user says "forget that…", call forget_fact
+✅ Call remember_fact for lasting preferences, names, constraints, and agreed decisions (even if they don't say "remember")
+❌ NEVER claim you don't remember something that appears in YOUR MEMORY
+❌ NEVER invent memories that are not in context
 
 ATTACHED DOCUMENTS — CRITICAL:
 When a user uploads a file (PDF, Word, Excel, CSV), its full extracted text is injected into this conversation under the marker "--- ATTACHED DOCUMENT: filename ---".

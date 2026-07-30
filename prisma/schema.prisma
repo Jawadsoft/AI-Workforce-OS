@@ -41,6 +41,7 @@ model Tenant {
   processedEmails   ProcessedEmail[]
   stormReports      StormReport[]
   conversationSummaries ConversationSummary[]
+  agentMemoryFacts  AgentMemoryFact[]
   featureFlags      TenantFeatureFlag[]
   socialAccounts    SocialAccount[]
   socialPosts       SocialPost[]
@@ -101,6 +102,7 @@ model Agent {
   createdTickets       ActivityTicket[]       @relation("TicketCreator")
   assignedTickets      ActivityTicket[]       @relation("TicketAssignee")
   conversationSummaries ConversationSummary[]
+  memoryFacts          AgentMemoryFact[]
 }
 
 model AgentTemplate {
@@ -121,25 +123,26 @@ model AgentTemplate {
 // ─────────────────────────────────────────────
 
 model Conversation {
-  id          String   @id @default(cuid())
-  tenantId    String
-  agentId     String
-  userId      String?
-  title       String?
-  channel     String   @default("INTERNAL")
-  callerPhone String?
-  callerEmail String?
-  status      String   @default("OPEN")
-  isPrimary   Boolean  @default(false)
-  metadata    Json     @default("{}")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(cuid())
+  tenantId       String
+  agentId        String
+  userId         String?
+  title          String?
+  channel        String   @default("INTERNAL")
+  callerPhone    String?
+  callerEmail    String?
+  status         String   @default("OPEN")
+  isPrimary      Boolean  @default(false)
+  metadata       Json     @default("{}")
+  runningSummary String?  @db.Text  // always-injected rolling summary of this thread
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent    Agent           @relation(fields: [agentId], references: [id])
-  messages Message[]
-  tickets  ActivityTicket[]
-  summary  ConversationSummary?
+  tenant    Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent     Agent                 @relation(fields: [agentId], references: [id])
+  messages  Message[]
+  tickets   ActivityTicket[]
+  summaries ConversationSummary[]
 }
 
 model Message {
@@ -579,23 +582,50 @@ model ActivityTicket {
 // ─────────────────────────────────────────────
 
 model ConversationSummary {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   tenantId       String
   agentId        String
-  conversationId String?  @unique   // null for handoff memories (no direct conversation)
-  summaryType    String   @default("CONVERSATION")  // "CONVERSATION" | "HANDOFF"
-  summary        String   @db.Text
+  conversationId String?   // null for handoff memories (no direct conversation)
+  summaryType    String    @default("CONVERSATION")  // "CONVERSATION" | "HANDOFF" | "EPISODE"
+  summary        String    @db.Text
   keyEntities    String[]
   embedding      Json?
-  messageCount   Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  messageCount   Int       @default(0)
+  subjectKey     String?   // identity binding: user:/customer:/phone:/email:/anon:
+  importance     Int       @default(0)  // 0-5; >=4 survives nightly cleanup
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
   conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, agentId, createdAt])
+  @@index([tenantId, agentId, subjectKey])
+}
+
+// Durable profile facts — always injected for a known subject (ChatGPT-like memory)
+model AgentMemoryFact {
+  id                   String    @id @default(cuid())
+  tenantId             String
+  agentId              String
+  subjectKey           String    // user:ID | customer:ID | phone:E164 | email:addr | anon:convId
+  fact                 String    @db.Text
+  category             String    @default("general") // identity | preference | decision | constraint | general
+  embedding            Json?
+  confidence           Float     @default(0.8)
+  sourceConversationId String?
+  importance           Int       @default(1) // 1-5; >=4 never auto-deleted
+  deletedAt            DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, agentId, subjectKey])
+  @@index([tenantId, agentId, deletedAt])
 }
 
 // ─────────────────────────────────────────────

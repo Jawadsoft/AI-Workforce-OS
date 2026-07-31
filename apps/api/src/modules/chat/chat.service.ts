@@ -403,16 +403,30 @@ const CRM_TOOL_DEFINITIONS = [
   },
   {
     name: 'post_to_social',
-    description: 'Generate and queue a social media post. Use when staff asks to post something, create social content, or share something on Facebook/Instagram/LinkedIn/X. The post goes into the approval queue. Always show the full generated post text back to the user so they can see what was created.',
+    description: 'Generate and queue a social media post WITH an AI-generated image (you CAN create images — never say you cannot). Use when staff asks to post something, create social content, or share on Facebook/Instagram/LinkedIn/X. Goes to the approval queue. Always show the full post text back. If they want a better/new image on an EXISTING draft, use regenerate_social_image instead of Canva tips.',
     parameters: {
       type: 'object',
       properties: {
-        brief: { type: 'string', description: 'What the post should be about — a job completed, a review received, a promotion, a team update, etc.' },
+        brief: { type: 'string', description: 'What the post should be about — a job completed, a review received, a promotion, a team update, etc. Include contact details or CTAs the user wants in the copy.' },
         platforms: { type: 'array', items: { type: 'string', enum: ['facebook', 'instagram', 'linkedin', 'x'] }, description: 'Which platforms to post to' },
         contentType: { type: 'string', enum: ['educational', 'promotional', 'story', 'team', 'general'], description: 'Type of content — educational tips, promotional offer, customer story, team highlight, or general' },
+        format: { type: 'string', enum: ['single_image', 'carousel', 'video_script', 'poll'], description: 'Content format. single_image (default) = one photo + caption. carousel = 3-4 swipeable slides each with its own AI image. video_script = short-form video script (hook/scenes/CTA) + a caption for staff to film. poll = a question with 2-4 options appended to the caption (no native poll API, shown as readable text). Use carousel/video_script/poll only when the user asks for that format or it clearly fits (e.g. "make it a carousel", "give me a reel script", "run a poll").' },
         scheduledAt: { type: 'string', description: 'ISO datetime to schedule the post e.g. "2026-07-01T09:00:00Z". Leave empty to post ASAP after approval.' },
+        imageFeedback: { type: 'string', description: 'Optional guidance for the AI image e.g. "sharp photorealistic roof repair, bright daylight, no blur"' },
       },
       required: ['brief', 'platforms'],
+    },
+  },
+  {
+    name: 'regenerate_social_image',
+    description: 'Regenerate a higher-quality AI image for an existing social post that is still in draft/pending_approval. Use when the user says the picture quality is bad, blurry, or asks you to generate a better image yourself. Do NOT give Canva/Lightroom tutorials — call this tool.',
+    parameters: {
+      type: 'object',
+      properties: {
+        postId: { type: 'string', description: 'The social post ID from the action card (full id or last 6+ characters if that is all you have — prefer full id)' },
+        feedback: { type: 'string', description: 'What to improve e.g. "higher quality, sharper roofing photo, professional daylight"' },
+      },
+      required: ['postId'],
     },
   },
   {
@@ -440,6 +454,19 @@ const CRM_TOOL_DEFINITIONS = [
         platforms: { type: 'array', items: { type: 'string', enum: ['facebook', 'instagram', 'linkedin', 'x'] }, description: 'Target platforms' },
       },
       required: ['sourceContent', 'platforms'],
+    },
+  },
+  {
+    name: 'get_content_calendar',
+    description: 'Generate a multi-day social media content calendar/plan (topics, content types, platforms, best posting times). Use when staff asks to plan ahead, see a content calendar, or plan the week/month of posts. Optionally saves each day as a draft placeholder post in Social Media for later.',
+    parameters: {
+      type: 'object',
+      properties: {
+        days: { type: 'number', description: 'How many days to plan (default 7, max 30)' },
+        platforms: { type: 'array', items: { type: 'string', enum: ['facebook', 'instagram', 'linkedin', 'x'] }, description: 'Platforms to plan for' },
+        saveAsDrafts: { type: 'boolean', description: 'If true, save each planned day as a draft placeholder post in Social Media so it can be reviewed/generated later. Default false — just show the plan in chat.' },
+      },
+      required: [],
     },
   },
   {
@@ -801,6 +828,76 @@ export class ChatService {
   }
 
   /**
+   * Wake an agent with a briefing AND give it full tool access (post_to_social,
+   * create_ticket, contact_customer, etc.) so it can actually take action rather
+   * than just describe what it would do. Used for proactive workflows like the
+   * daily social media scheduler, where the agent should really queue a post.
+   * Posts land in the agent's primary (user-visible) thread, same as a normal chat turn.
+   */
+  async wakeAgentWithCapabilities(tenantId: string, agentId: string, briefing: string): Promise<void> {
+    this.logger.log(`[wakeAgentWithCapabilities] Waking agent ${agentId}`)
+    try {
+      const agentRecord = await this.prisma.agent.findUnique({ where: { id: agentId } })
+      if (!agentRecord) { this.logger.warn(`[wakeAgentWithCapabilities] Agent ${agentId} not found`); return }
+
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { settings: true, industry: true, name: true },
+      })
+      const mergedSettings = {
+        ...(tenant?.settings as any ?? {}),
+        industry: (tenant?.settings as any)?.brain?.industry ?? tenant?.industry ?? '',
+        tenantName: tenant?.name ?? '',
+      }
+      const brainContext = this.brain.buildAgentContext(mergedSettings)
+      const wakeTeamRoster = await this.prisma.agent.findMany({
+        where: { tenantId, status: 'ACTIVE' },
+        select: { name: true, role: true, prompt: true },
+        orderBy: { createdAt: 'asc' },
+      })
+
+      const conv = await this.getOrCreatePrimaryConversation(tenantId, agentId)
+
+      await this.prisma.message.create({
+        data: { conversationId: conv.id, role: 'USER', content: briefing },
+      })
+
+      const messages = await this.prisma.message.findMany({
+        where: { conversationId: conv.id },
+        orderBy: { createdAt: 'asc' },
+        take: 20,
+      })
+
+      // isSpecialist=false → same system prompt shape as a normal live chat turn,
+      // so the agent gets its full personality + full tool set (incl. post_to_social).
+      const systemPrompt = this.buildFullSystemPrompt(agentRecord, mergedSettings, brainContext, '', '', false, '', wakeTeamRoster)
+      const openaiMessages: { role: 'user' | 'assistant'; content: string }[] = messages.map(m => ({
+        role: (m.role === 'USER' ? 'user' : 'assistant') as 'user' | 'assistant',
+        content: m.content,
+      }))
+
+      const responseText = await this.runWithToolDispatch(
+        tenantId, agentRecord, systemPrompt, openaiMessages,
+        undefined, undefined, 0, undefined, conv.id, 'INTERNAL',
+      )
+
+      if (responseText?.trim()) {
+        await this.prisma.message.create({
+          data: { conversationId: conv.id, role: 'ASSISTANT', content: responseText, briefingType: 'DAILY_BRIEFING' },
+        })
+        await this.prisma.conversation.update({
+          where: { id: conv.id },
+          data: { updatedAt: new Date() },
+        })
+      }
+
+      this.logger.log(`[wakeAgentWithCapabilities] ${agentRecord.name} briefed successfully`)
+    } catch (err: any) {
+      this.logger.error(`[wakeAgentWithCapabilities] Error: ${err.message}`)
+    }
+  }
+
+  /**
    * Auto-wake an assigned agent: post briefing to their primary thread, trigger
    * autonomous reasoning, then post their response back into the originating
    * conversation so it appears in the active window of the agent who raised the ticket.
@@ -1147,7 +1244,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     // social media tools — only for agents with the post_to_social tool flag
     const agentTools = agent.tools as string[] ?? []
     const socialTools = agentTools.includes('post_to_social')
-      ? ['post_to_social', 'review_to_post', 'repurpose_content']
+      ? ['post_to_social', 'regenerate_social_image', 'review_to_post', 'repurpose_content', 'get_content_calendar']
       : []
 
     // Specialists can update/view tickets but NEVER create new ones (prevents duplicates during auto-wake/handoff)
@@ -2229,12 +2326,15 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         if (toolName === 'post_to_social') {
           try {
             emit?.({ step: { label: 'Generating social media posts', status: 'active' } })
+            const format = params.format ?? 'single_image'
             const drafts = await this.social.generatePosts({
               tenantId,
               agentId: agent.id,
               brief: params.brief,
               platforms: params.platforms ?? ['facebook'],
               contentType: params.contentType,
+              imageFeedback: params.imageFeedback,
+              format,
             })
             const saved = await Promise.all(
               drafts.map((draft) =>
@@ -2247,6 +2347,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                   contentType: draft.contentType,
                   scheduledAt: params.scheduledAt ? new Date(params.scheduledAt) : undefined,
                   requireApproval: true,
+                  metadata: draft.metadata,
                 }),
               ),
             )
@@ -2270,12 +2371,58 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
 
             const lines = saved.map((p: any) => {
               const platformLabel = p.platform.charAt(0).toUpperCase() + p.platform.slice(1)
-              return `**${platformLabel}**: "${p.content}"${p.imageUrl ? `\n📸 Image ready` : ''}`
+              const meta = p.metadata as any
+              let extra = p.imageUrl ? `\n📸 AI image ready` : '\n⚠️ No image attached'
+              if (meta?.format === 'carousel') extra = `\n🖼️ ${meta.carouselImages?.length ?? 0}-slide carousel ready`
+              if (meta?.format === 'video_script') {
+                const scenes = meta.videoScript?.scenes ?? []
+                const scriptLines = scenes.map((s: any, i: number) => `  ${i + 1}. ${s.visual} — "${s.voiceover}"`).join('\n')
+                extra = `\n🎬 Script — Hook: "${meta.videoScript?.hook}"\n${scriptLines}\n  CTA: "${meta.videoScript?.cta}"`
+              }
+              if (meta?.format === 'poll') extra = `\n📊 Poll: "${meta.poll?.question}" (${meta.poll?.options?.length ?? 0} options)`
+              return `**${platformLabel}** (id: ${p.id}): "${p.content}"${extra}`
             })
-            return `Generated ${saved.length} social media post${saved.length > 1 ? 's' : ''} and added to the approval queue:\n\n${lines.join('\n\n')}\n\nReview and publish them in the **Social Media** section.`
+            return `Generated ${saved.length} ${format !== 'single_image' ? format.replace('_', ' ') + ' ' : ''}post${saved.length > 1 ? 's' : ''} and queued for approval:\n\n${lines.join('\n\n')}\n\nIf the image quality is not good enough, call regenerate_social_image with the post id — do not suggest Canva. Review/publish in **Social Media**.`
           } catch (err: any) {
             if (err.message?.includes('not enabled')) return `Social media feature is not enabled for your account. Contact your administrator.`
             return `Error creating social posts: ${err.message}`
+          }
+        }
+
+        if (toolName === 'regenerate_social_image') {
+          try {
+            emit?.({ step: { label: 'Regenerating high-quality post image', status: 'active' } })
+            let postId = String(params.postId ?? '').trim()
+            // Allow last-6 shorthand if the model only kept a short id
+            if (postId.length < 20) {
+              const match = await this.prisma.socialPost.findFirst({
+                where: { tenantId, id: { endsWith: postId } },
+                orderBy: { createdAt: 'desc' },
+              })
+              if (match) postId = match.id
+            }
+            const updated = await this.social.regeneratePostImage(
+              tenantId,
+              postId,
+              params.feedback ?? 'higher quality, sharp photorealistic professional photo',
+            )
+            emit?.({ step: { label: 'Regenerating high-quality post image', status: 'done' } })
+            emit?.({
+              action_card: {
+                type: 'social_post',
+                id: updated.id,
+                title: `${updated.platform.charAt(0).toUpperCase() + updated.platform.slice(1)} Post (new image)`,
+                platform: updated.platform,
+                content: updated.content,
+                imageUrl: updated.imageUrl ?? null,
+                status: 'pending_approval',
+              },
+            })
+            return updated.imageUrl
+              ? `Regenerated a new AI image for the ${updated.platform} post (id: ${updated.id}). Preview it in the card / Social Media section. Ask if they want another regeneration or to approve.`
+              : `Tried to regenerate the image but no image URL was produced. Check OpenAI image access / Cloudinary / UNSPLASH_ACCESS_KEY, then retry.`
+          } catch (err: any) {
+            return `Could not regenerate image: ${err.message}`
           }
         }
 
@@ -2314,6 +2461,38 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
             return `Here are the repurposed posts for each platform:\n\n${lines.join('\n\n')}\n\nReview and approve them in the **Social Media** section.`
           } catch (err: any) {
             return `Error repurposing content: ${err.message}`
+          }
+        }
+
+        if (toolName === 'get_content_calendar') {
+          try {
+            emit?.({ step: { label: 'Building content calendar', status: 'active' } })
+            const days = Math.min(Math.max(Number(params.days) || 7, 1), 30)
+            const platforms: string[] = Array.isArray(params.platforms) && params.platforms.length ? params.platforms : ['facebook', 'instagram']
+            const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { settings: true, industry: true } })
+            const industry = (tenant?.settings as any)?.brain?.industry ?? tenant?.industry ?? undefined
+            const items = await this.social.generateCalendar(tenantId, { days, platforms, industry })
+            emit?.({ step: { label: 'Building content calendar', status: 'done' } })
+
+            if (!Array.isArray(items) || !items.length) {
+              return `Could not generate a content calendar right now — try again, maybe with fewer days.`
+            }
+
+            let saved: any[] = []
+            if (params.saveAsDrafts) {
+              saved = await this.social.saveCalendarAsDrafts(tenantId, agent.id, items)
+            }
+
+            const lines = items.map((it: any) =>
+              `**Day ${it.day}** (${it.platform}${it.bestTime ? `, ${it.bestTime}` : ''}) — ${it.contentType}: ${it.topic}\n_${it.brief}_`,
+            )
+            const savedNote = params.saveAsDrafts
+              ? `\n\nSaved ${saved.length} placeholder draft${saved.length === 1 ? '' : 's'} in Social Media — generate the full copy/image for each when its day comes, or ask me to do it.`
+              : `\n\nWant me to save these as placeholder drafts in Social Media so nothing gets lost? Just say so.`
+
+            return `Here's a ${days}-day content calendar:\n\n${lines.join('\n\n')}${savedNote}`
+          } catch (err: any) {
+            return `Error generating content calendar: ${err.message}`
           }
         }
 
@@ -2754,6 +2933,14 @@ You have human-like memory across conversations.
 ✅ Call remember_fact for lasting preferences, names, constraints, and agreed decisions (even if they don't say "remember")
 ❌ NEVER claim you don't remember something that appears in YOUR MEMORY
 ❌ NEVER invent memories that are not in context
+
+SOCIAL MEDIA IMAGES — CRITICAL (when you have post_to_social):
+✅ You CAN generate AI images via post_to_social and regenerate_social_image
+✅ If the user says image quality is bad / generate a better picture yourself → call regenerate_social_image (or post_to_social with imageFeedback)
+✅ post_to_social also supports richer formats via the "format" param: carousel (multi-slide, each with its own AI image), video_script (short-form script + caption), poll (question + options). Use them when asked or when it clearly fits.
+✅ Use get_content_calendar when staff wants to plan ahead (a week/month of topics) — it can also save each day as a placeholder draft.
+❌ NEVER say you cannot create images
+❌ NEVER give Canva / Lightroom / Unsplash tutorials instead of calling the tool
 
 ATTACHED DOCUMENTS — CRITICAL:
 When a user uploads a file (PDF, Word, Excel, CSV), its full extracted text is injected into this conversation under the marker "--- ATTACHED DOCUMENT: filename ---".

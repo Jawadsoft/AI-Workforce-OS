@@ -183,12 +183,24 @@ export class SocialController {
     })
   }
 
+  @Post('calendar/save-drafts')
+  @ApiOperation({ summary: 'Save generated calendar items as draft placeholder posts, scheduled one per day starting today' })
+  saveCalendarDrafts(@CurrentTenant() tenantId: string, @Body() body: { items: any[] }) {
+    return this.service.saveCalendarAsDrafts(tenantId, undefined, Array.isArray(body.items) ? body.items : [])
+  }
+
   // ── Analytics ────────────────────────────────────────────────────
 
   @Get('analytics')
   @ApiOperation({ summary: 'Get social media analytics summary' })
   getAnalytics(@CurrentTenant() tenantId: string) {
     return this.service.getAnalytics(tenantId)
+  }
+
+  @Post('analytics/refresh')
+  @ApiOperation({ summary: 'Manually refresh real engagement metrics (likes/comments/shares) for recent published posts' })
+  refreshAnalytics(@CurrentTenant() tenantId: string) {
+    return this.service.refreshAnalytics(tenantId)
   }
 
   // ── Safety check ─────────────────────────────────────────────────
@@ -226,10 +238,19 @@ export class SocialController {
       'pages_show_list',
       'pages_read_engagement',
       'pages_manage_posts',
-      'pages_manage_engagement',
+      'pages_manage_engagement', // also lets the agent reply to/manage Page comments
     ]
     if (this.config.get('FACEBOOK_INSTAGRAM_SCOPES') === 'true') {
       scopes.push('instagram_basic', 'instagram_content_publish')
+    }
+    // Comment/DM auto-reply needs extra permissions Meta must have approved for the
+    // app (Advanced Access for Live apps). Keep this behind its own flag so enabling
+    // it doesn't reintroduce "Invalid Scopes" errors on apps that don't have them yet.
+    // - pages_messaging            → send/receive Facebook Messenger DMs
+    // - instagram_manage_comments  → reply to Instagram comments
+    // - instagram_manage_messages  → send/receive Instagram DMs
+    if (this.config.get('FACEBOOK_MESSAGING_SCOPES') === 'true') {
+      scopes.push('pages_messaging', 'instagram_manage_comments', 'instagram_manage_messages')
     }
     const scope = scopes.join(',')
     const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64')
@@ -327,5 +348,13 @@ export class SocialController {
   @ApiOperation({ summary: 'Disconnect a social media account' })
   disconnectAccount(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.disconnectAccount(tenantId, id)
+  }
+
+  // ── Inbound comment/DM auto-replies ────────────────────────────────
+
+  @Get('interactions')
+  @ApiOperation({ summary: 'List recent inbound comments/DMs and the agent auto-reply sent for each' })
+  getInteractions(@CurrentTenant() tenantId: string, @Query('limit') limit?: string) {
+    return this.service.getInteractions(tenantId, limit ? parseInt(limit, 10) : undefined)
   }
 }

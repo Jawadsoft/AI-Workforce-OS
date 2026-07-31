@@ -4,7 +4,10 @@ import { PrismaService } from '../../common/prisma/prisma.service'
 import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
 import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
+import { BrainService } from '../brain/brain.service'
 import OpenAI from 'openai'
+
+export type PostFormat = 'single_image' | 'carousel' | 'video_script' | 'poll'
 
 export interface GeneratePostOptions {
   tenantId: string
@@ -13,6 +16,10 @@ export interface GeneratePostOptions {
   platforms: string[]
   contentType?: string
   uploadedImageUrl?: string
+  /** Extra guidance when regenerating a better image (e.g. "sharper roofing photo, no blur") */
+  imageFeedback?: string
+  /** Richer content format — defaults to a normal single-image post */
+  format?: PostFormat
 }
 
 export interface GeneratedPostDraft {
@@ -22,6 +29,8 @@ export interface GeneratedPostDraft {
   imagePrompt: string | null
   contentType: string
   alternatives: string[]
+  /** Format-specific extras: carouselImages/carouselSlides, videoScript, poll */
+  metadata?: Record<string, any>
 }
 
 const PLATFORM_SPECS: Record<string, { maxLength: number; hashtagCount: number; style: string }> = {
@@ -41,6 +50,7 @@ export class SocialService {
     private readonly config: ConfigService,
     private readonly cloudinary: CloudinaryService,
     private readonly featureFlags: FeatureFlagsService,
+    private readonly brain: BrainService,
   ) {}
 
   private getOpenAI(): OpenAI {
@@ -85,6 +95,9 @@ export class SocialService {
   }
 
   // ── Brain context for posts ───────────────────────────────────────
+  // Uses the same deep business knowledge base (testimonials, USPs, services,
+  // pricing, brand voice, competitors, target customers, etc.) that powers
+  // every agent's chat system prompt — not just a handful of onboarding fields.
 
   private async getBrainContext(tenantId: string): Promise<string> {
     try {
@@ -93,17 +106,28 @@ export class SocialService {
         select: { name: true, industry: true, settings: true },
       })
       if (!tenant) return ''
-      const s = (tenant.settings as any) ?? {}
+      const settings = (tenant.settings as any) ?? {}
+      const mergedSettings = {
+        ...settings,
+        industry: settings?.brain?.industry ?? tenant.industry ?? '',
+        tenantName: tenant.name ?? '',
+      }
+      const deep = this.brain.buildAgentContext(mergedSettings)
+      if (deep) return deep
+
+      // Fallback for tenants that haven't run brain enrichment yet — use
+      // whatever manual onboarding fields exist so posts aren't fully generic.
       const parts: string[] = []
       if (tenant.name) parts.push(`Company: ${tenant.name}`)
       if (tenant.industry) parts.push(`Industry: ${tenant.industry}`)
-      if (s.services) parts.push(`Services: ${s.services}`)
-      if (s.locations) parts.push(`Service areas: ${s.locations}`)
-      if (s.brandVoice) parts.push(`Brand voice: ${s.brandVoice}`)
-      if (s.usps) parts.push(`USPs: ${s.usps}`)
-      if (s.targetAudience) parts.push(`Target audience: ${s.targetAudience}`)
+      if (settings.services) parts.push(`Services: ${settings.services}`)
+      if (settings.locations) parts.push(`Service areas: ${settings.locations}`)
+      if (settings.brandVoice) parts.push(`Brand voice: ${settings.brandVoice}`)
+      if (settings.usps) parts.push(`USPs: ${settings.usps}`)
+      if (settings.targetAudience) parts.push(`Target audience: ${settings.targetAudience}`)
       return parts.join('\n')
-    } catch {
+    } catch (err: any) {
+      this.logger.warn(`getBrainContext failed for tenant ${tenantId}: ${err.message}`)
       return ''
     }
   }
@@ -120,7 +144,15 @@ export class SocialService {
 
     const drafts = await Promise.all(
       opts.platforms.map((platform) =>
-        this.generateForPlatform(platform, opts.brief, brainContext, contentType as string, opts.uploadedImageUrl),
+        this.generateForPlatform(
+          platform,
+          opts.brief,
+          brainContext,
+          contentType as string,
+          opts.uploadedImageUrl,
+          opts.imageFeedback,
+          opts.format ?? 'single_image',
+        ),
       ),
     )
 
@@ -133,6 +165,8 @@ export class SocialService {
     brainContext: string,
     contentType: string,
     uploadedImageUrl?: string,
+    imageFeedback?: string,
+    format: PostFormat = 'single_image',
   ): Promise<GeneratedPostDraft> {
     const spec = PLATFORM_SPECS[platform] ?? PLATFORM_SPECS.facebook
 
@@ -172,19 +206,160 @@ Only return the JSON object, nothing else.`
       versions = [brief]
     }
 
-    const mainContent = versions[0] ?? brief
+    let mainContent = versions[0] ?? brief
     const alternatives = versions.slice(1)
+    let metadata: Record<string, any> | undefined
+
+    // ── Carousel: multiple slides, each with its own AI image ────────
+    if (format === 'carousel') {
+      const slides = await this.generateCarouselSlides(brief, brainContext, platform, contentType)
+      if (slides.length) {
+        const images = await Promise.all(
+          slides.map((s) => this.generateImage(s.text, brainContext, contentType, s.imagePrompt)),
+        )
+        const carouselImages = images.map((i) => i.url).filter(Boolean) as string[]
+        metadata = {
+          format: 'carousel',
+          carouselSlides: slides,
+          carouselImages,
+        }
+        return {
+          platform,
+          content: mainContent,
+          imageUrl: carouselImages[0] ?? uploadedImageUrl ?? null,
+          imagePrompt: images[0]?.prompt ?? null,
+          contentType,
+          alternatives,
+          metadata,
+        }
+      }
+      // Fall through to single-image behavior if slide generation failed
+    }
+
+    // ── Video script: production script for staff, short teaser caption for the post ──
+    if (format === 'video_script') {
+      const script = await this.generateVideoScript(brief, brainContext, platform, contentType)
+      if (script) {
+        mainContent = `${mainContent}\n\n🎬 Video script ready — see production notes.`
+        metadata = { format: 'video_script', videoScript: script }
+      }
+    }
+
+    // ── Poll: question + options appended to the caption (no native poll API) ──
+    if (format === 'poll') {
+      const poll = await this.generatePollData(brief, brainContext, platform)
+      if (poll) {
+        const optionsBlock = poll.options.map((o, i) => `${i + 1}️⃣ ${o}`).join('\n')
+        mainContent = `${mainContent}\n\n📊 ${poll.question}\n${optionsBlock}\n\nComment your answer below! 👇`
+        metadata = { format: 'poll', poll }
+      }
+    }
 
     // Generate image if not provided
     let imageUrl: string | null = uploadedImageUrl ?? null
     let imagePrompt: string | null = null
     if (!imageUrl) {
-      const imageResult = await this.generateImage(brief, brainContext, contentType)
+      const imageResult = await this.generateImage(brief, brainContext, contentType, imageFeedback)
       imageUrl = imageResult.url
       imagePrompt = imageResult.prompt
     }
 
-    return { platform, content: mainContent, imageUrl, imagePrompt, contentType, alternatives }
+    return { platform, content: mainContent, imageUrl, imagePrompt, contentType, alternatives, metadata }
+  }
+
+  // ── Carousel slide planning ────────────────────────────────────────
+
+  private async generateCarouselSlides(
+    brief: string,
+    brainContext: string,
+    platform: string,
+    contentType: string,
+  ): Promise<Array<{ text: string; imagePrompt: string }>> {
+    try {
+      const response = await this.getOpenAI().chat.completions.create({
+        model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
+        messages: [{
+          role: 'user',
+          content: `Plan a ${platform} carousel post (3-4 slides) for a ${contentType} post.
+Brief: ${brief}
+${brainContext ? `Business context: ${brainContext}` : ''}
+
+Each slide needs short on-screen text (under 12 words, punchy) and a one-line visual concept for an AI image generator.
+Return JSON: { "slides": [{ "text": string, "imagePrompt": string }] } — 3 to 4 slides, first slide is the hook, last slide is a call-to-action.
+Only return the JSON.`,
+        }],
+        temperature: 0.8,
+        response_format: { type: 'json_object' },
+      })
+      const parsed = JSON.parse(response.choices[0].message.content ?? '{}')
+      const slides = Array.isArray(parsed.slides) ? parsed.slides : []
+      return slides.slice(0, 4).filter((s: any) => s?.text)
+    } catch (err: any) {
+      this.logger.error(`Carousel slide generation failed: ${err.message}`)
+      return []
+    }
+  }
+
+  // ── Video script planning ────────────────────────────────────────
+
+  private async generateVideoScript(
+    brief: string,
+    brainContext: string,
+    platform: string,
+    contentType: string,
+  ): Promise<{ hook: string; scenes: Array<{ visual: string; voiceover: string }>; cta: string } | null> {
+    try {
+      const response = await this.getOpenAI().chat.completions.create({
+        model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
+        messages: [{
+          role: 'user',
+          content: `Write a short-form (15-30s) ${platform} video script for a ${contentType} post.
+Brief: ${brief}
+${brainContext ? `Business context: ${brainContext}` : ''}
+
+Return JSON: { "hook": string (first 2 seconds, grabs attention), "scenes": [{ "visual": string, "voiceover": string }] (3-5 scenes), "cta": string (final call-to-action line) }
+Only return the JSON.`,
+        }],
+        temperature: 0.8,
+        response_format: { type: 'json_object' },
+      })
+      const parsed = JSON.parse(response.choices[0].message.content ?? '{}')
+      if (!parsed.hook || !Array.isArray(parsed.scenes)) return null
+      return { hook: parsed.hook, scenes: parsed.scenes, cta: parsed.cta ?? '' }
+    } catch (err: any) {
+      this.logger.error(`Video script generation failed: ${err.message}`)
+      return null
+    }
+  }
+
+  // ── Poll planning ─────────────────────────────────────────────────
+
+  private async generatePollData(
+    brief: string,
+    brainContext: string,
+    platform: string,
+  ): Promise<{ question: string; options: string[] } | null> {
+    try {
+      const response = await this.getOpenAI().chat.completions.create({
+        model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
+        messages: [{
+          role: 'user',
+          content: `Write an engaging ${platform} poll related to this brief: ${brief}
+${brainContext ? `Business context: ${brainContext}` : ''}
+
+Return JSON: { "question": string, "options": string[] } — 2 to 4 short options (under 6 words each).
+Only return the JSON.`,
+        }],
+        temperature: 0.8,
+        response_format: { type: 'json_object' },
+      })
+      const parsed = JSON.parse(response.choices[0].message.content ?? '{}')
+      if (!parsed.question || !Array.isArray(parsed.options)) return null
+      return { question: parsed.question, options: parsed.options.slice(0, 4) }
+    } catch (err: any) {
+      this.logger.error(`Poll generation failed: ${err.message}`)
+      return null
+    }
   }
 
   // ── Image generation ──────────────────────────────────────────────
@@ -193,17 +368,20 @@ Only return the JSON object, nothing else.`
     brief: string,
     brainContext: string,
     contentType: string,
+    imageFeedback?: string,
   ): Promise<{ url: string | null; prompt: string | null }> {
     // Always try gpt-image-1 first for all content types
     const dalleEnabled = this.config.get<string>('DALLE_ENABLED') !== 'false'
+    const quality = (this.config.get<string>('SOCIAL_IMAGE_QUALITY') ?? 'high') as 'low' | 'medium' | 'high'
     if (dalleEnabled) {
       try {
-        const imagePrompt = await this.buildImagePrompt(brief, brainContext, contentType)
+        const imagePrompt = await this.buildImagePrompt(brief, brainContext, contentType, imageFeedback)
         const response = await this.getOpenAI().images.generate({
           model: 'gpt-image-1',
           prompt: imagePrompt,
-          size: '1024x1024',
-          quality: 'medium',
+          // Landscape fits Facebook/LinkedIn feed cards better than square
+          size: '1536x1024',
+          quality,
           n: 1,
         } as any)
         const item = response.data?.[0] as any
@@ -216,7 +394,7 @@ Only return the JSON object, nothing else.`
           const cloudinaryUrl = await this.cloudinary.upload(
             'social-media', 'generated', filename, imageBuffer, 'image/png', 'image',
           )
-          this.logger.log(`gpt-image-1 SUCCESS — uploaded to Cloudinary: ${cloudinaryUrl}`)
+          this.logger.log(`gpt-image-1 SUCCESS (${quality}) — uploaded to Cloudinary: ${cloudinaryUrl}`)
           return { url: cloudinaryUrl, prompt: imagePrompt }
         } else if (directUrl) {
           const imageBuffer = await fetch(directUrl).then((r) => r.arrayBuffer()).then((b) => Buffer.from(b))
@@ -241,55 +419,116 @@ Only return the JSON object, nothing else.`
     return { url: fallback, prompt: null }
   }
 
-  private async buildImagePrompt(brief: string, brainContext: string, contentType: string): Promise<string> {
+  private async buildImagePrompt(
+    brief: string,
+    brainContext: string,
+    contentType: string,
+    imageFeedback?: string,
+  ): Promise<string> {
     const promptResponse = await this.getOpenAI().chat.completions.create({
       model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
       messages: [
         {
           role: 'system',
-          content: `Generate a DALL-E 3 image prompt for a professional social media post image.
-Rules: photorealistic style, natural lighting, no text in image, no faces (or turned away), professional setting.
+          content: `You write image-generation prompts for premium social media creatives for a home-services / roofing business.
+Rules:
+- Photorealistic, sharp focus, high detail, natural daylight, professional DSLR look
+- Landscape composition suitable for Facebook/Instagram feed
+- Show relevant real-world scene (roof, home exterior, storm sky, crew from behind, materials) matching the brief
+- NO text, logos, watermarks, UI, or captions in the image
+- NO close-up faces; people only from behind/side if needed
+- Avoid blurry, cartoon, clipart, stock-photo-collage, or low-resolution looks
 Return only the image prompt text, nothing else.
 ${brainContext ? `Business context: ${brainContext}` : ''}`,
         },
-        { role: 'user', content: `Brief: ${brief}\nContent type: ${contentType}` },
+        {
+          role: 'user',
+          content: `Brief: ${brief}\nContent type: ${contentType}${
+            imageFeedback ? `\nUser feedback for a better image: ${imageFeedback}` : ''
+          }`,
+        },
       ],
       temperature: 0.7,
     })
-    return promptResponse.choices[0].message.content ?? `Professional business photo related to: ${brief}`
+    return promptResponse.choices[0].message.content ?? `Professional photorealistic roofing business photo related to: ${brief}`
   }
 
   private async searchUnsplash(query: string): Promise<string | null> {
     const accessKey = this.config.get<string>('UNSPLASH_ACCESS_KEY')
 
-    // With API key — full search
+    // With API key — full search (prefer higher-res `full` URL)
     if (accessKey) {
       try {
-        const keyword = query.split(' ').slice(0, 3).join('+')
+        const keyword = encodeURIComponent(
+          [query, 'roofing', 'home exterior'].join(' ').split(/\s+/).slice(0, 6).join(' '),
+        )
         const res = await fetch(
-          `https://api.unsplash.com/search/photos?query=${keyword}&per_page=5&orientation=landscape`,
+          `https://api.unsplash.com/search/photos?query=${keyword}&per_page=8&orientation=landscape&content_filter=high`,
           { headers: { Authorization: `Client-ID ${accessKey}` } },
         )
         if (res.ok) {
           const data: any = await res.json()
           const photos = data.results ?? []
           if (photos.length > 0) {
-            const picked = photos[Math.floor(Math.random() * Math.min(photos.length, 3))]
-            return picked.urls?.regular ?? null
+            const picked = photos[Math.floor(Math.random() * Math.min(photos.length, 4))]
+            return picked.urls?.full ?? picked.urls?.regular ?? null
           }
         }
       } catch {
-        // fall through to free fallback
+        // fall through
       }
     }
 
-    // No API key — use picsum.photos (completely free, no key, no referrer blocks)
-    // Use a seed derived from the query so the same brief always gets the same image
+    // Last resort placeholder — random unrelated picsum looks low-quality for brand posts
+    this.logger.warn('Using picsum placeholder image — set UNSPLASH_ACCESS_KEY or fix OpenAI image generation for better quality')
     try {
-      const seed = query.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) % 1000
-      return `https://picsum.photos/seed/${seed}/1200/630`
+      const seed = (query.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) + Date.now()) % 10000
+      return `https://picsum.photos/seed/${seed}/1600/900`
     } catch {
       return null
+    }
+  }
+
+  /**
+   * Regenerate only the image on an existing draft/pending post (keeps copy).
+   */
+  async regeneratePostImage(
+    tenantId: string,
+    postId: string,
+    feedback?: string,
+  ): Promise<{ id: string; imageUrl: string | null; imagePrompt: string | null; content: string; platform: string }> {
+    await this.requireSocialFeature(tenantId)
+    const post = await this.prisma.socialPost.findFirst({ where: { id: postId, tenantId } })
+    if (!post) throw new NotFoundException('Post not found')
+    if (post.status === 'published') {
+      throw new BadRequestException('Cannot regenerate image on a published post. Create a new post instead.')
+    }
+
+    const brainContext = await this.getBrainContext(tenantId)
+    const brief = feedback
+      ? `${post.content}\n\nImprove image: ${feedback}`
+      : post.content
+    const imageResult = await this.generateImage(
+      brief,
+      brainContext,
+      post.contentType ?? 'general',
+      feedback,
+    )
+
+    const updated = await this.prisma.socialPost.update({
+      where: { id: postId },
+      data: {
+        imageUrl: imageResult.url,
+        imagePrompt: imageResult.prompt,
+      },
+    })
+
+    return {
+      id: updated.id,
+      imageUrl: updated.imageUrl,
+      imagePrompt: updated.imagePrompt,
+      content: updated.content,
+      platform: updated.platform,
     }
   }
 
@@ -388,6 +627,7 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     contentType?: string
     scheduledAt?: Date
     requireApproval?: boolean
+    metadata?: Record<string, any>
   }) {
     await this.requireSocialFeature(tenantId)
 
@@ -413,7 +653,7 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
         status,
         scheduledAt,
         ...(connectedAccount && { socialAccountId: connectedAccount.id }),
-        metadata: { contentHash: this.contentHash(data.content) } as any,
+        metadata: { ...(data.metadata ?? {}), contentHash: this.contentHash(data.content) } as any,
       },
     })
   }
@@ -549,6 +789,132 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     return { success: true }
   }
 
+  // ── Inbound comments/DMs — lookup + reply + tracking ──────────────
+  // Used by WebhooksService when a Meta webhook event comes in for a
+  // connected Page/Instagram account.
+
+  /** Facebook Page id or Instagram Business Account id → connected account row. */
+  async getAccountByPageId(pageId: string, platform?: 'facebook' | 'instagram') {
+    return this.prisma.socialAccount.findFirst({
+      where: { pageId, isActive: true, ...(platform && { platform }) },
+    })
+  }
+
+  async replyToFacebookComment(account: { accessToken: string }, commentId: string, message: string): Promise<any> {
+    const res = await fetch(`https://graph.facebook.com/v21.0/${commentId}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, access_token: account.accessToken }),
+    })
+    const json = await res.json()
+    if (json?.error) throw new Error(`Facebook comment reply error (#${json.error.code}): ${json.error.message}`)
+    return json
+  }
+
+  async replyToInstagramComment(account: { accessToken: string }, commentId: string, message: string): Promise<any> {
+    const res = await fetch(`https://graph.facebook.com/v21.0/${commentId}/replies`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, access_token: account.accessToken }),
+    })
+    const json = await res.json()
+    if (json?.error) throw new Error(`Instagram comment reply error (#${json.error.code}): ${json.error.message}`)
+    return json
+  }
+
+  /** Send a Messenger / Instagram DM reply. Works for both once the account has the relevant messaging scope. */
+  async sendDirectMessage(account: { accessToken: string }, recipientId: string, message: string): Promise<any> {
+    const res = await fetch(`https://graph.facebook.com/v21.0/me/messages?access_token=${account.accessToken}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { id: recipientId },
+        message: { text: message },
+        messaging_type: 'RESPONSE',
+      }),
+    })
+    const json = await res.json()
+    if (json?.error) throw new Error(`Send message error (#${json.error.code}): ${json.error.message}`)
+    return json
+  }
+
+  /**
+   * Record an inbound comment/message before replying — the unique (platform, externalId)
+   * constraint makes this idempotent against Meta's at-least-once webhook redelivery.
+   * Returns null if this externalId was already recorded (i.e. already handled/handling).
+   */
+  async recordInteraction(data: {
+    tenantId: string
+    socialAccountId: string
+    agentId?: string
+    platform: string
+    type: 'comment' | 'message'
+    externalId: string
+    parentId?: string
+    senderId?: string
+    senderName?: string
+    content: string
+  }) {
+    try {
+      return await this.prisma.socialInteraction.create({ data })
+    } catch (err: any) {
+      if (err?.code === 'P2002') return null // duplicate delivery — already being/been handled
+      throw err
+    }
+  }
+
+  async markInteractionReplied(id: string, replyContent: string) {
+    return this.prisma.socialInteraction.update({
+      where: { id },
+      data: { status: 'replied', replyContent, repliedAt: new Date() },
+    })
+  }
+
+  async markInteractionFailed(id: string, errorMessage: string) {
+    return this.prisma.socialInteraction.update({
+      where: { id },
+      data: { status: 'failed', errorMessage },
+    })
+  }
+
+  async markInteractionSkipped(id: string, reason: string) {
+    return this.prisma.socialInteraction.update({
+      where: { id },
+      data: { status: 'skipped', errorMessage: reason },
+    })
+  }
+
+  async getInteractions(tenantId: string, limit = 50) {
+    return this.prisma.socialInteraction.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    })
+  }
+
+  /**
+   * Subscribe a connected Page to the webhook fields our app needs so Meta actually
+   * delivers comment/message events to /webhooks/meta. Non-fatal on failure — the
+   * Page can still be reconnected/re-subscribed later, and post publishing still works.
+   */
+  async subscribePageWebhooks(pageId: string, pageAccessToken: string, includeMessaging: boolean): Promise<void> {
+    const fields = includeMessaging ? ['feed', 'messages', 'messaging_postbacks'] : ['feed']
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/v21.0/${pageId}/subscribed_apps?subscribed_fields=${fields.join(',')}&access_token=${pageAccessToken}`,
+        { method: 'POST' },
+      )
+      const json = await res.json()
+      if (!res.ok || json?.error) {
+        this.logger.warn(`Page ${pageId} webhook subscribe failed: ${JSON.stringify(json)}`)
+      } else {
+        this.logger.log(`Page ${pageId} subscribed to webhook fields: ${fields.join(', ')}`)
+      }
+    } catch (err: any) {
+      this.logger.warn(`Page ${pageId} webhook subscribe error: ${err.message}`)
+    }
+  }
+
   // ── Scheduler: process due posts ──────────────────────────────────
   // Called by SocialScheduler — checks for posts due to publish
 
@@ -597,12 +963,18 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     }
 
     try {
-      await this.publishToPlatform(post)
+      const result = await this.publishToPlatform(post)
+      const platformPostId = this.extractPlatformPostId(post.platform, result)
       await this.prisma.socialPost.update({
         where: { id: post.id },
-        data: { status: 'published', publishedAt: new Date(), errorMessage: null },
+        data: {
+          status: 'published',
+          publishedAt: new Date(),
+          errorMessage: null,
+          ...(platformPostId && { platformPostId }),
+        },
       })
-      this.logger.log(`Published post ${post.id} to ${post.platform}`)
+      this.logger.log(`Published post ${post.id} to ${post.platform}${platformPostId ? ` (platform id: ${platformPostId})` : ''}`)
     } catch (err: any) {
       const msg = String(err.message ?? err)
       const status = err.status ?? err.response?.status ?? 0
@@ -644,25 +1016,33 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     }
   }
 
-  private async publishToPlatform(post: any): Promise<void> {
+  private async publishToPlatform(post: any): Promise<any> {
     const { platform, socialAccount, content, imageUrl } = post
+    const carouselImages: string[] | undefined = post.metadata?.carouselImages?.filter(Boolean)
 
     switch (platform) {
       case 'facebook':
-        await this.publishToFacebook(socialAccount, content, imageUrl)
-        break
+        return this.publishToFacebook(socialAccount, content, imageUrl, carouselImages)
       case 'instagram':
-        await this.publishToInstagram(socialAccount, content, imageUrl)
-        break
+        return this.publishToInstagram(socialAccount, content, imageUrl, carouselImages)
       case 'linkedin':
-        await this.publishToLinkedIn(socialAccount, content, imageUrl)
-        break
+        return this.publishToLinkedIn(socialAccount, content, imageUrl)
       case 'x':
-        await this.publishToX(socialAccount, content, imageUrl)
-        break
+        return this.publishToX(socialAccount, content, imageUrl)
       default:
         throw new Error(`Unsupported platform: ${platform}`)
     }
+  }
+
+  /** Pull the platform's native post/media id out of its publish response, used later to fetch real metrics. */
+  private extractPlatformPostId(platform: string, result: any): string | null {
+    try {
+      if (platform === 'facebook') return result?.post_id ?? result?.id ?? null
+      if (platform === 'instagram') return result?.id ?? null
+      if (platform === 'x') return result?.data?.id ?? null
+      if (platform === 'linkedin') return result?.id ?? null
+    } catch { /* best-effort */ }
+    return null
   }
 
   // ── Review-to-post ────────────────────────────────────────────────
@@ -674,7 +1054,7 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     platforms: string[]
   }) {
     await this.requireSocialFeature(tenantId)
-    const brainContext = ''
+    const brainContext = await this.getBrainContext(tenantId)
     const posts = await Promise.all(
       opts.platforms.map(async (platform) => {
         const spec = PLATFORM_SPECS[platform] ?? PLATFORM_SPECS.facebook
@@ -683,6 +1063,7 @@ Platform style: ${spec.style}. Max ${spec.maxLength} chars. Use ${spec.hashtagCo
 ${opts.reviewerName ? `Customer name: ${opts.reviewerName}` : ''}
 ${opts.rating ? `Rating: ${opts.rating}/5 stars` : ''}
 Review: "${opts.reviewText}"
+${brainContext ? `\nBusiness context (match our real brand voice and details):\n${brainContext}` : ''}
 
 Write something warm, genuine, and specific to what they said. Don't be generic.
 Return only the post text, no commentary.`
@@ -750,27 +1131,72 @@ Return only the post text.`
     industry?: string
   }) {
     await this.requireSocialFeature(tenantId)
-    const prompt = `Create a ${opts.days}-day social media content calendar for a ${opts.industry ?? 'service'} business.
+    const days = Math.min(Math.max(opts.days, 1), 30)
+    const prompt = `Create a ${days}-day social media content calendar for a ${opts.industry ?? 'service'} business.
 Platforms: ${opts.platforms.join(', ')}
 Content mix: 40% educational, 20% promotional, 20% customer stories, 20% team/culture.
 
-Return a JSON array of ${opts.days} items, each with:
-{ "day": number, "platform": string, "contentType": string, "topic": string, "brief": string, "bestTime": string }
+Return a JSON object of the exact shape:
+{ "items": [ { "day": number, "platform": string, "contentType": string, "topic": string, "brief": string, "bestTime": string }, ... ] }
 
-Return only the JSON array.`
+The "items" array must contain exactly ${days} entries, one per day, cycling through these platforms: ${opts.platforms.join(', ')}.
+Return only that JSON object, nothing else.`
 
-    const response = await this.getOpenAI().chat.completions.create({
-      model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.7,
-      response_format: { type: 'json_object' },
-    })
     try {
-      const parsed = JSON.parse(response.choices[0].message.content ?? '{}')
-      return parsed.items ?? parsed.calendar ?? parsed
-    } catch {
+      const response = await this.getOpenAI().chat.completions.create({
+        model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+        response_format: { type: 'json_object' },
+      })
+      const raw = response.choices[0].message.content ?? '{}'
+      const parsed = JSON.parse(raw)
+      const items = Array.isArray(parsed) ? parsed : (parsed.items ?? parsed.calendar ?? parsed.days ?? parsed.plan ?? null)
+      if (!Array.isArray(items)) {
+        this.logger.error(`generateCalendar: model did not return an items array. Raw: ${raw.slice(0, 500)}`)
+        return []
+      }
+      return items
+    } catch (err: any) {
+      this.logger.error(`generateCalendar failed: ${err.message}`)
       return []
     }
+  }
+
+  /**
+   * Persist generated calendar items as lightweight draft placeholders in Social Media,
+   * so a planned topic isn't lost — full copy/image is generated later via post_to_social
+   * (or the daily scheduler) when that day actually comes around.
+   */
+  async saveCalendarAsDrafts(
+    tenantId: string,
+    agentId: string | undefined,
+    items: Array<{ day?: number; platform?: string; contentType?: string; topic?: string; brief?: string; bestTime?: string }>,
+  ) {
+    await this.requireSocialFeature(tenantId)
+    const startOfToday = new Date()
+    startOfToday.setHours(9, 0, 0, 0)
+
+    const created = await Promise.all(
+      items.filter((it) => it.topic || it.brief).map((it) => {
+        const platform = it.platform ?? 'facebook'
+        const dayOffset = Math.max((it.day ?? 1) - 1, 0)
+        const scheduledAt = new Date(startOfToday.getTime() + dayOffset * 24 * 60 * 60 * 1000)
+        return this.prisma.socialPost.create({
+          data: {
+            tenantId,
+            agentId,
+            platform,
+            content: [it.topic, it.brief].filter(Boolean).join(' — '),
+            contentType: it.contentType ?? 'general',
+            status: 'draft',
+            scheduledAt,
+            metadata: { isCalendarPlaceholder: true, calendarDay: it.day, bestTime: it.bestTime } as any,
+          },
+        })
+      }),
+    )
+    return created
   }
 
   // ── Social analytics ─────────────────────────────────────────────
@@ -785,7 +1211,7 @@ Return only the JSON array.`
         where: { tenantId, status: 'published' },
         orderBy: { publishedAt: 'desc' },
         take: 10,
-        select: { platform: true, contentType: true, publishedAt: true, content: true },
+        select: { platform: true, contentType: true, publishedAt: true, content: true, metadata: true, platformPostId: true },
       }),
     ])
 
@@ -798,6 +1224,30 @@ Return only the JSON array.`
       where: { tenantId, status: 'pending_approval' },
     })
 
+    // Real engagement metrics, aggregated from whatever we've fetched so far via
+    // the analytics refresh scheduler (metadata.insights). Posts without a
+    // platformPostId (pre-dating this feature, or platforms we can't query yet)
+    // simply don't contribute — no fake numbers.
+    const withInsights = recent.filter((p: any) => p.metadata?.insights)
+    const engagement = withInsights.reduce(
+      (acc: any, p: any) => {
+        const ins = p.metadata.insights
+        acc.likes += ins.likes ?? 0
+        acc.comments += ins.comments ?? 0
+        acc.shares += ins.shares ?? 0
+        acc.impressions += ins.impressions ?? 0
+        return acc
+      },
+      { likes: 0, comments: 0, shares: 0, impressions: 0 },
+    )
+    const topPost = withInsights.length
+      ? withInsights.reduce((best: any, p: any) => {
+          const score = (p.metadata.insights.likes ?? 0) + (p.metadata.insights.comments ?? 0) + (p.metadata.insights.shares ?? 0)
+          const bestScore = (best.metadata.insights.likes ?? 0) + (best.metadata.insights.comments ?? 0) + (best.metadata.insights.shares ?? 0)
+          return score > bestScore ? p : best
+        })
+      : null
+
     return {
       total,
       thisWeek,
@@ -805,13 +1255,116 @@ Return only the JSON array.`
       byStatus: Object.fromEntries(byStatus.map((s) => [s.status, s._count])),
       byPlatform: Object.fromEntries(byPlatform.map((p) => [p.platform, p._count])),
       recentPosts: recent,
+      engagement: {
+        ...engagement,
+        postsWithData: withInsights.length,
+        postsTracked: recent.length,
+      },
+      topPost: topPost ? { platform: topPost.platform, content: topPost.content.slice(0, 150), insights: (topPost.metadata as any).insights } : null,
     }
   }
 
+  // ── Real engagement metrics (likes/comments/shares/impressions) ──
+
+  /** Pull native metrics for one published post from the platform's Graph/Insights API. */
+  async fetchPostInsights(post: {
+    id: string
+    platform: string
+    platformPostId: string | null
+    socialAccount: { accessToken: string } | null
+  }): Promise<Record<string, number> | null> {
+    if (!post.platformPostId || !post.socialAccount) return null
+    try {
+      if (post.platform === 'facebook') {
+        const res = await fetch(
+          `https://graph.facebook.com/v21.0/${post.platformPostId}?fields=likes.summary(true).limit(0),comments.summary(true).limit(0),shares&access_token=${post.socialAccount.accessToken}`,
+        )
+        const json = await res.json()
+        if (json?.error) return null
+        return {
+          likes: json.likes?.summary?.total_count ?? 0,
+          comments: json.comments?.summary?.total_count ?? 0,
+          shares: json.shares?.count ?? 0,
+          impressions: 0,
+        }
+      }
+      if (post.platform === 'instagram') {
+        const res = await fetch(
+          `https://graph.facebook.com/v21.0/${post.platformPostId}?fields=like_count,comments_count&access_token=${post.socialAccount.accessToken}`,
+        )
+        const json = await res.json()
+        if (json?.error) return null
+        return {
+          likes: json.like_count ?? 0,
+          comments: json.comments_count ?? 0,
+          shares: 0,
+          impressions: 0,
+        }
+      }
+      // LinkedIn/X insights require additional restricted-access API scopes not yet requested.
+      return null
+    } catch (err: any) {
+      this.logger.warn(`fetchPostInsights failed for post ${post.id}: ${err.message}`)
+      return null
+    }
+  }
+
+  /** Refresh metrics for recently-published posts (called by the analytics scheduler). */
+  async refreshAnalytics(tenantId: string, sinceDays = 30): Promise<{ checked: number; updated: number }> {
+    const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+    const posts = await this.prisma.socialPost.findMany({
+      where: {
+        tenantId,
+        status: 'published',
+        publishedAt: { gte: since },
+        platformPostId: { not: null },
+        platform: { in: ['facebook', 'instagram'] },
+      },
+      include: { socialAccount: true },
+    })
+
+    let updated = 0
+    for (const post of posts) {
+      const insights = await this.fetchPostInsights(post as any)
+      if (!insights) continue
+      const metadata = { ...(post.metadata as any ?? {}), insights: { ...insights, fetchedAt: new Date().toISOString() } }
+      await this.prisma.socialPost.update({ where: { id: post.id }, data: { metadata } })
+      updated++
+    }
+    return { checked: posts.length, updated }
+  }
+
   // Phase 2 stubs — filled in when OAuth credentials are available
-  private async publishToFacebook(account: any, content: string, imageUrl?: string) {
+  private async publishToFacebook(account: any, content: string, imageUrl?: string, carouselImages?: string[]) {
     const { accessToken, pageId } = account
     if (!accessToken || !pageId) throw new Error('Facebook credentials not configured')
+
+    // Multi-photo post: upload each image unpublished, then attach all to one feed post.
+    if (carouselImages && carouselImages.length > 1) {
+      const photoIds = await Promise.all(
+        carouselImages.map(async (url) => {
+          const res = await fetch(`https://graph.facebook.com/v21.0/${pageId}/photos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, published: false, access_token: accessToken }),
+          })
+          const json = await res.json()
+          if (json?.error) throw new Error(`Facebook photo upload error (#${json.error.code}): ${json.error.message}`)
+          return json.id as string
+        }),
+      )
+      const attachedMedia: Record<string, any> = {}
+      photoIds.forEach((id, i) => { attachedMedia[`attached_media[${i}]`] = JSON.stringify({ media_fbid: id }) })
+      const res = await fetch(`https://graph.facebook.com/v21.0/${pageId}/feed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: content, access_token: accessToken, ...attachedMedia }),
+      })
+      const json = await res.json()
+      if (json?.error) throw new Error(`Facebook carousel post error (#${json.error.code}): ${json.error.message}`)
+      return json
+    }
+
     const url = `https://graph.facebook.com/v21.0/${pageId}/feed`
     const body: any = { message: content, access_token: accessToken }
     if (imageUrl) body.link = imageUrl
@@ -837,9 +1390,38 @@ Return only the JSON array.`
     return json
   }
 
-  private async publishToInstagram(account: any, content: string, imageUrl?: string) {
-    if (!imageUrl) throw new Error('Instagram requires an image')
+  private async publishToInstagram(account: any, content: string, imageUrl?: string, carouselImages?: string[]) {
     const { accessToken, pageId } = account
+
+    // Carousel: create a child container per image, then a parent CAROUSEL container.
+    if (carouselImages && carouselImages.length > 1) {
+      const childIds = await Promise.all(
+        carouselImages.map(async (url) => {
+          const res = await fetch(
+            `https://graph.facebook.com/v21.0/${pageId}/media?image_url=${encodeURIComponent(url)}&is_carousel_item=true&access_token=${accessToken}`,
+            { method: 'POST' },
+          )
+          const json = await res.json()
+          if (json?.error) throw new Error(`Instagram carousel child error (#${json.error.code}): ${json.error.message}`)
+          return json.id as string
+        }),
+      )
+      const carouselRes = await fetch(
+        `https://graph.facebook.com/v21.0/${pageId}/media?media_type=CAROUSEL&children=${childIds.join(',')}&caption=${encodeURIComponent(content)}&access_token=${accessToken}`,
+        { method: 'POST' },
+      )
+      const carouselJson = await carouselRes.json()
+      if (carouselJson?.error) throw new Error(`Instagram carousel create error (#${carouselJson.error.code}): ${carouselJson.error.message}`)
+      const publishRes = await fetch(
+        `https://graph.facebook.com/v21.0/${pageId}/media_publish?creation_id=${carouselJson.id}&access_token=${accessToken}`,
+        { method: 'POST' },
+      )
+      const publishJson = await publishRes.json()
+      if (publishJson?.error) throw new Error(`Instagram carousel publish error (#${publishJson.error.code}): ${publishJson.error.message}`)
+      return publishJson
+    }
+
+    if (!imageUrl) throw new Error('Instagram requires an image')
     // Step 1: create media container
     const mediaRes = await fetch(
       `https://graph.facebook.com/v21.0/${pageId}/media?image_url=${encodeURIComponent(imageUrl)}&caption=${encodeURIComponent(content)}&access_token=${accessToken}`,
@@ -981,6 +1563,11 @@ Return only the JSON array.`
         },
       })
     }
+
+    // Subscribe the Page to webhook fields so /webhooks/meta actually receives
+    // new comments (and DMs, if the messaging scope was granted) going forward.
+    const includeMessaging = this.config.get<string>('FACEBOOK_MESSAGING_SCOPES') === 'true'
+    await this.subscribePageWebhooks(page.id, page.access_token, includeMessaging)
 
     this.logger.log(`Facebook + Instagram accounts connected for tenant ${tenantId}`)
   }

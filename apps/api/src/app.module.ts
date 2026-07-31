@@ -6,6 +6,7 @@ import { AuthModule } from './modules/auth/auth.module'
 import { TenantsModule } from './modules/tenants/tenants.module'
 import { AgentsModule } from './modules/agents/agents.module'
 import { HannaSchedulerModule } from './modules/agents/hanna-scheduler.module'
+import { SocialDailySchedulerModule } from './modules/social/social-daily-scheduler.module'
 import { ChatModule } from './modules/chat/chat.module'
 import { TasksModule } from './modules/tasks/tasks.module'
 import { ApprovalsModule } from './modules/approvals/approvals.module'
@@ -59,6 +60,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     TenantsModule,
     AgentsModule,
     HannaSchedulerModule,
+    SocialDailySchedulerModule,
     PublicChatModule,
     ChatModule,
     TasksModule,

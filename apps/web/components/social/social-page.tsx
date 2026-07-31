@@ -73,6 +73,7 @@ export function SocialPage() {
   const [brief, setBrief] = useState('')
   const [platforms, setPlatforms] = useState<string[]>(['facebook', 'instagram'])
   const [contentType, setContentType] = useState('')
+  const [scheduledAt, setScheduledAt] = useState('')
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [drafts, setDrafts] = useState<any[]>([])
   const [generating, setGenerating] = useState(false)
@@ -103,14 +104,46 @@ export function SocialPage() {
   const [calItems, setCalItems] = useState<any[]>([])
   const [generatingCal, setGeneratingCal] = useState(false)
 
+  // Calendar day N always maps to "today + (N-1) days" — matches the backend's
+  // saveCalendarAsDrafts scheduling, so the preview always shows the real date.
+  function dateForCalendarDay(day: number, bestTime?: string): Date {
+    const d = new Date()
+    d.setHours(9, 0, 0, 0)
+    d.setDate(d.getDate() + Math.max((day ?? 1) - 1, 0))
+    const match = /^(\d{1,2}):(\d{2})\s*(AM|PM)?/i.exec((bestTime ?? '').trim())
+    if (match) {
+      let h = parseInt(match[1], 10)
+      const m = parseInt(match[2], 10)
+      const period = match[3]?.toUpperCase()
+      if (period === 'PM' && h < 12) h += 12
+      if (period === 'AM' && h === 12) h = 0
+      d.setHours(h, m, 0, 0)
+    }
+    return d
+  }
+
   async function handleGenerateCalendar() {
     setGeneratingCal(true)
     try {
       const res = await api.post('/social/calendar', { days: calDays, platforms: calPlatforms })
-      setCalItems(Array.isArray(res.data) ? res.data : [])
-    } catch { toast.error('Failed to generate calendar') }
+      const items = Array.isArray(res.data) ? res.data : []
+      setCalItems(items)
+      if (items.length === 0) toast.error('No calendar items came back — try again, or with fewer days')
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message ?? 'Failed to generate calendar')
+    }
     finally { setGeneratingCal(false) }
   }
+
+  const saveCalendarMutation = useMutation({
+    mutationFn: () => api.post('/social/calendar/save-drafts', { items: calItems }),
+    onSuccess: (res: any) => {
+      qc.invalidateQueries({ queryKey: ['social-posts'] })
+      const count = Array.isArray(res.data) ? res.data.length : 0
+      toast.success(`Saved ${count} planned post${count === 1 ? '' : 's'} as drafts — find them in Posts → Draft`)
+    },
+    onError: () => toast.error('Failed to save calendar as drafts'),
+  })
 
   // Review-to-post state
   const [reviewText, setReviewText] = useState('')
@@ -146,6 +179,16 @@ export function SocialPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/social/posts/${id}`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['social-posts'] }); toast.success('Post deleted') },
+  })
+
+  const refreshAnalyticsMutation = useMutation({
+    mutationFn: () => api.post('/social/analytics/refresh'),
+    onSuccess: (res: any) => {
+      qc.invalidateQueries({ queryKey: ['social-analytics'] })
+      const { updated, checked } = res.data ?? {}
+      toast.success(checked ? `Refreshed ${updated}/${checked} posts` : 'No published posts to refresh yet')
+    },
+    onError: () => toast.error('Failed to refresh analytics'),
   })
 
   const updateMutation = useMutation({
@@ -393,6 +436,29 @@ export function SocialPage() {
               </div>
             </div>
 
+            {/* Scheduling */}
+            <div>
+              <label className="text-sm font-medium">When should it post? (optional)</label>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  type="datetime-local"
+                  value={scheduledAt}
+                  onChange={(e) => setScheduledAt(e.target.value)}
+                  className="rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                {scheduledAt && (
+                  <button onClick={() => setScheduledAt('')} className="text-muted-foreground hover:text-foreground">
+                    <XCircle className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {scheduledAt
+                  ? 'Once you approve this post, it stays queued and auto-publishes at this exact time — no need to be online.'
+                  : 'Leave empty to publish immediately as soon as you click Approve.'}
+              </p>
+            </div>
+
             <button
               onClick={handleGenerate}
               disabled={generating || !brief.trim() || platforms.length === 0}
@@ -411,6 +477,7 @@ export function SocialPage() {
                 <DraftCard
                   key={i}
                   draft={draft}
+                  scheduledAt={scheduledAt}
                   onSave={(data) => saveDraftMutation.mutate({ ...data, requireApproval: true })}
                 />
               ))}
@@ -489,30 +556,59 @@ export function SocialPage() {
               </button>
             </div>
             {calItems.length > 0 && (
-              <div className="space-y-2 max-h-96 overflow-y-auto">
-                {calItems.map((item: any, i: number) => (
-                  <div key={i} className="flex gap-3 p-3 rounded-lg border border-border bg-background">
-                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary shrink-0">
-                      {item.day}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {PLATFORM_ICONS[item.platform]}
-                        <span className="text-xs bg-muted px-2 py-0.5 rounded-full capitalize">{item.contentType}</span>
-                        <span className="text-xs text-muted-foreground">{item.bestTime}</span>
+              <>
+                <div className="flex items-center justify-between gap-3 flex-wrap bg-muted/50 rounded-lg p-3">
+                  <p className="text-xs text-muted-foreground">
+                    This is a plan only — nothing is posted yet. <strong>Save as Drafts</strong> to store these dates in Social Media, or click <strong>Generate →</strong> on a single day to write the real caption + image now. Either way, every post still needs your approval before it goes live — <strong>Approve</strong> publishes immediately, or at its scheduled time if one is set.
+                  </p>
+                  <button
+                    onClick={() => saveCalendarMutation.mutate()}
+                    disabled={saveCalendarMutation.isPending}
+                    className="flex items-center justify-center gap-1.5 bg-foreground text-background px-3 py-1.5 rounded-lg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity shrink-0"
+                  >
+                    {saveCalendarMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                    {saveCalendarMutation.isPending ? 'Saving...' : `Save All ${calItems.length} as Drafts`}
+                  </button>
+                </div>
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {calItems.map((item: any, i: number) => {
+                    const date = dateForCalendarDay(item.day, item.bestTime)
+                    return (
+                      <div key={i} className="flex gap-3 p-3 rounded-lg border border-border bg-background">
+                        <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary shrink-0">
+                          {item.day}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {PLATFORM_ICONS[item.platform]}
+                            <span className="text-xs bg-muted px-2 py-0.5 rounded-full capitalize">{item.contentType}</span>
+                            <span className="text-xs text-muted-foreground flex items-center gap-1" suppressHydrationWarning>
+                              <Clock className="w-3 h-3" />
+                              {date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · {item.bestTime ?? date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                            </span>
+                          </div>
+                          <p className="text-sm font-medium mt-0.5">{item.topic}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{item.brief}</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setBrief(item.brief)
+                            setPlatforms([item.platform])
+                            setContentType(item.contentType)
+                            // toLocaleString-free local ISO for <input type="datetime-local">
+                            const pad = (n: number) => String(n).padStart(2, '0')
+                            setScheduledAt(`${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`)
+                            setTab('generate')
+                          }}
+                          className="text-xs text-primary hover:underline shrink-0"
+                        >
+                          Generate →
+                        </button>
                       </div>
-                      <p className="text-sm font-medium mt-0.5">{item.topic}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{item.brief}</p>
-                    </div>
-                    <button
-                      onClick={() => { setBrief(item.brief); setPlatforms([item.platform]); setContentType(item.contentType); setTab('generate') }}
-                      className="text-xs text-primary hover:underline shrink-0"
-                    >
-                      Generate →
-                    </button>
-                  </div>
-                ))}
-              </div>
+                    )
+                  })}
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -539,6 +635,40 @@ export function SocialPage() {
                     <p className="text-xs text-muted-foreground mt-1">{s.label}</p>
                   </div>
                 ))}
+              </div>
+              <div className="rounded-xl border border-border bg-card p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-sm font-semibold">Real Engagement (Facebook/Instagram)</h4>
+                  <button
+                    onClick={() => refreshAnalyticsMutation.mutate()}
+                    disabled={refreshAnalyticsMutation.isPending}
+                    className="text-xs text-primary hover:underline disabled:opacity-50"
+                  >
+                    {refreshAnalyticsMutation.isPending ? 'Refreshing…' : 'Refresh now'}
+                  </button>
+                </div>
+                {analytics.engagement?.postsWithData > 0 ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {[
+                      { label: 'Likes', value: analytics.engagement.likes },
+                      { label: 'Comments', value: analytics.engagement.comments },
+                      { label: 'Shares', value: analytics.engagement.shares },
+                      { label: 'Posts Tracked', value: `${analytics.engagement.postsWithData}/${analytics.engagement.postsTracked}` },
+                    ].map((m) => (
+                      <div key={m.label}>
+                        <p className="text-lg font-bold">{m.value}</p>
+                        <p className="text-xs text-muted-foreground">{m.label}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No metrics yet — click "Refresh now" after a post has been live for a bit, or wait for the automatic 6-hour refresh.</p>
+                )}
+                {analytics.topPost && (
+                  <p className="text-xs text-muted-foreground mt-3 pt-3 border-t border-border">
+                    🏆 Top post ({analytics.topPost.platform}): "{analytics.topPost.content}" — {analytics.topPost.insights.likes} likes, {analytics.topPost.insights.comments} comments
+                  </p>
+                )}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="rounded-xl border border-border bg-card p-4">
@@ -753,9 +883,18 @@ function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
   onDelete: () => void
   onEdit: () => void
 }) {
+  const format = post.metadata?.format
+  const carouselImages: string[] = post.metadata?.carouselImages ?? []
+
   return (
     <div className="rounded-xl border border-border bg-card p-3 sm:p-4 flex gap-3">
-      {post.imageUrl && (
+      {carouselImages.length > 1 ? (
+        <div className="flex -space-x-6 shrink-0 self-start">
+          {carouselImages.slice(0, 3).map((url, i) => (
+            <img key={i} src={url} alt="" className="w-20 h-20 sm:w-28 sm:h-28 rounded-lg object-cover border-2 border-card" style={{ zIndex: 3 - i }} />
+          ))}
+        </div>
+      ) : post.imageUrl && (
         <img src={post.imageUrl} alt="" className="w-24 h-24 sm:w-32 sm:h-32 rounded-lg object-cover shrink-0 self-start" />
       )}
       <div className="flex-1 min-w-0 space-y-1.5">
@@ -767,8 +906,13 @@ function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
           <span className="text-xs text-muted-foreground capitalize bg-muted px-2 py-0.5 rounded-full hidden sm:inline">
             {post.contentType}
           </span>
+          {format && format !== 'single_image' && (
+            <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-violet-500/10 text-violet-600">
+              {format === 'carousel' ? `${carouselImages.length || ''} slide carousel` : format.replace('_', ' ')}
+            </span>
+          )}
         </div>
-        <p className="text-sm line-clamp-2">{post.content}</p>
+        <p className="text-sm line-clamp-2 whitespace-pre-line">{post.content}</p>
         {post.scheduledAt && (
           <p className="text-xs text-muted-foreground flex items-center gap-1" suppressHydrationWarning>
             <Clock className="w-3 h-3" />
@@ -856,7 +1000,7 @@ function GalleryCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
   )
 }
 
-function DraftCard({ draft, onSave }: { draft: any; onSave: (data: any) => void }) {
+function DraftCard({ draft, onSave, scheduledAt }: { draft: any; onSave: (data: any) => void; scheduledAt?: string }) {
   const [content, setContent] = useState(draft.content)
   const [showAlts, setShowAlts] = useState(false)
 
@@ -907,9 +1051,22 @@ function DraftCard({ draft, onSave }: { draft: any; onSave: (data: any) => void 
         </div>
       )}
 
+      {scheduledAt && (
+        <p className="text-xs text-muted-foreground flex items-center gap-1" suppressHydrationWarning>
+          <Clock className="w-3 h-3" />
+          Will auto-publish {new Date(scheduledAt).toLocaleString()} once approved
+        </p>
+      )}
+
       <div className="flex gap-2">
         <button
-          onClick={() => onSave({ platform: draft.platform, content, imageUrl: draft.imageUrl, contentType: draft.contentType })}
+          onClick={() => onSave({
+            platform: draft.platform,
+            content,
+            imageUrl: draft.imageUrl,
+            contentType: draft.contentType,
+            ...(scheduledAt && { scheduledAt: new Date(scheduledAt).toISOString() }),
+          })}
           className="flex items-center justify-center gap-1.5 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors w-full sm:w-auto"
         >
           <Send className="w-3.5 h-3.5" />

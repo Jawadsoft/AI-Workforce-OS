@@ -45,6 +45,7 @@ model Tenant {
   featureFlags      TenantFeatureFlag[]
   socialAccounts    SocialAccount[]
   socialPosts       SocialPost[]
+  socialInteractions SocialInteraction[]
 }
 
 // ─────────────────────────────────────────────
@@ -780,8 +781,9 @@ model SocialAccount {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  posts  SocialPost[]
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  posts        SocialPost[]
+  interactions SocialInteraction[]
 
   @@unique([tenantId, platform])
   @@index([tenantId])
@@ -813,4 +815,33 @@ model SocialPost {
   @@index([tenantId, status])
   @@index([tenantId, platform])
   @@index([scheduledAt])
+}
+
+// Inbound comments/DMs on connected social accounts + the agent's auto-reply.
+// externalId is the platform's comment/message id — used to dedupe retried webhook
+// deliveries and to guard against replying to our own auto-reply (infinite loop).
+model SocialInteraction {
+  id              String    @id @default(cuid())
+  tenantId        String
+  socialAccountId String
+  agentId         String?
+  platform        String    // "facebook" | "instagram"
+  type            String    // "comment" | "message"
+  externalId      String    // platform comment id or message id
+  parentId        String?   // post id (comment) or conversation thread id (message)
+  senderId        String?   // commenter PSID/IGSID or sender PSID/IGSID
+  senderName      String?
+  content         String    @db.Text
+  replyContent    String?   @db.Text
+  status          String    @default("received") // received | replied | skipped | failed
+  errorMessage    String?
+  createdAt       DateTime  @default(now())
+  repliedAt       DateTime?
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([platform, externalId])
+  @@index([tenantId, createdAt])
+  @@index([socialAccountId])
 }

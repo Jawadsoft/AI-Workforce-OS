@@ -3,7 +3,8 @@ services:
     name: ai-workforce-api
     runtime: node
     plan: starter
-    buildCommand: NODE_ENV=development corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile --prod=false && pnpm db:generate && pnpm --filter @ai-workforce/api build
+    # migrate deploy also in build so schema is applied even if preDeploy is skipped/unavailable
+    buildCommand: NODE_ENV=development corepack enable && corepack prepare pnpm@9.0.0 --activate && pnpm install --frozen-lockfile --prod=false && pnpm db:generate && pnpm exec prisma migrate deploy --schema=./prisma/schema.prisma && pnpm --filter @ai-workforce/api build
     preDeployCommand: pnpm exec prisma migrate deploy --schema=./prisma/schema.prisma && pnpm db:seed
     startCommand: pnpm --filter @ai-workforce/api start
     disk:

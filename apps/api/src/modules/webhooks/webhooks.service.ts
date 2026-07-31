@@ -6,6 +6,14 @@ import { AIService } from '../../ai/ai.service'
 import { CrmContextService } from '../crm/crm-context.service'
 import { BrainService } from '../brain/brain.service'
 import { ChatService } from '../chat/chat.service'
+import { SocialService } from '../social/social.service'
+import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
+import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
+
+// CRM events that are genuinely worth considering as social content —
+// a good customer story, a milestone, a reason to post. Kept small and
+// high-signal on purpose so the social agent isn't nudged constantly.
+const CAMPAIGN_TRIGGER_EVENTS = new Set(['job.completed', 'proposal.accepted'])
 
 // Maps CRM event types → agent roles that should handle them
 const EVENT_ROLE_MAP: Record<string, string[]> = {
@@ -53,6 +61,8 @@ export class WebhooksService {
     private readonly brain: BrainService,
     private readonly chat: ChatService,
     private readonly config: ConfigService,
+    private readonly social: SocialService,
+    private readonly featureFlags: FeatureFlagsService,
   ) {}
 
   // ── Meta / Facebook webhook verification + events ───────────────
@@ -106,41 +116,231 @@ export class WebhooksService {
   }
 
   async handleMetaEvent(payload: Record<string, any>): Promise<{ received: boolean; object?: string; entries?: number }> {
-    const object = payload?.object
+    const object = payload?.object // 'page' | 'instagram'
     const entries = Array.isArray(payload?.entry) ? payload.entry : []
     this.logger.log(`Meta webhook event object=${object ?? 'unknown'} entries=${entries.length}`)
 
+    const platform: 'facebook' | 'instagram' = object === 'instagram' ? 'instagram' : 'facebook'
+
     for (const entry of entries) {
       const pageId = entry?.id ? String(entry.id) : undefined
-      if (pageId) {
-        const account = await this.prisma.socialAccount.findFirst({
-          where: { pageId, platform: { in: ['facebook', 'instagram'] }, isActive: true },
-          select: { tenantId: true, accountName: true, platform: true },
-        })
-        if (account) {
-          this.logger.log(
-            `Meta event matched ${account.platform} page "${account.accountName}" tenant=${account.tenantId}`,
+      if (!pageId) continue
+
+      const account = await this.social.getAccountByPageId(pageId, platform)
+      if (!account) {
+        this.logger.debug(`Meta event for pageId=${pageId} — no linked SocialAccount, ignoring`)
+        continue
+      }
+
+      // Messenger-style DMs (Facebook Page inbox + Instagram unified messaging)
+      const messaging = entry?.messaging
+      if (Array.isArray(messaging)) {
+        for (const msg of messaging) {
+          // Fire-and-forget: Meta needs a fast 200 ack, reply generation happens async.
+          this.processMessagingEvent(account, pageId, platform, msg).catch((err: any) =>
+            this.logger.error(`[Meta webhook] messaging handling failed: ${err.message}`),
           )
-        } else {
-          this.logger.debug(`Meta event for pageId=${pageId} — no linked SocialAccount`)
         }
       }
 
-      // Messenger-style messaging events (if subscribed)
-      const messaging = entry?.messaging
-      if (Array.isArray(messaging) && messaging.length) {
-        this.logger.log(`Meta messaging events: ${messaging.length}`)
-      }
-
-      // Feed / comments / other change fields
+      // Feed changes (Facebook comments) / comments changes (Instagram)
       const changes = entry?.changes
-      if (Array.isArray(changes) && changes.length) {
-        this.logger.log(`Meta change fields: ${changes.map((c: any) => c?.field).filter(Boolean).join(', ') || changes.length}`)
+      if (Array.isArray(changes)) {
+        for (const change of changes) {
+          this.processCommentChange(account, pageId, platform, change).catch((err: any) =>
+            this.logger.error(`[Meta webhook] comment handling failed: ${err.message}`),
+          )
+        }
       }
     }
 
     // Acknowledge immediately — Meta requires a fast 200 response
     return { received: true, object, entries: entries.length }
+  }
+
+  // ── Inbound Messenger/Instagram DM → AI reply ─────────────────────
+
+  private async processMessagingEvent(
+    account: { id: string; tenantId: string; accessToken: string },
+    pageId: string,
+    platform: 'facebook' | 'instagram',
+    msg: any,
+  ): Promise<void> {
+    const senderId = msg?.sender?.id ? String(msg.sender.id) : undefined
+    const messageText: string | undefined = msg?.message?.text
+    const messageId: string | undefined = msg?.message?.mid
+    const isEcho = msg?.message?.is_echo === true
+
+    // Skip delivery/read receipts, attachment-only messages, and echoes of our own sends.
+    if (!senderId || !messageText || !messageId) return
+    if (isEcho || senderId === pageId) return
+
+    const agent = await this.findSocialAgent(account.tenantId)
+
+    const interaction = await this.social.recordInteraction({
+      tenantId: account.tenantId,
+      socialAccountId: account.id,
+      agentId: agent?.id,
+      platform,
+      type: 'message',
+      externalId: messageId,
+      senderId,
+      content: messageText,
+    })
+    if (!interaction) return // duplicate webhook redelivery — already handled
+
+    try {
+      const replyText = await this.generateSocialReply(account.tenantId, agent, platform, 'message', messageText)
+      await this.social.sendDirectMessage(account, senderId, replyText)
+      await this.social.markInteractionReplied(interaction.id, replyText)
+      if (agent) await this.postInteractionBriefing(account.tenantId, agent.id, platform, 'message', messageText, replyText)
+      this.logger.log(`Auto-replied to ${platform} DM from ${senderId}`)
+    } catch (err: any) {
+      this.logger.error(`Failed to reply to ${platform} message: ${err.message}`)
+      await this.social.markInteractionFailed(interaction.id, err.message)
+    }
+  }
+
+  // ── Inbound Facebook/Instagram comment → AI reply ─────────────────
+
+  private async processCommentChange(
+    account: { id: string; tenantId: string; accessToken: string },
+    pageId: string,
+    platform: 'facebook' | 'instagram',
+    change: any,
+  ): Promise<void> {
+    const field = change?.field
+    const value = change?.value ?? {}
+    const isFacebookComment = field === 'feed' && value?.item === 'comment' && (value?.verb ?? 'add') === 'add'
+    const isInstagramComment = field === 'comments'
+    if (!isFacebookComment && !isInstagramComment) return
+
+    const commentId: string | undefined = isFacebookComment ? value.comment_id : value.id
+    const commentText: string | undefined = isFacebookComment ? value.message : value.text
+    const senderId: string | undefined = isFacebookComment ? value.sender_id : value?.from?.id
+    const senderName: string | undefined = isFacebookComment ? value.sender_name : value?.from?.username
+    const parentId: string | undefined = isFacebookComment ? value.post_id : value?.media?.id
+
+    if (!commentId || !commentText) return
+    if (senderId && String(senderId) === pageId) return // our own comment/reply — avoid loops
+
+    const agent = await this.findSocialAgent(account.tenantId)
+
+    const interaction = await this.social.recordInteraction({
+      tenantId: account.tenantId,
+      socialAccountId: account.id,
+      agentId: agent?.id,
+      platform,
+      type: 'comment',
+      externalId: commentId,
+      parentId,
+      senderId,
+      senderName,
+      content: commentText,
+    })
+    if (!interaction) return
+
+    try {
+      const replyText = await this.generateSocialReply(account.tenantId, agent, platform, 'comment', commentText)
+      if (platform === 'instagram') {
+        await this.social.replyToInstagramComment(account, commentId, replyText)
+      } else {
+        await this.social.replyToFacebookComment(account, commentId, replyText)
+      }
+      await this.social.markInteractionReplied(interaction.id, replyText)
+      if (agent) await this.postInteractionBriefing(account.tenantId, agent.id, platform, 'comment', commentText, replyText)
+      this.logger.log(`Auto-replied to ${platform} comment ${commentId}`)
+    } catch (err: any) {
+      this.logger.error(`Failed to reply to ${platform} comment: ${err.message}`)
+      await this.social.markInteractionFailed(interaction.id, err.message)
+    }
+  }
+
+  private async findSocialAgent(tenantId: string) {
+    const socialAgent = await this.prisma.agent.findFirst({
+      where: { tenantId, status: 'ACTIVE', tools: { has: 'post_to_social' } },
+      orderBy: { createdAt: 'asc' },
+    })
+    if (socialAgent) return socialAgent
+    return this.prisma.agent.findFirst({
+      where: { tenantId, status: 'ACTIVE' },
+      orderBy: { createdAt: 'asc' },
+    })
+  }
+
+  private async generateSocialReply(
+    tenantId: string,
+    agent: { name: string; role: string; prompt?: string } | null,
+    platform: 'facebook' | 'instagram',
+    kind: 'comment' | 'message',
+    incomingText: string,
+  ): Promise<string> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { settings: true, industry: true, name: true },
+    })
+    const mergedSettings = {
+      ...(tenant?.settings as any ?? {}),
+      industry: (tenant?.settings as any)?.brain?.industry ?? tenant?.industry ?? '',
+      tenantName: tenant?.name ?? '',
+    }
+    const brainContext = this.brain.buildAgentContext(mergedSettings)
+    const brain = (mergedSettings as any)?.brain ?? {}
+    const company = brain.companyName || mergedSettings.tenantName || 'the company'
+    const agentName = agent?.name ?? 'the team'
+    const agentRole = agent?.role ?? 'Social Media Assistant'
+    const platformLabel = platform === 'instagram' ? 'Instagram' : 'Facebook'
+
+    const audience = kind === 'comment'
+      ? `This is a PUBLIC ${platformLabel} comment on one of our posts — anyone can see your reply.`
+      : `This is a PRIVATE ${platformLabel} direct message — only the sender sees your reply.`
+
+    const systemPrompt = `You are ${agentName}, ${agentRole} at ${company}, replying on ${platformLabel} on behalf of the business.
+${audience}
+${brainContext}
+
+RULES:
+- Sound like a real, friendly team member — warm and concise, never robotic or generic.
+- ${kind === 'comment' ? 'Keep it very brief (1-2 short sentences) — public comments should feel natural, not like a support ticket.' : 'You can be a bit more helpful/detailed since this is private, but stay concise.'}
+- Never invent prices, availability, or promises you can't verify from the business info above — if asked, invite them to DM/call/email instead of guessing.
+- Never share internal, confidential, or unrelated information.
+- If the message is spam, abusive, or nonsensical, reply with a short neutral acknowledgment instead of engaging.
+- Do not use hashtags in replies.
+Return ONLY the reply text — no quotes, no explanation, no signature.`
+
+    try {
+      const reply = await this.ai.chat(systemPrompt, [{ role: 'user', content: incomingText }])
+      return reply.trim()
+    } catch (err: any) {
+      this.logger.error(`AI social reply generation failed: ${err.message}`)
+      return 'Thanks for reaching out — someone from our team will follow up with you shortly!'
+    }
+  }
+
+  private async postInteractionBriefing(
+    tenantId: string,
+    agentId: string,
+    platform: string,
+    kind: 'comment' | 'message',
+    incoming: string,
+    reply: string,
+  ): Promise<void> {
+    const emoji = kind === 'comment' ? '💬' : '📩'
+    const label = kind === 'comment' ? 'Comment' : 'Direct Message'
+    const platformLabel = platform === 'instagram' ? 'Instagram' : 'Facebook'
+    const content = `${emoji} **${platformLabel} ${label} auto-replied**
+
+"${incoming.slice(0, 300)}"
+
+**Reply sent:** ${reply}
+
+---
+*Handled automatically. Reply here if you want to follow up further.*`
+    try {
+      await this.chat.postBriefing(tenantId, agentId, content, `social_${kind}`)
+    } catch (err: any) {
+      this.logger.warn(`Failed to post social interaction briefing: ${err.message}`)
+    }
   }
 
   // ── Called when a CRM webhook event arrives ───────────────────────
@@ -248,7 +448,61 @@ ${agent.prompt}`
       this.logger.warn(`Failed to post briefing: ${err.message}`)
     }
 
+    // Some events are genuinely worth a social post (a completed job, a won deal).
+    // Nudge the social media agent separately — never blocks or fails the main event.
+    if (CAMPAIGN_TRIGGER_EVENTS.has(payload.event)) {
+      this.triggerSocialCampaign(tenantId, payload).catch((err: any) =>
+        this.logger.warn(`Social campaign trigger failed: ${err.message}`),
+      )
+    }
+
     return { handled: true, agentName: agent.name, conversationId: conversation.id }
+  }
+
+  // ── Campaign auto-trigger: good CRM news → nudge the social agent ──
+
+  private async triggerSocialCampaign(tenantId: string, payload: CRMWebhookPayload): Promise<void> {
+    const featureOn = await this.featureFlags.isEnabled(tenantId, FEATURES.SOCIAL_MEDIA)
+    if (!featureOn) return
+
+    const socialAgent = await this.prisma.agent.findFirst({
+      where: { tenantId, status: 'ACTIVE', tools: { has: 'post_to_social' } },
+      orderBy: { createdAt: 'asc' },
+    })
+    if (!socialAgent) return
+
+    const hasAccount = await this.prisma.socialAccount.count({ where: { tenantId, isActive: true } })
+    if (!hasAccount) return
+
+    // Avoid piling on campaign nudges — skip if a post was already made very recently.
+    const cutoff = new Date(Date.now() - 6 * 60 * 60 * 1000)
+    const recentPost = await this.prisma.socialPost.findFirst({
+      where: { tenantId, createdAt: { gte: cutoff } },
+      select: { id: true },
+    })
+    if (recentPost) return
+
+    const d = payload.data
+    const eventLabel = payload.event === 'job.completed' ? 'A job was just completed' : 'A proposal was just accepted'
+    const details = [
+      d.name ? `Customer: ${d.name}.` : '',
+      d.value ? `Value: $${d.value}.` : '',
+      d.address ? `Location: ${d.address}.` : '',
+      d.notes ? `Notes: ${d.notes}.` : '',
+    ].filter(Boolean).join(' ')
+
+    const briefing = [
+      `📣 CAMPAIGN OPPORTUNITY — ${eventLabel}`,
+      ``,
+      details || 'No further details available.',
+      ``,
+      `Decide if this is worth turning into a social post (customer win, before/after story, seasonal tie-in, etc.).`,
+      `If yes, call post_to_social with a specific, on-brand brief. If it's not a good fit for a public post, just say so briefly — don't force it.`,
+      `Do NOT ask for approval before calling the tool — post_to_social already queues the post for human approval before it goes live.`,
+    ].join('\n')
+
+    this.logger.log(`[SocialCampaign] Nudging ${socialAgent.name} about ${payload.event} for tenant ${tenantId}`)
+    await this.chat.wakeAgentWithCapabilities(tenantId, socialAgent.id, briefing)
   }
 
   private buildBriefingMessage(payload: CRMWebhookPayload, agentReply: string): string {

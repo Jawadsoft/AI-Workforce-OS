@@ -95,6 +95,9 @@ const BRIEFING_LABELS: Record<string, { label: string; color: string }> = {
   'message.received':   { label: 'Message',          color: 'bg-indigo-500/10 text-indigo-700' },
   'appointment.booked': { label: 'Appointment',      color: 'bg-teal-500/10 text-teal-700' },
   'widget':             { label: 'Website Chat',     color: 'bg-violet-500/10 text-violet-700' },
+  'DAILY_BRIEFING':     { label: 'Daily Check-in',   color: 'bg-cyan-500/10 text-cyan-700' },
+  'social_comment':     { label: 'Social Comment',   color: 'bg-pink-500/10 text-pink-700' },
+  'social_message':     { label: 'Social DM',        color: 'bg-pink-500/10 text-pink-700' },
 }
 
 export function ChatPage() {

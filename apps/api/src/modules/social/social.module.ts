@@ -4,9 +4,10 @@ import { SocialService } from './social.service'
 import { SocialController } from './social.controller'
 import { SocialScheduler } from './social.scheduler'
 import { CloudinaryModule } from '../../common/cloudinary/cloudinary.module'
+import { BrainModule } from '../brain/brain.module'
 
 @Module({
-  imports: [CloudinaryModule, ConfigModule],
+  imports: [CloudinaryModule, ConfigModule, BrainModule],
   providers: [SocialService, SocialScheduler],
   controllers: [SocialController],
   exports: [SocialService],

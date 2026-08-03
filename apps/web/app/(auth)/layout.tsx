@@ -19,7 +19,12 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
         }}
       />
 
-      <div className="w-full max-w-sm px-4 relative z-10">{children}</div>
+      <div className="w-full max-w-sm px-4 relative z-10 flex flex-col items-center gap-6">
+        {children}
+        <p className="text-center text-xs text-white/30">
+          © {new Date().getFullYear()} AI Workforce. All rights reserved. Powered by Mitiesoft
+        </p>
+      </div>
     </div>
   )
 }

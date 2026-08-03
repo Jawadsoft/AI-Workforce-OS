@@ -365,7 +365,7 @@ export default function WidgetPage() {
 
           {/* Powered by */}
           <div className="text-center pb-2 text-gray-300 text-xs">
-            Powered by AI Workforce
+            AI Workforce · Powered by Mitiesoft
           </div>
         </>
       )}

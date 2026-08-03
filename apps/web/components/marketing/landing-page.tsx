@@ -955,7 +955,9 @@ export function LandingPage() {
             <a href="#demo" className="hover:text-white/70">Free Demo</a>
             <Link href="/login" className="hover:text-white/70">Sign in</Link>
           </div>
-          <p className="text-sm text-white/35">© {new Date().getFullYear()} AI Workforce OS</p>
+          <p className="text-sm text-white/35">
+            © {new Date().getFullYear()} AI Workforce. All rights reserved. Powered by Mitiesoft
+          </p>
         </div>
       </footer>
     </div>

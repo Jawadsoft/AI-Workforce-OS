@@ -21,6 +21,7 @@ import { AIModule } from './ai/ai.module'
 import { CommunicationsModule } from './modules/communications/communications.module'
 import { EmailModule } from './modules/email/email.module'
 import { SuperAdminModule } from './modules/super-admin/super-admin.module'
+import { HelpModule } from './modules/help/help.module'
 import { PublicChatModule } from './modules/public-chat/public-chat.module'
 import { PrismaModule } from './common/prisma/prisma.module'
 import { CloudinaryModule } from './common/cloudinary/cloudinary.module'
@@ -75,6 +76,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     CommunicationsModule,
     EmailModule,
     SuperAdminModule,
+    HelpModule,
     forwardRef(() => IntegrationsModule),
     DocumentTemplatesModule,
     StormModule,

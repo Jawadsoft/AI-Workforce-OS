@@ -94,22 +94,28 @@ export class SocialDailyScheduler {
     }
     const platforms = accounts.map((a) => a.platform)
 
-    // Avoid double-posting: skip if a post was already created in the last ~20 hours
-    // (bypassed when force=true, e.g. from the manual test trigger)
+    // Avoid double-posting: skip if a REAL post (queued/scheduled/published) was
+    // already created in the last ~20 hours. Empty calendar placeholder drafts
+    // don't count — otherwise saving a content calendar would silently suppress
+    // this wake for a full day. (bypassed when force=true, e.g. manual test trigger)
     if (!force) {
       const cutoff = new Date(Date.now() - 20 * 60 * 60 * 1000)
       const recentPost = await this.prisma.socialPost.findFirst({
-        where: { tenantId: agent.tenantId, createdAt: { gte: cutoff } },
+        where: {
+          tenantId: agent.tenantId,
+          createdAt: { gte: cutoff },
+          status: { in: ['pending_approval', 'scheduled', 'published'] },
+        },
         select: { id: true },
       })
       if (recentPost) {
-        this.logger.log(`[SocialDailyScheduler] ${agent.name} — already has a post from the last 20h, skipping`)
-        return { status: 'skipped', message: 'A post was already created in the last 20 hours.' }
+        this.logger.log(`[SocialDailyScheduler] ${agent.name} — already has a queued/published post from the last 20h, skipping`)
+        return { status: 'skipped', message: 'A post was already queued or published in the last 20 hours.' }
       }
     }
 
     const recentPosts = await this.prisma.socialPost.findMany({
-      where: { tenantId: agent.tenantId },
+      where: { tenantId: agent.tenantId, status: { in: ['pending_approval', 'scheduled', 'published'] } },
       orderBy: { createdAt: 'desc' },
       take: 5,
       select: { content: true, contentType: true, platform: true },
@@ -120,6 +126,34 @@ export class SocialDailyScheduler {
           .join('\n')
       : 'No posts yet — this is the first one.'
 
+    // Surface any pending content-calendar placeholders (topics planned via
+    // get_content_calendar's "save as drafts") that are due around now, so the
+    // agent actually follows the plan instead of freestyling a duplicate topic.
+    // Window is deliberately narrow (yesterday through end of today) so a
+    // placeholder that never got picked up doesn't permanently clog this list
+    // and block newer planned days from ever surfacing.
+    const windowStart = new Date()
+    windowStart.setDate(windowStart.getDate() - 1)
+    windowStart.setHours(0, 0, 0, 0)
+    const endOfToday = new Date()
+    endOfToday.setHours(23, 59, 59, 999)
+    const plannedDrafts = await this.prisma.socialPost.findMany({
+      where: {
+        tenantId: agent.tenantId,
+        status: 'draft',
+        scheduledAt: { gte: windowStart, lte: endOfToday },
+        metadata: { path: ['isCalendarPlaceholder'], equals: true },
+      },
+      orderBy: { scheduledAt: 'asc' },
+      take: 3,
+      select: { id: true, platform: true, contentType: true, content: true, scheduledAt: true },
+    })
+    const plannedSummary = plannedDrafts.length
+      ? plannedDrafts
+          .map((p) => `- (id: ${p.id}, due ${p.scheduledAt?.toLocaleDateString()}) [${p.contentType}/${p.platform}] ${p.content}`)
+          .join('\n')
+      : null
+
     const today = new Date().toLocaleDateString('en-US', {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     })
@@ -129,11 +163,16 @@ export class SocialDailyScheduler {
       ``,
       `It's time to plan today's social content. Connected platforms: ${platforms.join(', ')}.`,
       ``,
-      `RECENT POSTS (do not repeat these topics or angles):`,
+      `RECENT QUEUED/PUBLISHED POSTS (do not repeat these topics or angles):`,
       recentSummary,
+      ...(plannedSummary ? [
+        ``,
+        `PLANNED TOPICS FROM THE CONTENT CALENDAR (already brainstormed, due today or earlier — use one of these if it still fits, otherwise pick something fresher):`,
+        plannedSummary,
+      ] : []),
       ``,
       `YOUR TASK:`,
-      `1. Decide on a fresh, specific topic or angle for today — pull from our real business knowledge (services, USPs, testimonials, recent work, season/time of year) rather than something generic.`,
+      `1. Decide on a fresh, specific topic or angle for today — prefer a due calendar topic above if listed, otherwise pull from our real business knowledge (services, USPs, testimonials, recent work, season/time of year) rather than something generic.`,
       `2. Pick a content type that keeps the mix balanced (educational / promotional / story / team) — don't just repeat the last type used.`,
       `3. Call post_to_social with a clear, specific brief and platforms: ${platforms.join(', ')}.`,
       `4. If there is genuinely nothing worth posting today, it's fine to skip — say so briefly instead of forcing a generic post.`,

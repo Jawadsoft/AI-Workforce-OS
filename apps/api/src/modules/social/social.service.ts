@@ -775,6 +775,23 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     return { success: true }
   }
 
+  async bulkDeletePosts(tenantId: string, ids: string[]) {
+    if (ids.length === 0) return { deletedCount: 0, skippedCount: 0, skippedIds: [] }
+
+    const posts = await this.prisma.socialPost.findMany({
+      where: { id: { in: ids }, tenantId },
+      select: { id: true, status: true },
+    })
+    const deletableIds = posts.filter((p) => p.status !== 'published').map((p) => p.id)
+    const skippedIds = posts.filter((p) => p.status === 'published').map((p) => p.id)
+
+    if (deletableIds.length > 0) {
+      await this.prisma.socialPost.deleteMany({ where: { id: { in: deletableIds }, tenantId } })
+    }
+
+    return { deletedCount: deletableIds.length, skippedCount: skippedIds.length, skippedIds }
+  }
+
   // ── Connected accounts ────────────────────────────────────────────
 
   async getConnectedAccounts(tenantId: string) {

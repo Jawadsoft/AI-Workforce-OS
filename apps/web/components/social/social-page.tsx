@@ -11,7 +11,7 @@ import {
   Sparkles, Image, Send, Clock, CheckCircle, XCircle,
   Loader2, Plus, Trash2, Edit2, Calendar, RefreshCw,
   Facebook, Linkedin, Twitter, Instagram, LayoutGrid, List,
-  BarChart2, Star, Link2, Unlink, Info
+  BarChart2, Star, Link2, Unlink, Info, AlertTriangle, CheckSquare
 } from 'lucide-react'
 
 const PLATFORM_ICONS: Record<string, React.ReactNode> = {
@@ -68,6 +68,26 @@ export function SocialPage() {
   const [filterStatus, setFilterStatus] = useState('')
   const [filterPlatform, setFilterPlatform] = useState('')
   const [editingPost, setEditingPost] = useState<any>(null)
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel?: string; onConfirm: () => void } | null>(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  function askConfirm(opts: { title: string; message: string; confirmLabel?: string; onConfirm: () => void }) {
+    setConfirmDialog(opts)
+  }
+
+  function toggleSelectMode() {
+    setSelectMode((prev) => !prev)
+    setSelectedIds(new Set())
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
 
   // Generate form
   const [brief, setBrief] = useState('')
@@ -135,6 +155,22 @@ export function SocialPage() {
     finally { setGeneratingCal(false) }
   }
 
+  // Calendar placeholders only hold a bare topic/brief, not real copy — never let
+  // "Publish Now" fire that raw text at a live platform. Route to Generate instead.
+  function openGenerateFromPost(post: any) {
+    setBrief(post.content)
+    setPlatforms([post.platform])
+    setContentType(post.contentType || '')
+    if (post.scheduledAt) {
+      const d = new Date(post.scheduledAt)
+      const pad = (n: number) => String(n).padStart(2, '0')
+      setScheduledAt(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`)
+    } else {
+      setScheduledAt('')
+    }
+    setTab('generate')
+  }
+
   const saveCalendarMutation = useMutation({
     mutationFn: () => api.post('/social/calendar/save-drafts', { items: calItems }),
     onSuccess: (res: any) => {
@@ -179,6 +215,22 @@ export function SocialPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/social/posts/${id}`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['social-posts'] }); toast.success('Post deleted') },
+  })
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: string[]) => api.post('/social/posts/bulk-delete', { ids }).then((r) => r.data),
+    onSuccess: (res: any) => {
+      qc.invalidateQueries({ queryKey: ['social-posts'] })
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      const { deletedCount = 0, skippedCount = 0 } = res ?? {}
+      if (skippedCount > 0) {
+        toast.success(`Deleted ${deletedCount} post${deletedCount === 1 ? '' : 's'} — skipped ${skippedCount} already-published post${skippedCount === 1 ? '' : 's'}`)
+      } else {
+        toast.success(`Deleted ${deletedCount} post${deletedCount === 1 ? '' : 's'}`)
+      }
+    },
+    onError: () => toast.error('Failed to delete selected posts'),
   })
 
   const refreshAnalyticsMutation = useMutation({
@@ -305,7 +357,14 @@ export function SocialPage() {
               <option value="">All Platforms</option>
               {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
-            <div className="ml-auto flex items-center gap-1 border border-border rounded-lg p-0.5 shrink-0">
+            <button
+              onClick={toggleSelectMode}
+              className={`ml-auto flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border transition-colors shrink-0 ${selectMode ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
+            >
+              <CheckSquare className="w-4 h-4" />
+              <span className="hidden sm:inline">{selectMode ? 'Cancel' : 'Select'}</span>
+            </button>
+            <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 shrink-0">
               <button
                 onClick={() => setViewMode('list')}
                 className={`p-1.5 rounded-md transition-colors ${viewMode === 'list' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
@@ -322,6 +381,37 @@ export function SocialPage() {
               </button>
             </div>
           </div>
+
+          {/* Selection toolbar */}
+          {selectMode && (
+            <div className="flex items-center gap-3 flex-wrap bg-muted/50 rounded-lg p-2.5">
+              <span className="text-sm font-medium">{selectedIds.size} selected</span>
+              <button
+                onClick={() => setSelectedIds(new Set(posts.map((p: any) => p.id)))}
+                className="text-xs text-primary hover:underline"
+              >
+                Select all {posts.length}
+              </button>
+              {selectedIds.size > 0 && (
+                <button onClick={() => setSelectedIds(new Set())} className="text-xs text-muted-foreground hover:text-foreground">
+                  Clear
+                </button>
+              )}
+              <button
+                onClick={() => askConfirm({
+                  title: `Delete ${selectedIds.size} post${selectedIds.size === 1 ? '' : 's'}?`,
+                  message: 'This permanently deletes the selected posts. Already-published posts will be skipped. This cannot be undone.',
+                  confirmLabel: 'Delete',
+                  onConfirm: () => bulkDeleteMutation.mutate(Array.from(selectedIds)),
+                })}
+                disabled={selectedIds.size === 0 || bulkDeleteMutation.isPending}
+                className="ml-auto flex items-center gap-1.5 bg-red-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-red-600 disabled:opacity-40 transition-colors"
+              >
+                {bulkDeleteMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                Delete Selected
+              </button>
+            </div>
+          )}
 
           {isLoading ? (
             <div className={viewMode === 'gallery' ? 'grid grid-cols-2 md:grid-cols-3 gap-4' : 'space-y-3'}>
@@ -340,8 +430,12 @@ export function SocialPage() {
                   post={post}
                   onApprove={() => approveMutation.mutate(post.id)}
                   onPublishNow={() => publishNowMutation.mutate(post.id)}
-                  onDelete={() => { if (confirm('Delete this post?')) deleteMutation.mutate(post.id) }}
+                  onDelete={() => askConfirm({ title: 'Delete post?', message: 'This permanently deletes this post. This cannot be undone.', confirmLabel: 'Delete', onConfirm: () => deleteMutation.mutate(post.id) })}
                   onEdit={() => setEditingPost({ ...post })}
+                  onGenerate={() => openGenerateFromPost(post)}
+                  selectMode={selectMode}
+                  selected={selectedIds.has(post.id)}
+                  onToggleSelect={() => toggleSelected(post.id)}
                 />
               ))}
             </div>
@@ -353,8 +447,12 @@ export function SocialPage() {
                   post={post}
                   onApprove={() => approveMutation.mutate(post.id)}
                   onPublishNow={() => publishNowMutation.mutate(post.id)}
-                  onDelete={() => { if (confirm('Delete this post?')) deleteMutation.mutate(post.id) }}
+                  onDelete={() => askConfirm({ title: 'Delete post?', message: 'This permanently deletes this post. This cannot be undone.', confirmLabel: 'Delete', onConfirm: () => deleteMutation.mutate(post.id) })}
                   onEdit={() => setEditingPost({ ...post })}
+                  onGenerate={() => openGenerateFromPost(post)}
+                  selectMode={selectMode}
+                  selected={selectedIds.has(post.id)}
+                  onToggleSelect={() => toggleSelected(post.id)}
                 />
               ))}
             </div>
@@ -748,7 +846,12 @@ export function SocialPage() {
                         </a>
                       ) : (
                         <button
-                          onClick={() => { if (confirm('Disconnect Facebook?')) api.delete(`/social/accounts/${facebookAcc.id}`).then(() => qc.invalidateQueries({ queryKey: ['social-accounts'] })) }}
+                          onClick={() => askConfirm({
+                            title: 'Disconnect Facebook?',
+                            message: 'Posts already published will stay live, but you\'ll need to reconnect before generating or publishing any new ones.',
+                            confirmLabel: 'Disconnect',
+                            onConfirm: () => api.delete(`/social/accounts/${facebookAcc.id}`).then(() => qc.invalidateQueries({ queryKey: ['social-accounts'] })),
+                          })}
                           className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300 transition-colors"
                         >
                           <Unlink className="w-3.5 h-3.5" /> Disconnect
@@ -808,7 +911,12 @@ export function SocialPage() {
                       </a>
                     ) : (
                       <button
-                        onClick={() => { if (confirm(`Disconnect ${label}?`)) api.delete(`/social/accounts/${acc.id}`).then(() => qc.invalidateQueries({ queryKey: ['social-accounts'] })) }}
+                        onClick={() => askConfirm({
+                          title: `Disconnect ${label}?`,
+                          message: 'Posts already published will stay live, but you\'ll need to reconnect before generating or publishing any new ones.',
+                          confirmLabel: 'Disconnect',
+                          onConfirm: () => api.delete(`/social/accounts/${acc.id}`).then(() => qc.invalidateQueries({ queryKey: ['social-accounts'] })),
+                        })}
                         className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300 transition-colors"
                       >
                         <Unlink className="w-3.5 h-3.5" /> Disconnect
@@ -872,22 +980,70 @@ export function SocialPage() {
           </div>
         </div>
       )}
+
+      {/* Confirm Dialog */}
+      {confirmDialog && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setConfirmDialog(null)}>
+          <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-red-500/10 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4.5 h-4.5 text-red-500" />
+              </div>
+              <h3 className="font-semibold">{confirmDialog.title}</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">{confirmDialog.message}</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null) }}
+                className="flex-1 bg-red-500 text-white py-2 rounded-lg text-sm font-medium hover:bg-red-600 transition-colors"
+              >
+                {confirmDialog.confirmLabel ?? 'Confirm'}
+              </button>
+              <button
+                onClick={() => setConfirmDialog(null)}
+                className="flex-1 border border-border py-2 rounded-lg text-sm font-medium hover:bg-accent transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
+function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit, onGenerate, selectMode, selected, onToggleSelect }: {
   post: any
   onApprove: () => void
   onPublishNow: () => void
   onDelete: () => void
   onEdit: () => void
+  onGenerate: () => void
+  selectMode?: boolean
+  selected?: boolean
+  onToggleSelect?: () => void
 }) {
   const format = post.metadata?.format
   const carouselImages: string[] = post.metadata?.carouselImages ?? []
+  const isPlaceholder = post.metadata?.isCalendarPlaceholder === true
 
   return (
-    <div className="rounded-xl border border-border bg-card p-3 sm:p-4 flex gap-3">
+    <div
+      onClick={selectMode ? onToggleSelect : undefined}
+      className={`rounded-xl border p-3 sm:p-4 flex gap-3 transition-colors ${selectMode ? 'cursor-pointer' : ''} ${selected ? 'border-primary bg-primary/5' : 'border-border bg-card'}`}
+    >
+      {selectMode && (
+        <div className="shrink-0 self-start pt-0.5">
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onChange={onToggleSelect}
+            onClick={(e) => e.stopPropagation()}
+            className="w-4 h-4 accent-primary cursor-pointer"
+          />
+        </div>
+      )}
       {carouselImages.length > 1 ? (
         <div className="flex -space-x-6 shrink-0 self-start">
           {carouselImages.slice(0, 3).map((url, i) => (
@@ -911,6 +1067,11 @@ function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
               {format === 'carousel' ? `${carouselImages.length || ''} slide carousel` : format.replace('_', ' ')}
             </span>
           )}
+          {isPlaceholder && (
+            <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-500/10 text-amber-600">
+              planned topic
+            </span>
+          )}
         </div>
         <p className="text-sm line-clamp-2 whitespace-pre-line">{post.content}</p>
         {post.scheduledAt && (
@@ -923,37 +1084,62 @@ function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
           <p className="text-xs text-red-400">{post.errorMessage}</p>
         )}
       </div>
-      <div className="flex flex-col gap-1 shrink-0">
-        {post.status === 'pending_approval' && (
-          <button onClick={onApprove} className="p-1.5 rounded-lg hover:bg-green-500/10 text-green-400 transition-colors" title="Approve & Publish">
-            <CheckCircle className="w-4 h-4" />
+      {!selectMode && (
+        <div className="flex flex-col gap-1 shrink-0">
+          {post.status === 'pending_approval' && (
+            <button onClick={onApprove} className="p-1.5 rounded-lg hover:bg-green-500/10 text-green-400 transition-colors" title="Approve & Publish">
+              <CheckCircle className="w-4 h-4" />
+            </button>
+          )}
+          {isPlaceholder ? (
+            <button onClick={onGenerate} className="p-1.5 rounded-lg hover:bg-violet-500/10 text-violet-500 transition-colors" title="Write the real post for this topic">
+              <Sparkles className="w-4 h-4" />
+            </button>
+          ) : (post.status === 'draft' || post.status === 'failed') && (
+            <button onClick={onPublishNow} className="p-1.5 rounded-lg hover:bg-blue-500/10 text-blue-400 transition-colors" title="Publish Now">
+              <Send className="w-4 h-4" />
+            </button>
+          )}
+          <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground transition-colors" title="Edit">
+            <Edit2 className="w-4 h-4" />
           </button>
-        )}
-        {(post.status === 'draft' || post.status === 'failed') && (
-          <button onClick={onPublishNow} className="p-1.5 rounded-lg hover:bg-blue-500/10 text-blue-400 transition-colors" title="Publish Now">
-            <Send className="w-4 h-4" />
+          <button onClick={onDelete} className="p-1.5 rounded-lg hover:bg-red-500/10 text-red-400 transition-colors" title="Delete">
+            <Trash2 className="w-4 h-4" />
           </button>
-        )}
-        <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground transition-colors" title="Edit">
-          <Edit2 className="w-4 h-4" />
-        </button>
-        <button onClick={onDelete} className="p-1.5 rounded-lg hover:bg-red-500/10 text-red-400 transition-colors" title="Delete">
-          <Trash2 className="w-4 h-4" />
-        </button>
-      </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function GalleryCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
+function GalleryCard({ post, onApprove, onPublishNow, onDelete, onEdit, onGenerate, selectMode, selected, onToggleSelect }: {
   post: any
   onApprove: () => void
   onPublishNow: () => void
   onDelete: () => void
   onEdit: () => void
+  onGenerate: () => void
+  selectMode?: boolean
+  selected?: boolean
+  onToggleSelect?: () => void
 }) {
+  const isPlaceholder = post.metadata?.isCalendarPlaceholder === true
   return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden group relative">
+    <div
+      onClick={selectMode ? onToggleSelect : undefined}
+      className={`rounded-xl border overflow-hidden group relative transition-colors ${selectMode ? 'cursor-pointer' : ''} ${selected ? 'border-primary ring-2 ring-primary/40' : 'border-border'} bg-card`}
+    >
+      {selectMode && (
+        <div className="absolute top-2 left-2 z-10">
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onChange={onToggleSelect}
+            onClick={(e) => e.stopPropagation()}
+            className="w-4 h-4 accent-primary cursor-pointer"
+          />
+        </div>
+      )}
       {post.imageUrl ? (
         <img src={post.imageUrl} alt="" className="w-full aspect-square object-cover" />
       ) : (
@@ -962,34 +1148,45 @@ function GalleryCard({ post, onApprove, onPublishNow, onDelete, onEdit }: {
         </div>
       )}
       {/* Overlay on hover */}
-      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-between p-3">
-        <div className="flex items-center gap-1.5">
+      <div className={`absolute inset-0 bg-black/60 transition-opacity flex flex-col justify-between p-3 ${selectMode ? (selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100') : 'opacity-0 group-hover:opacity-100'}`}>
+        <div className="flex items-center gap-1.5 pl-5">
           {PLATFORM_ICONS[post.platform]}
           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_STYLES[post.status] ?? ''}`}>
             {post.status.replace('_', ' ')}
           </span>
+          {isPlaceholder && (
+            <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-500/80 text-white">
+              planned
+            </span>
+          )}
         </div>
-        <div className="space-y-2">
-          <p className="text-xs text-white line-clamp-3">{post.content}</p>
-          <div className="flex gap-1.5">
-            {post.status === 'pending_approval' && (
-              <button onClick={onApprove} className="flex-1 py-1 rounded-lg bg-green-500/80 hover:bg-green-500 text-white text-xs transition-colors">
-                Approve
+        {!selectMode && (
+          <div className="space-y-2">
+            <p className="text-xs text-white line-clamp-3">{post.content}</p>
+            <div className="flex gap-1.5">
+              {post.status === 'pending_approval' && (
+                <button onClick={onApprove} className="flex-1 py-1 rounded-lg bg-green-500/80 hover:bg-green-500 text-white text-xs transition-colors">
+                  Approve
+                </button>
+              )}
+              {isPlaceholder ? (
+                <button onClick={onGenerate} className="flex-1 py-1 rounded-lg bg-violet-500/80 hover:bg-violet-500 text-white text-xs transition-colors">
+                  Generate →
+                </button>
+              ) : (post.status === 'draft' || post.status === 'failed') && (
+                <button onClick={onPublishNow} className="flex-1 py-1 rounded-lg bg-blue-500/80 hover:bg-blue-500 text-white text-xs transition-colors">
+                  Publish Now
+                </button>
+              )}
+              <button onClick={onEdit} className="flex-1 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs transition-colors">
+                Edit
               </button>
-            )}
-            {(post.status === 'draft' || post.status === 'failed') && (
-              <button onClick={onPublishNow} className="flex-1 py-1 rounded-lg bg-blue-500/80 hover:bg-blue-500 text-white text-xs transition-colors">
-                Publish Now
+              <button onClick={onDelete} className="py-1 px-2 rounded-lg bg-red-500/80 hover:bg-red-500 text-white text-xs transition-colors">
+                <Trash2 className="w-3 h-3" />
               </button>
-            )}
-            <button onClick={onEdit} className="flex-1 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs transition-colors">
-              Edit
-            </button>
-            <button onClick={onDelete} className="py-1 px-2 rounded-lg bg-red-500/80 hover:bg-red-500 text-white text-xs transition-colors">
-              <Trash2 className="w-3 h-3" />
-            </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
       {/* Bottom info bar */}
       <div className="p-2 flex items-center gap-2">

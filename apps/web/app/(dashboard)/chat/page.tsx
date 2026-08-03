@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { ChatPage } from '@/components/chat/chat-page'
 
 // Remove layout padding and set exact height so chat fills the screen
@@ -6,7 +7,9 @@ import { ChatPage } from '@/components/chat/chat-page'
 export default function Page() {
   return (
     <div className="-m-3 sm:-m-6 md:-m-8 h-[calc(100dvh-124px)] sm:h-[calc(100dvh-112px)] overflow-hidden flex flex-col">
-      <ChatPage />
+      <Suspense>
+        <ChatPage />
+      </Suspense>
     </div>
   )
 }

@@ -1,7 +1,9 @@
 import { Controller, Get, Post, Put, Patch, Delete, Param, Body, UseGuards } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
-import { IsString, IsOptional } from 'class-validator'
+import { IsString, IsOptional, IsEmail, IsIn } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
+import { RolesGuard } from '../../common/guards/roles.guard'
+import { Roles } from '../../common/decorators/roles.decorator'
 import { CurrentTenant, CurrentUser } from '../../common/decorators/tenant.decorator'
 import { TenantsService } from './tenants.service'
 import { EmailService } from '../email/email.service'
@@ -18,6 +20,13 @@ class OnboardDto {
 
 class GenerateWorkforceDto {
   @IsString() industry: string
+}
+
+class InviteMemberDto {
+  @IsString() name: string
+  @IsEmail() email: string
+  @IsIn(['TENANT_ADMIN', 'MANAGER', 'USER', 'VIEWER'])
+  role: string
 }
 
 @ApiTags('Tenants')
@@ -57,6 +66,8 @@ export class TenantsController {
   }
 
   @Patch('settings')
+  @UseGuards(RolesGuard)
+  @Roles('TENANT_ADMIN')
   @ApiOperation({ summary: 'Update tenant settings (deep-merges nested objects like widget, brain)' })
   updateSettings(@CurrentTenant() tenantId: string, @Body() dto: Record<string, any>) {
     return this.service.saveSettings(tenantId, dto)
@@ -84,18 +95,24 @@ export class TenantsController {
   }
 
   @Post('team/invite')
+  @UseGuards(RolesGuard)
+  @Roles('TENANT_ADMIN')
   @ApiOperation({ summary: 'Invite a new team member' })
-  inviteMember(@CurrentTenant() tenantId: string, @Body() dto: { name: string; email: string; role: string }) {
+  inviteMember(@CurrentTenant() tenantId: string, @Body() dto: InviteMemberDto) {
     return this.service.inviteMember(tenantId, dto)
   }
 
   @Patch('team/:id/role')
+  @UseGuards(RolesGuard)
+  @Roles('TENANT_ADMIN')
   @ApiOperation({ summary: 'Change a member role' })
   updateRole(@CurrentTenant() tenantId: string, @Param('id') id: string, @Body() dto: { role: string }) {
     return this.service.updateMemberRole(tenantId, id, dto.role)
   }
 
   @Delete('team/:id')
+  @UseGuards(RolesGuard)
+  @Roles('TENANT_ADMIN')
   @ApiOperation({ summary: 'Remove a team member' })
   removeMember(@CurrentTenant() tenantId: string, @Param('id') id: string, @CurrentUser() user: any) {
     return this.service.removeMember(tenantId, id, user.id)
@@ -104,6 +121,8 @@ export class TenantsController {
   // ── Email / SMTP Settings ─────────────────────────────────────────
 
   @Get('email-settings')
+  @UseGuards(RolesGuard)
+  @Roles('TENANT_ADMIN')
   @ApiOperation({ summary: 'Get tenant SMTP settings (masked)' })
   async getEmailSettings(@CurrentTenant() tenantId: string) {
     const cfg = await this.email.getSmtpConfig(tenantId)
@@ -119,12 +138,16 @@ export class TenantsController {
   }
 
   @Put('email-settings')
+  @UseGuards(RolesGuard)
+  @Roles('TENANT_ADMIN')
   @ApiOperation({ summary: 'Save tenant SMTP settings' })
   async saveEmailSettings(@CurrentTenant() tenantId: string, @Body() dto: Record<string, string>) {
     return this.service.saveSettings(tenantId, dto)
   }
 
   @Post('test-email')
+  @UseGuards(RolesGuard)
+  @Roles('TENANT_ADMIN')
   @ApiOperation({ summary: 'Send a test email to verify SMTP config' })
   async testEmail(@CurrentTenant() tenantId: string, @Body() dto: { to?: string }) {
     const cfg = await this.email.getSmtpConfig(tenantId)

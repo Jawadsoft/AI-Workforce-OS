@@ -463,8 +463,12 @@ export class IntegrationsService {
           }
         }
 
-        await this.prisma.processedEmail.create({
-          data: {
+        // Upsert instead of create: a concurrent/overlapping scan of the same
+        // account can pass the `exists` check above for the same email before
+        // either write lands, which would otherwise throw a unique constraint
+        // error on (connectedAccountId, gmailMessageId).
+        {
+          const processedData = {
             tenantId,
             connectedAccountId: account.id,
             gmailMessageId: email.id,
@@ -479,8 +483,13 @@ export class IntegrationsService {
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
             errorMessage,
-          },
-        })
+          }
+          await this.prisma.processedEmail.upsert({
+            where: { connectedAccountId_gmailMessageId: { connectedAccountId: account.id, gmailMessageId: email.id } },
+            create: processedData,
+            update: processedData,
+          })
+        }
 
         items.push({
           from: email.from,
@@ -592,8 +601,12 @@ export class IntegrationsService {
           }
         }
 
-        await this.prisma.processedEmail.create({
-          data: {
+        // Upsert instead of create: a concurrent/overlapping scan of the same
+        // account can pass the `exists` check above for the same email before
+        // either write lands, which would otherwise throw a unique constraint
+        // error on (connectedAccountId, gmailMessageId).
+        {
+          const processedData = {
             tenantId,
             connectedAccountId: account.id,
             gmailMessageId: email.id,
@@ -608,8 +621,13 @@ export class IntegrationsService {
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
             errorMessage,
-          },
-        })
+          }
+          await this.prisma.processedEmail.upsert({
+            where: { connectedAccountId_gmailMessageId: { connectedAccountId: account.id, gmailMessageId: email.id } },
+            create: processedData,
+            update: processedData,
+          })
+        }
 
         items.push({
           from: email.from,

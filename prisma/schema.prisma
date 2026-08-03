@@ -119,6 +119,38 @@ model AgentTemplate {
   createdAt     DateTime   @default(now())
 }
 
+// Super-admin-editable overrides layered on top of the static Help Guide
+// content shipped in apps/web/lib/help-content.ts. A row here means "this
+// article's text has been customized"; articleId also supports brand new
+// super-admin-authored articles (isCustom = true) that don't exist statically.
+model HelpArticleOverride {
+  id          String   @id @default(cuid())
+  articleId   String   @unique
+  title       String?
+  category    String?
+  audience    String?
+  summary     String?  @db.Text
+  steps       Json?
+  tips        Json?
+  isCustom    Boolean  @default(false)
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Images super-admin attaches to a Help Guide article (static or custom),
+// e.g. annotated CRM screenshots shown alongside the relevant steps.
+model HelpArticleImage {
+  id        String   @id @default(cuid())
+  articleId String
+  url       String
+  caption   String?
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([articleId])
+}
+
 // ─────────────────────────────────────────────
 // CHAT
 // ─────────────────────────────────────────────

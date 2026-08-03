@@ -1,6 +1,7 @@
 import { Sidebar } from '@/components/shared/sidebar'
 import { MobileNav } from '@/components/shared/mobile-nav'
 import { Header } from '@/components/shared/header'
+import { RoleGate } from '@/components/shared/role-gate'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -14,7 +15,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <Header />
         {/* On mobile, reduce bottom padding to account for bottom nav */}
         <main className="flex-1 overflow-y-auto p-3 sm:p-6 md:p-8 pb-[52px] sm:pb-6 md:pb-8">
-          {children}
+          <RoleGate>{children}</RoleGate>
         </main>
       </div>
 

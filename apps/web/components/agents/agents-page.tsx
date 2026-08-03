@@ -4,11 +4,10 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
-import { Plus, Search, EyeOff, Eye, Zap, RefreshCw, Loader2, Pencil, X, Check } from 'lucide-react'
+import { Plus, Search, EyeOff, Eye, Zap, RefreshCw, Loader2, Pencil, X, Check, MessageSquare } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth.store'
 import { resolveAvatarUrl } from '@/lib/utils'
-
-const CAN_EDIT_ROLES = ['SUPER_ADMIN', 'TENANT_OWNER', 'TENANT_ADMIN']
+import { canEditAgents } from '@/lib/roles'
 
 const STATUS_COLORS: Record<string, string> = {
   ACTIVE: 'bg-green-500/10 text-green-500',
@@ -22,7 +21,7 @@ export function AgentsPage() {
   const qc = useQueryClient()
   const [resetting, setResetting] = useState(false)
   const { user, fetchMe, isAuthenticated } = useAuthStore()
-  const canEdit = CAN_EDIT_ROLES.includes(user?.role ?? '')
+  const canEdit = canEditAgents(user?.role)
 
   useEffect(() => { if (!isAuthenticated) fetchMe() }, [])
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -225,22 +224,35 @@ export function AgentsPage() {
                 <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${STATUS_COLORS[agent.status] ?? STATUS_COLORS.INACTIVE}`}>
                   {agent.status === 'ACTIVE' ? 'Active' : 'Inactive'}
                 </span>
-                {canEdit && editingId !== agent.id && (
+                {editingId !== agent.id && (
                   <div className="flex items-center gap-0.5">
-                    <button
-                      onClick={() => { setEditingId(agent.id); setEditName(agent.name); setEditRole(agent.role) }}
-                      title="Rename"
-                      className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      onClick={() => toggleMutation.mutate({ id: agent.id, status: agent.status })}
-                      title={agent.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
-                      className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground"
-                    >
-                      {agent.status === 'ACTIVE' ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
+                    {agent.status === 'ACTIVE' && (
+                      <Link
+                        href={`/chat?agentId=${agent.id}`}
+                        title="Chat with this agent"
+                        className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground hover:text-primary"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                      </Link>
+                    )}
+                    {canEdit && (
+                      <>
+                        <button
+                          onClick={() => { setEditingId(agent.id); setEditName(agent.name); setEditRole(agent.role) }}
+                          title="Rename"
+                          className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => toggleMutation.mutate({ id: agent.id, status: agent.status })}
+                          title={agent.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+                          className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground"
+                        >
+                          {agent.status === 'ACTIVE' ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

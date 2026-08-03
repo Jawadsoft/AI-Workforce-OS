@@ -12,6 +12,7 @@ import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.se
 import { ALL_FEATURES } from '../../common/feature-flags/feature-flags.constants'
 import { IndustryKnowledgeService } from '../knowledge/industry-knowledge.service'
 import { KnowledgeService } from '../knowledge/knowledge.service'
+import { HelpService } from '../help/help.service'
 
 class CreateTemplateDto {
   @IsString() name: string
@@ -74,6 +75,16 @@ class AddDocDto {
   @IsString() content: string
 }
 
+class UpsertHelpOverrideDto {
+  @IsOptional() @IsString() title?: string
+  @IsOptional() @IsString() category?: string
+  @IsOptional() @IsString() audience?: string
+  @IsOptional() @IsString() summary?: string
+  @IsOptional() @IsArray() steps?: string[]
+  @IsOptional() @IsArray() tips?: string[]
+  @IsOptional() @IsBoolean() isCustom?: boolean
+}
+
 // ── Protected routes (require SUPER_ADMIN role) ───────────────────
 
 @ApiTags('Super Admin')
@@ -86,6 +97,7 @@ export class SuperAdminController {
     private readonly featureFlags: FeatureFlagsService,
     private readonly industryKnowledge: IndustryKnowledgeService,
     private readonly knowledge: KnowledgeService,
+    private readonly help: HelpService,
   ) {}
 
   @Get('stats')
@@ -274,6 +286,46 @@ export class SuperAdminController {
   @ApiOperation({ summary: 'Re-embed all documents in an industry pack' })
   embedAll(@Param('industry') industry: string) {
     return this.industryKnowledge.embedAllInPack(industry)
+  }
+
+  // ── Help Guide content (overrides + images on top of static articles) ──
+
+  @Get('help/articles')
+  @ApiOperation({ summary: 'List all Help Guide overrides and their attached images' })
+  async listHelpArticles() {
+    return this.help.getMergedContent()
+  }
+
+  @Post('help/articles/:articleId')
+  @ApiOperation({ summary: 'Create or update a Help Guide article override (or a brand new custom article)' })
+  upsertHelpOverride(@Param('articleId') articleId: string, @Body() dto: UpsertHelpOverrideDto, @Req() req: any) {
+    return this.help.upsertOverride(articleId, dto, req.user?.id)
+  }
+
+  @Delete('help/articles/:articleId')
+  @ApiOperation({ summary: 'Revert an article override back to its static default (deletes custom articles entirely)' })
+  resetHelpOverride(@Param('articleId') articleId: string) {
+    return this.help.resetOverride(articleId)
+  }
+
+  @Post('help/articles/:articleId/images')
+  @ApiOperation({ summary: 'Attach an image (e.g. a CRM screenshot) to a Help Guide article' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 8 * 1024 * 1024 } }))
+  async addHelpImage(
+    @Param('articleId') articleId: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: { caption?: string },
+  ) {
+    if (!file) throw new BadRequestException('No file uploaded')
+    if (!file.mimetype.startsWith('image/')) throw new BadRequestException('File must be an image')
+    return this.help.addImage(articleId, file, body?.caption)
+  }
+
+  @Delete('help/images/:imageId')
+  @ApiOperation({ summary: 'Remove an image from a Help Guide article' })
+  deleteHelpImage(@Param('imageId') imageId: string) {
+    return this.help.deleteImage(imageId)
   }
 }
 

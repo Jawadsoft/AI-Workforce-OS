@@ -1,6 +1,7 @@
 'use client'
 
-import { Bell, Search, LogOut, Sun, Moon } from 'lucide-react'
+import { Bell, LogOut, Sun, Moon, HelpCircle } from 'lucide-react'
+import Link from 'next/link'
 import { useTheme } from 'next-themes'
 import { useAuthStore } from '@/stores/auth.store'
 import { useRouter } from 'next/navigation'
@@ -8,6 +9,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { resolveAvatarUrl } from '@/lib/utils'
+import { HeaderSearch } from '@/components/shared/header-search'
 
 type HeaderAgent = {
   id: string
@@ -48,9 +50,8 @@ export function Header() {
     <header
       className="relative h-16 flex items-center justify-between px-6 shrink-0 bg-card/80 backdrop-blur-xl border-b border-border/60"
     >
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <Search className="w-4 h-4" />
-        <span className="text-sm">Search anything...</span>
+      <div className="hidden sm:block">
+        <HeaderSearch />
       </div>
       <div className="absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 lg:flex">
           <div className="flex items-center gap-2 rounded-[2rem] px-4 py-2 shadow-sm bg-card/60 backdrop-blur-xl border border-border/60">
@@ -78,6 +79,13 @@ export function Header() {
         </div>
       </div>
       <div className="flex items-center gap-3">
+        <Link
+          href="/help"
+          className="relative p-2 rounded-md hover:bg-accent transition-colors"
+          title="Help Guide"
+        >
+          <HelpCircle className="w-4 h-4 text-muted-foreground" />
+        </Link>
         {/* Theme toggle */}
         <button
           onClick={() => setTheme((resolvedTheme ?? theme) === 'dark' ? 'light' : 'dark')}

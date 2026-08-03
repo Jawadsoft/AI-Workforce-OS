@@ -146,6 +146,12 @@ export class SocialController {
     return this.service.deletePost(tenantId, id)
   }
 
+  @Post('posts/bulk-delete')
+  @ApiOperation({ summary: 'Delete multiple draft/scheduled posts at once (published posts are skipped)' })
+  bulkDeletePosts(@CurrentTenant() tenantId: string, @Body() body: { ids: string[] }) {
+    return this.service.bulkDeletePosts(tenantId, Array.isArray(body?.ids) ? body.ids : [])
+  }
+
   // ── Review-to-post ────────────────────────────────────────────────
 
   @Post('review-to-post')

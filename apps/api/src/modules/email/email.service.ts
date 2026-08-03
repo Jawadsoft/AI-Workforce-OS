@@ -362,7 +362,11 @@ export class EmailService {
       tenantId: params.tenantId,
       to: params.to,
       subject: `You've been invited to join ${params.companyName} on AI Workforce OS`,
-      html: this.teamInviteTemplate(params),
+      html: this.teamInviteTemplate({
+        ...params,
+        email: params.to,
+        roleLabel: this.roleLabel(params.role),
+      }),
     })
   }
 
@@ -418,22 +422,58 @@ export class EmailService {
     `)
   }
 
-  private teamInviteTemplate(p: { inviteeName: string; inviterName: string; companyName: string; role: string; loginUrl: string; tempPassword: string }): string {
+  private roleLabel(role: string): string {
+    const labels: Record<string, string> = {
+      SUPER_ADMIN: 'Super Admin',
+      TENANT_OWNER: 'Owner',
+      TENANT_ADMIN: 'Admin',
+      MANAGER: 'Manager',
+      USER: 'Member',
+      VIEWER: 'Viewer',
+    }
+    return labels[role?.toUpperCase?.() ?? ''] ?? role
+  }
+
+  private teamInviteTemplate(p: {
+    inviteeName: string
+    inviterName: string
+    companyName: string
+    role: string
+    roleLabel: string
+    email: string
+    loginUrl: string
+    tempPassword: string
+  }): string {
+    const safeName = this.escapeHtml(p.inviteeName)
+    const safeCompany = this.escapeHtml(p.companyName)
+    const safeInviter = this.escapeHtml(p.inviterName)
+    const safeEmail = this.escapeHtml(p.email)
+    const safeRole = this.escapeHtml(p.roleLabel || p.role)
+    const safeLogin = this.escapeHtml(p.loginUrl)
+    const safePassword = this.escapeHtml(p.tempPassword)
     return this.wrapEmail(`
       <h2 style="color:#1e293b;margin-bottom:8px;">You're invited! 🎉</h2>
-      <p style="color:#64748b;">Hi ${p.inviteeName},</p>
-      <p style="color:#64748b;"><strong>${p.inviterName}</strong> has invited you to join <strong>${p.companyName}</strong> on AI Workforce OS as a <strong>${p.role}</strong>.</p>
+      <p style="color:#64748b;">Hi ${safeName},</p>
+      <p style="color:#64748b;"><strong>${safeInviter}</strong> has invited you to join <strong>${safeCompany}</strong> on AI Workforce OS as a <strong>${safeRole}</strong>.</p>
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin:24px 0;">
         <p style="margin:0 0 8px;color:#475569;font-size:14px;"><strong>Your login details:</strong></p>
-        <p style="margin:4px 0;color:#1e293b;font-size:14px;">🌐 <a href="${p.loginUrl}" style="color:#2563eb;">${p.loginUrl}</a></p>
-        <p style="margin:4px 0;color:#1e293b;font-size:14px;">📧 Email: <strong>${p.inviteeName}</strong></p>
-        <p style="margin:4px 0;color:#1e293b;font-size:14px;">🔑 Temp password: <strong style="font-family:monospace;background:#e2e8f0;padding:2px 6px;border-radius:4px;">${p.tempPassword}</strong></p>
+        <p style="margin:4px 0;color:#1e293b;font-size:14px;">🌐 <a href="${safeLogin}" style="color:#2563eb;">${safeLogin}</a></p>
+        <p style="margin:4px 0;color:#1e293b;font-size:14px;">📧 Email: <strong>${safeEmail}</strong></p>
+        <p style="margin:4px 0;color:#1e293b;font-size:14px;">🔑 Temp password: <strong style="font-family:monospace;background:#e2e8f0;padding:2px 6px;border-radius:4px;">${safePassword}</strong></p>
       </div>
       <p style="color:#94a3b8;font-size:13px;">Please change your password after first login.</p>
       <div style="text-align:center;margin:24px 0;">
-        <a href="${p.loginUrl}" style="background:#2563eb;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px;">Accept Invite & Log In</a>
+        <a href="${safeLogin}" style="background:#2563eb;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px;">Accept Invite & Log In</a>
       </div>
     `)
+  }
+
+  private escapeHtml(value: string): string {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
   }
 
   private approvalTemplate(p: { ownerName: string; agentName: string; action: string; approvalUrl: string }): string {

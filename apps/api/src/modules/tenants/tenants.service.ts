@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common'
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { EmailService } from '../email/email.service'
 
@@ -173,54 +173,120 @@ export class TenantsService {
   }
 
   async inviteMember(tenantId: string, data: { name: string; email: string; role: string; inviterName?: string }) {
+    const name = (data.name ?? '').trim()
+    const email = (data.email ?? '').trim().toLowerCase()
+    const role = (data.role ?? 'USER').trim().toUpperCase()
+
+    if (!name || name.length < 2) throw new BadRequestException('Full name is required')
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new BadRequestException('A valid email address is required')
+    }
+    const allowedRoles = ['TENANT_ADMIN', 'MANAGER', 'USER', 'VIEWER']
+    if (!allowedRoles.includes(role)) {
+      throw new BadRequestException(`Invalid role. Allowed: ${allowedRoles.join(', ')}`)
+    }
+
     const bcryptjs = await import('bcryptjs')
     const tempPassword = Math.random().toString(36).slice(2, 10) + 'A1!'
     const hashed = await bcryptjs.hash(tempPassword, 10)
 
-    const existing = await this.prisma.user.findUnique({ where: { email: data.email } })
-    if (existing) throw new Error(`User with email ${data.email} already exists`)
+    const existing = await this.prisma.user.findUnique({ where: { email } })
+    if (existing) {
+      // Same tenant + previously removed → reactivate with a fresh temp password
+      if (existing.tenantId === tenantId && !existing.isActive) {
+        const reactivated = await this.prisma.user.update({
+          where: { id: existing.id },
+          data: { name, password: hashed, role: role as any, isActive: true },
+          select: { id: true, name: true, email: true, role: true, createdAt: true },
+        })
+        await this.sendInviteEmail(tenantId, {
+          to: email,
+          inviteeName: name,
+          inviterName: data.inviterName,
+          role,
+          tempPassword,
+        })
+        this.logger.log(`Reactivated team member: ${email} as ${role}`)
+        return { ...reactivated, tempPassword, reactivated: true }
+      }
 
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } })
+      if (existing.tenantId === tenantId) {
+        throw new ConflictException(
+          `${email} is already on this team${existing.role === 'TENANT_OWNER' ? ' as the account owner' : ''}. Use a different email address.`,
+        )
+      }
+      throw new ConflictException(
+        `${email} is already registered on another account. Use a different email address.`,
+      )
+    }
 
     const user = await this.prisma.user.create({
       data: {
         tenantId,
-        name: data.name,
-        email: data.email,
+        name,
+        email,
         password: hashed,
-        role: data.role as any,
+        role: role as any,
         isActive: true,
       },
       select: { id: true, name: true, email: true, role: true, createdAt: true },
     })
 
-    // Send invite email
-    const loginUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/login`
+    await this.sendInviteEmail(tenantId, {
+      to: email,
+      inviteeName: name,
+      inviterName: data.inviterName,
+      role,
+      tempPassword,
+    })
+
+    this.logger.log(`Invited team member: ${email} as ${role}`)
+    return { ...user, tempPassword }
+  }
+
+  private async sendInviteEmail(
+    tenantId: string,
+    opts: { to: string; inviteeName: string; inviterName?: string; role: string; tempPassword: string },
+  ) {
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } })
+    // Prefer a public/browser-reachable URL for invite emails. Internal LAN hostnames
+    // like "aipaccess" don't resolve for recipients opening mail on another device.
+    const rawBase = (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '')
+    let loginBase = rawBase
+    try {
+      const host = new URL(rawBase).hostname.toLowerCase()
+      if (host === 'aipaccess' || host.endsWith('.local') || host.endsWith('.lan')) {
+        loginBase = 'http://localhost:3000'
+        this.logger.warn(
+          `Invite email login URL fell back to localhost (FRONTEND_URL host "${host}" is not reachable from email clients). Set PUBLIC_APP_URL for production.`,
+        )
+      }
+    } catch {
+      loginBase = 'http://localhost:3000'
+    }
+    const loginUrl = `${loginBase}/login`
     await this.email.sendTeamInvite({
       tenantId,
-      to: data.email,
-      inviteeName: data.name,
-      inviterName: data.inviterName || 'Your team',
+      to: opts.to,
+      inviteeName: opts.inviteeName,
+      inviterName: opts.inviterName || 'Your team',
       companyName: tenant?.name || 'AI Workforce OS',
-      role: data.role,
+      role: opts.role,
       loginUrl,
-      tempPassword,
+      tempPassword: opts.tempPassword,
     }).catch((err) => this.logger.warn(`Failed to send invite email: ${err}`))
-
-    this.logger.log(`Invited team member: ${data.email} as ${data.role}`)
-    return { ...user, tempPassword }
   }
 
   async updateMemberRole(tenantId: string, userId: string, role: string) {
     const user = await this.prisma.user.findFirst({ where: { id: userId, tenantId } })
-    if (!user) throw new Error('User not found')
+    if (!user) throw new NotFoundException('User not found')
     return this.prisma.user.update({ where: { id: userId }, data: { role: role as any }, select: { id: true, name: true, email: true, role: true } })
   }
 
   async removeMember(tenantId: string, userId: string, currentUserId: string) {
-    if (userId === currentUserId) throw new Error('You cannot remove yourself')
+    if (userId === currentUserId) throw new BadRequestException('You cannot remove yourself')
     const user = await this.prisma.user.findFirst({ where: { id: userId, tenantId } })
-    if (!user) throw new Error('User not found')
+    if (!user) throw new NotFoundException('User not found')
     return this.prisma.user.update({ where: { id: userId }, data: { isActive: false } })
   }
 

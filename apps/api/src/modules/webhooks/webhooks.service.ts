@@ -477,7 +477,9 @@ ${agent.prompt}`
     // Avoid piling on campaign nudges — skip if a post was already made very recently.
     const cutoff = new Date(Date.now() - 6 * 60 * 60 * 1000)
     const recentPost = await this.prisma.socialPost.findFirst({
-      where: { tenantId, createdAt: { gte: cutoff } },
+      // Only real queued/live posts count — empty calendar placeholder drafts
+      // shouldn't suppress this nudge for 6 hours.
+      where: { tenantId, createdAt: { gte: cutoff }, status: { in: ['pending_approval', 'scheduled', 'published'] } },
       select: { id: true },
     })
     if (recentPost) return

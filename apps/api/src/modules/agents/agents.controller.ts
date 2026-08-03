@@ -3,7 +3,8 @@ import { FileInterceptor } from '@nestjs/platform-express'
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes } from '@nestjs/swagger'
 import { IsString, IsOptional, IsArray } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
-import { TenantAdminGuard } from '../../common/guards/tenant-admin.guard'
+import { RolesGuard } from '../../common/guards/roles.guard'
+import { Roles } from '../../common/decorators/roles.decorator'
 import { CurrentTenant } from '../../common/decorators/tenant.decorator'
 import { AgentsService } from './agents.service'
 import { ElevenLabsProvider } from '../../ai/providers/elevenlabs.provider'
@@ -69,44 +70,56 @@ export class AgentsController {
   }
 
   @Post()
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
   @ApiOperation({ summary: 'Create custom agent' })
   create(@CurrentTenant() tenantId: string, @Body() dto: CreateAgentDto) {
     return this.service.create(tenantId, dto)
   }
 
   @Post('install-template/:templateId')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
   @ApiOperation({ summary: 'Install agent from marketplace template' })
   installTemplate(@CurrentTenant() tenantId: string, @Param('templateId') templateId: string) {
     return this.service.installTemplate(tenantId, templateId)
   }
 
   @Patch(':id')
-  @UseGuards(TenantAdminGuard)
-  @ApiOperation({ summary: 'Update agent (Tenant Admin / Owner only)' })
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
+  @ApiOperation({ summary: 'Update agent (Manager / Admin / Owner)' })
   update(@CurrentTenant() tenantId: string, @Param('id') id: string, @Body() dto: UpdateAgentDto) {
     return this.service.update(tenantId, id, dto)
   }
 
   @Post(':id/activate')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
   @ApiOperation({ summary: 'Activate agent' })
   activate(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.activate(tenantId, id)
   }
 
   @Post(':id/deactivate')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
   @ApiOperation({ summary: 'Deactivate agent' })
   deactivate(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.deactivate(tenantId, id)
   }
 
   @Delete(':id')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
   @ApiOperation({ summary: 'Remove agent' })
   remove(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.remove(tenantId, id)
   }
 
   @Post(':id/avatar')
-  @UseGuards(TenantAdminGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
   @ApiOperation({ summary: 'Upload agent avatar image' })
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file', {

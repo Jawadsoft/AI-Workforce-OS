@@ -7,12 +7,12 @@ import { Users, Plus, Trash2, ShieldCheck, X, Loader2, Copy, Check } from 'lucid
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { ROLE_DESCRIPTIONS, ROLE_LABELS as SHARED_ROLE_LABELS } from '@/lib/roles'
 
 const ROLES = ['TENANT_ADMIN', 'MANAGER', 'USER', 'VIEWER']
 
 const ROLE_LABELS: Record<string, string> = {
-  SUPER_ADMIN: 'Super Admin', TENANT_OWNER: 'Owner',
-  TENANT_ADMIN: 'Admin', MANAGER: 'Manager', USER: 'Member', VIEWER: 'Viewer',
+  ...SHARED_ROLE_LABELS,
 }
 
 const ROLE_COLORS: Record<string, string> = {
@@ -37,14 +37,26 @@ export function TeamPage() {
   })
 
   const inviteMutation = useMutation({
-    mutationFn: () => api.post('/tenants/team/invite', form),
+    mutationFn: () => api.post('/tenants/team/invite', {
+      ...form,
+      name: form.name.trim(),
+      email: form.email.trim().toLowerCase(),
+    }),
     onSuccess: (res) => {
+      const payload = res.data?.data ?? res.data
       qc.invalidateQueries({ queryKey: ['team'] })
-      setTempPw(res.data.tempPassword)
+      setTempPw(payload.tempPassword)
       setForm({ name: '', email: '', role: 'USER' })
-      toast.success(`${res.data.name} added to team`)
+      toast.success(
+        payload.reactivated
+          ? `${payload.name} was reactivated on the team`
+          : `${payload.name} added to team`,
+      )
     },
-    onError: (err: any) => toast.error(err.response?.data?.message ?? 'Failed to invite'),
+    onError: (err: any) => {
+      const msg = err.response?.data?.message
+      toast.error(Array.isArray(msg) ? msg.join(', ') : (msg || 'Failed to invite'))
+    },
   })
 
   const roleMutation = useMutation({
@@ -129,9 +141,14 @@ export function TeamPage() {
                     className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none">
                     {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
                   </select>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Admin: full access · Manager: manage agents & tasks · Member: use chat & view · Viewer: read-only
-                  </p>
+                  <ul className="text-xs text-muted-foreground mt-2 space-y-1">
+                    {ROLES.map((r) => (
+                      <li key={r}>
+                        <span className="font-medium text-foreground/80">{ROLE_LABELS[r]}:</span>{' '}
+                        {ROLE_DESCRIPTIONS[r]}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
                 <div className="flex justify-end gap-2 pt-1">
                   <button onClick={() => setShowInvite(false)} className="px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors">Cancel</button>

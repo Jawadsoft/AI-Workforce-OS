@@ -16,6 +16,7 @@ import { StormService } from '../storm/storm.service'
 import { MemoryService } from '../memory/memory.service'
 import { SocialService } from '../social/social.service'
 import { RealtimeGateway } from '../../realtime/realtime.gateway'
+import { computeNextOccurrence, DEFAULT_US_TIMEZONE } from '../../common/utils/schedule-time.util'
 
 // Regex patterns to extract caller identity from first message
 const PHONE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/
@@ -266,14 +267,28 @@ const CRM_TOOL_DEFINITIONS = [
 
   {
     name: 'create_internal_task',
-    description: 'Create an internal task ONLY when a staff member or owner explicitly asks to schedule a reminder, add a task, or set a follow-up (e.g. "add a task to call John tomorrow", "remind me to send the invoice"). Never call this automatically — use create_ticket for all customer interactions.',
+    description: 'Create an internal task ONLY when a staff member or owner explicitly asks to schedule a reminder, add a task, set a follow-up, OR asks for a report/update to be sent automatically on a recurring basis (e.g. "add a task to call John tomorrow", "remind me to send the invoice", "email me the daily hail report at 10am every day"). For recurring email reports, you MUST set recurring, timeOfDay, timezone, automatedAction, and recipientEmail — calling this tool is what actually makes it happen. NEVER just reply saying you will send something recurring without calling this tool; if you don\'t call it, nothing will ever be sent. Never call this automatically — use create_ticket for all customer interactions.',
     parameters: {
       type: 'object',
       properties: {
         title: { type: 'string', description: 'Short task title' },
         description: { type: 'string', description: 'Task details and context' },
         priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Task priority' },
-        dueDate: { type: 'string', description: 'ISO date string for due date, optional' },
+        dueDate: { type: 'string', description: 'ISO date string for a one-time due date, optional. Leave empty for recurring tasks — the system computes the first run time from timeOfDay/timezone automatically.' },
+        recurring: { type: 'string', enum: ['none', 'daily'], description: 'Set to "daily" if the user wants this repeated automatically every day (e.g. "daily", "every day", "each morning"). Default "none" for a one-time task/reminder.' },
+        timeOfDay: { type: 'string', description: '24-hour "HH:mm" time of day for recurring tasks or automated actions, e.g. "10:00" for 10 AM. Required when recurring is "daily" or automatedAction is set.' },
+        timezone: { type: 'string', description: 'IANA timezone for timeOfDay, e.g. "America/Chicago" (Central), "America/New_York" (Eastern), "America/Denver" (Mountain), "America/Los_Angeles" (Pacific). If the user just says "USA time" without specifying a zone, use "America/Chicago" and mention that assumption in your reply.' },
+        automatedAction: { type: 'string', enum: ['none', 'email_storm_report'], description: 'Set to "email_storm_report" ONLY when the user wants an automated storm/hail/weather report actually emailed to them on a schedule — this is what makes the system really generate and send it, instead of you just describing it. Requires recipientEmail and timeOfDay.' },
+        recipientEmail: { type: 'string', description: 'Email address to send the automated report to. Required when automatedAction is set.' },
+        reportFilters: {
+          type: 'object',
+          properties: {
+            state: { type: 'string', description: 'Two-letter US state code to filter the report by, e.g. "TX"' },
+            minSize: { type: 'number', description: 'Minimum hail size in inches to include' },
+            days: { type: 'number', description: 'How many days back the report should cover each time it runs (default 1, for a daily report covering the previous day)' },
+          },
+          description: 'Optional filters for the automated storm report. Defaults to the tenant\'s service area with no size filter and the last 1 day if omitted.',
+        },
       },
       required: ['title', 'description'],
     },
@@ -951,7 +966,7 @@ export class ChatService {
     const systemPrompt = `You are ${agentRecord.name}, ${agentRecord.role} at ${company}.
 You have been automatically assigned a task. Execute it immediately using the tools provided.
 Do NOT ask for approval. Do NOT explain what you will do. Just call the tools in the order listed in the task.
-Available tools: contact_customer, update_ticket, get_available_slots, get_my_tickets.`
+Available tools: contact_customer, update_ticket, get_available_slots, get_my_tickets, create_internal_task (only if a genuine follow-up/reminder is needed beyond this ticket).`
 
     try {
       // Step 2 — specialist reasons and acts (depth=1, no create_ticket, no further handoffs)
@@ -1235,11 +1250,13 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     // Scheduling tool — available to ops and non-intake agents (everyone except pure intake)
     const schedulingTools = (!isIntakeAgent || isOpsAgent) ? ['get_available_slots'] : []
 
-    // create_internal_task only injected when staff explicitly requests a task/reminder
-    const userWantsTask = messages.length > 0 &&
-      /\b(create\s+a?\s*task|add\s+a?\s*task|schedule\s+a?\s*reminder|remind\s+me|add\s+a?\s*reminder|set\s+a?\s*reminder)\b/i
-        .test(messages[messages.length - 1]?.content ?? '')
-    const taskTools = userWantsTask ? ['create_internal_task'] : []
+    // create_internal_task is always offered — the tool's own description (and the
+    // system prompt's "ONLY when explicitly asked" guidance) is what stops the LLM
+    // from calling it unprompted, same pattern used for create_ticket/generate_document/
+    // request_approval. Previously this was gated behind a regex over ONLY the very last
+    // message, which meant the tool silently vanished mid-conversation whenever the final
+    // message didn't happen to contain a trigger word like "daily" or "remind me".
+    const taskTools = ['create_internal_task']
 
     // social media tools — only for agents with the post_to_social tool flag
     const agentTools = agent.tools as string[] ?? []
@@ -1253,12 +1270,15 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     const memoryTools = ['remember_fact', 'forget_fact']
 
     const internalToolNames = isSpecialist
-      // Called via handoff or auto-wake: update existing tickets only, no create_ticket.
+      // Called via handoff or auto-wake: update existing tickets only, no create_ticket
+      // (that restriction is what actually prevents ticket/handoff loops). Tasks don't
+      // trigger any further agent wakes or handoffs, so there's no loop risk in letting
+      // specialists log a follow-up task themselves when they're the one who spots the need.
       // Lead qual agents (Charlie) keep their storm/CRM tools even in specialist mode —
       // without them Charlie cannot qualify leads and is completely useless when woken by the scheduler.
       ? [
           'reply_to_widget_session', 'contact_customer', 'generate_document', 'ask_user',
-          ...memoryTools, ...specialistTicketTools, ...schedulingTools, ...socialTools,
+          ...memoryTools, ...specialistTicketTools, ...schedulingTools, ...socialTools, ...taskTools,
           ...(isLeadQualAgent ? ['fetch_storm_data', 'crm_search_leads', 'handoff_to_agent'] : []),
         ]
       : isLeadQualAgent
@@ -1336,14 +1356,42 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         // ── Internal task creation ─────────────────────────
         if (toolName === 'create_internal_task') {
           try {
+            const isRecurring = params.recurring === 'daily'
+            const hasAutomatedAction = params.automatedAction && params.automatedAction !== 'none'
+
+            const metadata: Record<string, any> = {}
+            if (isRecurring) metadata.recurring = 'daily'
+            if (params.timeOfDay) metadata.timeOfDay = params.timeOfDay
+            if (params.timezone) metadata.timezone = params.timezone
+            if (hasAutomatedAction) {
+              metadata.automatedAction = params.automatedAction
+              metadata.recipientEmail = params.recipientEmail
+              metadata.reportFilters = params.reportFilters ?? {}
+            }
+
+            // Recurring/automated tasks don't get an explicit dueDate from the LLM
+            // (it just says "daily at 10am") — compute the first run time ourselves.
+            let dueDate: Date | undefined = params.dueDate ? new Date(params.dueDate) : undefined
+            if (!dueDate && (isRecurring || hasAutomatedAction) && params.timeOfDay) {
+              dueDate = computeNextOccurrence(params.timeOfDay, params.timezone || DEFAULT_US_TIMEZONE, new Date())
+            }
+
             const task = await this.tasks.create(tenantId, {
               title: params.title,
               description: params.description,
               priority: params.priority ?? 'MEDIUM',
               agentId: agent.id,
-              dueDate: params.dueDate ? new Date(params.dueDate) : undefined,
+              dueDate,
+              metadata,
             })
             emit?.({ action_card: { type: 'task', id: task.id, title: task.title, description: task.description, priority: task.priority, status: task.status } })
+
+            if (hasAutomatedAction && dueDate) {
+              const scheduleDesc = isRecurring
+                ? `every day at ${params.timeOfDay} (${params.timezone || DEFAULT_US_TIMEZONE})`
+                : `once at ${dueDate.toLocaleString('en-US')}`
+              return `Task created: "${task.title}" (ID: ${task.id}). This is now scheduled to run automatically ${scheduleDesc} and will email the report to ${params.recipientEmail} — no further action needed from you.`
+            }
             return `Task created: "${task.title}" (ID: ${task.id})`
           } catch (err: any) {
             return `Failed to create task: ${err.message}`
@@ -2999,7 +3047,9 @@ You are an insurance specialist — treat every uploaded claim document as a sup
         ? `typical range: ${brain.pricingSignals}`
         : `use pricing from the knowledge base below`
 
-    // Specialists do NOT get proactive task creation — they just handle the handed-off request
+    // Specialists focus on the handed-off request, but CAN log a create_internal_task
+    // follow-up/reminder if they spot a genuine need beyond the current ticket — tasks
+    // don't trigger further wakes/handoffs so there's no loop risk in allowing this.
     const internalToolsSection = isSpecialist
       ? `
 ${isExecAssistRole ? `
@@ -3026,13 +3076,14 @@ STEP 2 → After contact_customer returns success, call update_ticket with:
 - DO NOT skip contact_customer because there is no email — the system handles routing automatically.
 - DO NOT reassign this ticket — it is already assigned to you.
 - DO NOT wait for approval — this is an autonomous background task.
-- Available tools: contact_customer, update_ticket, get_available_slots.
+- Available tools: contact_customer, update_ticket, get_available_slots, create_internal_task (only if a genuine follow-up/reminder is needed beyond this ticket).
 ` : `
 SPECIALIST MODE — You are actioning an assigned ticket or handling a handed-off request.
-Available tools: update_ticket, get_my_tickets, get_team_activity, get_available_slots, contact_customer, generate_document, ask_user${isLeadQualRole ? ', fetch_storm_data, crm_search_leads, handoff_to_agent' : ''}.
+Available tools: update_ticket, get_my_tickets, get_team_activity, get_available_slots, contact_customer, generate_document, ask_user, create_internal_task${isLeadQualRole ? ', fetch_storm_data, crm_search_leads, handoff_to_agent' : ''}.
 
 CRITICAL RULES:
 - DO NOT call create_ticket — you can only UPDATE existing tickets, never create new ones.
+- create_internal_task is OK to call if you personally identify a genuine follow-up/reminder/recurring-report need while working this request — do NOT create one just because a task feels generically useful.
 - Action the request, update the ticket, and give a clear response.
 ${isLeadQualRole ? `
 LEAD QUALIFICATION WORKFLOW (your primary job when woken by the scheduler):
@@ -3087,7 +3138,7 @@ BACKGROUND TICKET LOGGING (keep this invisible — never mention it):
 • Inspection → assign to operations role
 • Complaint → type COMPLAINT, priority HIGH
 • create_ticket does NOT send any message. It is purely a background log.
-• create_internal_task ONLY if the owner explicitly says "add a task" or "remind me to..."
+• create_internal_task ONLY if the owner explicitly says "add a task" or "remind me to...", OR asks for a report to be sent to them automatically/daily/recurring (e.g. "email me the hail report every morning at 10am") — set recurring/timeOfDay/timezone/automatedAction/recipientEmail so it actually happens. NEVER just tell the owner you'll send something on a schedule without calling this tool — if you don't call it, nothing will ever be sent, and that is a broken promise.
 
 OTHER TOOLS (use when needed, not proactively):
 • get_team_activity — scan all recent team jobs. Use when owner asks "what jobs do we have?", "what's on this week?", or refers to a job without full details.
@@ -3120,7 +3171,7 @@ WHEN TO CREATE A TICKET:
 2. update_ticket — Update status/notes/assignee as work progresses.
 3. get_my_tickets — View tickets assigned to you when asked "what's pending" or "what do I have".
 4. get_team_activity — Scan ALL recent team tickets across all agents. Use when asked "what jobs do we have?", "what's on this week?", "recent activity", or when the owner refers to a job without full details.
-5. create_internal_task — ONLY when staff explicitly says "add a task" / "remind me to...".
+5. create_internal_task — ONLY when staff explicitly says "add a task" / "remind me to...", OR asks for a report to be sent to them automatically/daily/recurring (e.g. "email me the hail report every morning at 10am"). Set recurring/timeOfDay/timezone/automatedAction/recipientEmail so it actually happens — NEVER just promise a recurring send in chat without calling this tool, since nothing happens unless you call it.
 6. request_approval — when a decision needs manager sign-off.
 7. contact_customer — smart follow-up: uses chat if customer active, email otherwise.
 8. reply_to_widget_session — only when customer is confirmed live in chat.
@@ -4468,7 +4519,19 @@ ${isRoofing ? `* 🔴 HIGH: [counties with hail ≥ 1.5"] — recommend same-day
 
 PROACTIVE ALERT TRIGGER:
 If you find ANY hail ≥ 1.5" in the service area → proactively say:
-"⚠️ Alert: [X] customers in [county] experienced [size]-inch hail yesterday. Want me to pull a list of contacts in that area for outreach?"` 
+"⚠️ Alert: [X] customers in [county] experienced [size]-inch hail yesterday. Want me to pull a list of contacts in that area for outreach?"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RECURRING EMAIL REPORTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+If the owner asks to receive this report automatically by email on a schedule (e.g. "email me the daily hail report at 10am", "send this to me every morning"), you MUST call create_internal_task with:
+- automatedAction: "email_storm_report"
+- recipientEmail: their email address (ask if not provided)
+- recurring: "daily" (or "none" for a single one-time send)
+- timeOfDay: the time they asked for, in 24h "HH:mm" format
+- timezone: the IANA zone matching what they said (default "America/Chicago" for generic "USA time" — mention this assumption)
+- reportFilters: any state/size/days filters they mentioned
+This is the ONLY way the report actually gets sent — the scheduler picks up the task and emails it automatically going forward. Confirm to the owner what you scheduled (time, timezone, recipient) but do NOT claim it's set up unless you actually called this tool.` 
     }
 
     // ── Industry & knowledge blend section ───────────────────────────────────

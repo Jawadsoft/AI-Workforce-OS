@@ -11,7 +11,7 @@ import { useAuthStore } from '@/stores/auth.store'
 import { toast } from 'sonner'
 import { resolveAvatarUrl } from '@/lib/utils'
 
-const CAN_EDIT_ROLES = ['SUPER_ADMIN', 'TENANT_OWNER', 'TENANT_ADMIN']
+import { canEditAgents } from '@/lib/roles'
 
 const TABS = ['Overview', 'Configuration', 'Brain Memory', 'CRM Access', 'Tasks', 'Conversations']
 const TOOLS = ['create_task', 'crm_update', 'send_email', 'search_knowledge', 'generate_document', 'schedule_appointment']
@@ -91,7 +91,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   })
 
   const { user, fetchMe, isAuthenticated } = useAuthStore()
-  const canEdit = CAN_EDIT_ROLES.includes(user?.role ?? '')
+  const canEdit = canEditAgents(user?.role)
 
   useEffect(() => { if (!isAuthenticated) fetchMe() }, [])
 

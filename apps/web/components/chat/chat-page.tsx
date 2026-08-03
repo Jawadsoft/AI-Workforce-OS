@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
 import { Send, MessageSquare, Loader2, Zap, Globe, Mail, Phone, LayoutList, MessageCircle, Trash2, Mic, MicOff, Volume2, VolumeX, Paperclip, X, FileText, Image, ChevronLeft } from 'lucide-react'
 import { useSpeech } from '@/hooks/use-speech'
@@ -102,6 +103,7 @@ const BRIEFING_LABELS: Record<string, { label: string; color: string }> = {
 
 export function ChatPage() {
   const qc = useQueryClient()
+  const searchParams = useSearchParams()
   const bottomRef = useRef<HTMLDivElement>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [conversationId, setConversationId] = useState<string | null>(null)
@@ -204,6 +206,14 @@ export function ChatPage() {
     queryFn: () => api.get('/agents').then((r) => r.data),
     select: (data: any[]) => data.filter((a) => a.status === 'ACTIVE'),
   })
+
+  // Deep-link support: /chat?agentId=... (used by "Chat" quick-access
+  // buttons on the AI Workforce and agent detail pages) jumps straight
+  // into that agent's conversation instead of landing on the picker.
+  useEffect(() => {
+    const agentId = searchParams?.get('agentId')
+    if (agentId) setSelectedAgentId(agentId)
+  }, [searchParams])
 
   // ── When agent selected, fetch/create their primary conversation ───
   const primaryQuery = useQuery({
@@ -653,7 +663,7 @@ export function ChatPage() {
 
               {/* Filter tabs */}
               <div className="flex items-center gap-0.5 px-2 pb-0 overflow-x-auto">
-                {FILTER_TABS.map(tab => {
+                {FILTER_TABS.filter(tab => tab.id !== 'crm').map(tab => {
                   const count = tabCounts[tab.id] ?? 0
                   const isActive = activeFilter === tab.id
                   // Hide tabs with zero messages (except All, Chat, and comingSoon tabs)

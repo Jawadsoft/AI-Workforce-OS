@@ -1,12 +1,15 @@
 'use client'
 
 import Link from 'next/link'
+import { useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, Users, MessageSquare, CheckSquare,
-  Share2, Settings, Plug, BarChart3,
+  Share2, Settings, Plug, HelpCircle,
 } from 'lucide-react'
+import { useAuthStore } from '@/stores/auth.store'
+import { canAccessPath } from '@/lib/roles'
 
 const MOBILE_NAV = [
   { label: 'Home',    href: '/dashboard',  icon: LayoutDashboard },
@@ -15,19 +18,25 @@ const MOBILE_NAV = [
   { label: 'Tasks',   href: '/tasks',      icon: CheckSquare },
   { label: 'Social',  href: '/social',     icon: Share2 },
   { label: 'CRM',     href: '/crm',        icon: Plug },
-  { label: 'Reports', href: '/analytics',  icon: BarChart3 },
+  { label: 'Help',    href: '/help',       icon: HelpCircle },
   { label: 'Settings',href: '/settings',   icon: Settings },
 ]
 
 export function MobileNav() {
   const pathname = usePathname()
+  const { user, fetchMe, isAuthenticated } = useAuthStore()
+
+  useEffect(() => {
+    if (!isAuthenticated) fetchMe()
+  }, [isAuthenticated, fetchMe])
+
+  const items = MOBILE_NAV.filter((item) => canAccessPath(user?.role, item.href))
 
   return (
     <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-card/90 backdrop-blur-xl border-t border-border/60">
-      {/* Gap between chat input and nav */}
       <div className="h-3 bg-muted/30" />
       <div className="flex items-center justify-around overflow-x-auto scrollbar-hide px-1">
-        {MOBILE_NAV.map(({ label, href, icon: Icon }) => {
+        {items.map(({ label, href, icon: Icon }) => {
           const isActive = pathname === href || pathname.startsWith(href + '/')
           return (
             <Link

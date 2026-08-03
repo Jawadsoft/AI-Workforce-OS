@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { resolveAvatarUrl } from '@/lib/utils'
 import { HeaderSearch } from '@/components/shared/header-search'
+import { ROLE_LABELS } from '@/lib/roles'
 
 type HeaderAgent = {
   id: string
@@ -105,7 +106,7 @@ export function Header() {
         <div className="flex items-center gap-2 pl-2 border-l border-border">
           <div className="text-right hidden sm:block">
             <p className="text-sm font-medium leading-none">{user?.name ?? 'Loading...'}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">{user?.role?.replace('_', ' ')}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{user?.role ? (ROLE_LABELS[user.role] ?? user.role.replace('_', ' ')) : ''}</p>
           </div>
           <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-xs font-semibold">
             {initials}

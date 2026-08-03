@@ -98,6 +98,8 @@ const ALL_FEATURE_FLAGS = [
   { key: 'twilio_communications',label: 'SMS / WhatsApp / Voice',   desc: 'Twilio SMS, WhatsApp and phone' },
   { key: 'storm_data',           label: 'Storm Data (NOAA)',        desc: 'Hail/tornado/wind reports for agents' },
   { key: 'marketplace',          label: 'Agent Marketplace',        desc: 'Template agent library' },
+  { key: 'create_agents',        label: 'Create Custom Agents',     desc: 'Add new AI employees beyond templates' },
+  { key: 'reset_workforce',      label: 'Reset Workforce',          desc: 'Regenerate all agents from industry templates' },
   { key: 'file_uploads',         label: 'File & Image Uploads',     desc: 'Attach images/docs in chat (vision)' },
   { key: 'social_media',         label: 'Social Media',            desc: 'AI post generation & scheduling' },
   { key: 'blog_generation',      label: 'Blog Generation',          desc: 'AI blog writing & CMS publishing' },
@@ -201,6 +203,8 @@ export default function SuperAdminDashboard() {
       if (!res.data.find((f: any) => f.feature === 'widget')) flagMap['widget'] = true
       if (!res.data.find((f: any) => f.feature === 'document_generation')) flagMap['document_generation'] = true
       if (!res.data.find((f: any) => f.feature === 'marketplace')) flagMap['marketplace'] = true
+      if (!res.data.find((f: any) => f.feature === 'create_agents')) flagMap['create_agents'] = true
+      if (!res.data.find((f: any) => f.feature === 'reset_workforce')) flagMap['reset_workforce'] = true
       setFeatureFlags(flagMap)
     } catch { setFeatureFlags({}) }
   }
@@ -283,6 +287,8 @@ export default function SuperAdminDashboard() {
 
   function signOut() {
     localStorage.removeItem('sa_access_token')
+    localStorage.removeItem('access_token')
+    document.cookie = 'access_token=; path=/; max-age=0'
     router.replace('/super-admin/login')
   }
 

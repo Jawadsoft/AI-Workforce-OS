@@ -5,9 +5,13 @@ import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
 import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
 import { BrainService } from '../brain/brain.service'
+import { resolveBrandKit } from '../documents/document-render.helpers'
+import { SocialFlyerService, type FlyerCopy } from './social-flyer.service'
 import OpenAI from 'openai'
 
 export type PostFormat = 'single_image' | 'carousel' | 'video_script' | 'poll'
+/** branded (default) = AI photo + overlaid headline/bullets/logo/CTA flyer. clean = plain AI photo, no overlay. */
+export type ImageStyle = 'branded' | 'clean'
 
 export interface GeneratePostOptions {
   tenantId: string
@@ -20,6 +24,8 @@ export interface GeneratePostOptions {
   imageFeedback?: string
   /** Richer content format — defaults to a normal single-image post */
   format?: PostFormat
+  /** Defaults to 'branded' (logo/headline/CTA overlay). Only use 'clean' if the user explicitly asked for a plain photo with no text/graphics. */
+  imageStyle?: ImageStyle
 }
 
 export interface GeneratedPostDraft {
@@ -51,6 +57,7 @@ export class SocialService {
     private readonly cloudinary: CloudinaryService,
     private readonly featureFlags: FeatureFlagsService,
     private readonly brain: BrainService,
+    private readonly flyer: SocialFlyerService,
   ) {}
 
   private getOpenAI(): OpenAI {
@@ -152,6 +159,8 @@ export class SocialService {
           opts.uploadedImageUrl,
           opts.imageFeedback,
           opts.format ?? 'single_image',
+          opts.tenantId,
+          opts.imageStyle ?? 'branded',
         ),
       ),
     )
@@ -167,6 +176,8 @@ export class SocialService {
     uploadedImageUrl?: string,
     imageFeedback?: string,
     format: PostFormat = 'single_image',
+    tenantId?: string,
+    imageStyle: ImageStyle = 'branded',
   ): Promise<GeneratedPostDraft> {
     const spec = PLATFORM_SPECS[platform] ?? PLATFORM_SPECS.facebook
 
@@ -215,7 +226,8 @@ Only return the JSON object, nothing else.`
       const slides = await this.generateCarouselSlides(brief, brainContext, platform, contentType)
       if (slides.length) {
         const images = await Promise.all(
-          slides.map((s) => this.generateImage(s.text, brainContext, contentType, s.imagePrompt)),
+          // Carousel slides never get the flyer overlay — each slide is a single scene/beat, not a headline+CTA layout
+          slides.map((s) => this.generateImage(s.text, brainContext, contentType, s.imagePrompt, tenantId, 'clean')),
         )
         const carouselImages = images.map((i) => i.url).filter(Boolean) as string[]
         metadata = {
@@ -259,7 +271,7 @@ Only return the JSON object, nothing else.`
     let imageUrl: string | null = uploadedImageUrl ?? null
     let imagePrompt: string | null = null
     if (!imageUrl) {
-      const imageResult = await this.generateImage(brief, brainContext, contentType, imageFeedback)
+      const imageResult = await this.generateImage(brief, brainContext, contentType, imageFeedback, tenantId, imageStyle)
       imageUrl = imageResult.url
       imagePrompt = imageResult.prompt
     }
@@ -369,7 +381,11 @@ Only return the JSON.`,
     brainContext: string,
     contentType: string,
     imageFeedback?: string,
+    tenantId?: string,
+    imageStyle: ImageStyle = 'branded',
   ): Promise<{ url: string | null; prompt: string | null }> {
+    let result: { url: string | null; prompt: string | null } = { url: null, prompt: null }
+
     // Always try gpt-image-1 first for all content types
     const dalleEnabled = this.config.get<string>('DALLE_ENABLED') !== 'false'
     const quality = (this.config.get<string>('SOCIAL_IMAGE_QUALITY') ?? 'high') as 'low' | 'medium' | 'high'
@@ -395,14 +411,14 @@ Only return the JSON.`,
             'social-media', 'generated', filename, imageBuffer, 'image/png', 'image',
           )
           this.logger.log(`gpt-image-1 SUCCESS (${quality}) — uploaded to Cloudinary: ${cloudinaryUrl}`)
-          return { url: cloudinaryUrl, prompt: imagePrompt }
+          result = { url: cloudinaryUrl, prompt: imagePrompt }
         } else if (directUrl) {
           const imageBuffer = await fetch(directUrl).then((r) => r.arrayBuffer()).then((b) => Buffer.from(b))
           const filename = `social-${Date.now()}.png`
           const cloudinaryUrl = await this.cloudinary.upload(
             'social-media', 'generated', filename, imageBuffer, 'image/png', 'image',
           )
-          return { url: cloudinaryUrl, prompt: imagePrompt }
+          result = { url: cloudinaryUrl, prompt: imagePrompt }
         } else {
           this.logger.warn(`gpt-image-1 returned no image data. item=${JSON.stringify(item)}, keys=${Object.keys(response.data?.[0] ?? {}).join(',')}`)
         }
@@ -415,8 +431,94 @@ Only return the JSON.`,
     }
 
     // Unsplash fallback (works with or without API key)
-    const fallback = await this.searchUnsplash(brief)
-    return { url: fallback, prompt: null }
+    if (!result.url) {
+      const fallback = await this.searchUnsplash(brief)
+      result = { url: fallback, prompt: null }
+    }
+
+    // ── Branded overlay (default) ─────────────────────────────────
+    // Composite a headline/bullets/logo/CTA flyer on top of the clean photo,
+    // unless the caller explicitly asked for a plain/clean image.
+    if (result.url && imageStyle === 'branded' && tenantId) {
+      try {
+        const branded = await this.brandImage(result.url, brief, brainContext, contentType, tenantId)
+        if (branded) return { url: branded, prompt: result.prompt }
+      } catch (err: any) {
+        this.logger.warn(`Flyer branding failed, using clean image instead: ${err.message}`)
+      }
+    }
+
+    return result
+  }
+
+  /** Overlay a branded headline/bullets/CTA flyer on top of a clean AI photo. Returns the new Cloudinary URL, or null on failure. */
+  private async brandImage(
+    backgroundUrl: string,
+    brief: string,
+    brainContext: string,
+    contentType: string,
+    tenantId: string,
+  ): Promise<string | null> {
+    const [copy, tenant] = await Promise.all([
+      this.generateFlyerCopy(brief, brainContext, contentType),
+      this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true, settings: true } }),
+    ])
+    if (!copy) return null
+    const brandKit = resolveBrandKit(tenant)
+
+    const pngBuffer = await this.flyer.render(backgroundUrl, copy, {
+      companyName: brandKit.companyName,
+      logoUrl: brandKit.logoUrl,
+      phone: brandKit.phone,
+      website: brandKit.website,
+      accentColor: brandKit.accentColor,
+    })
+    const filename = `social-flyer-${Date.now()}.png`
+    return this.cloudinary.upload('social-media', 'generated', filename, pngBuffer, 'image/png', 'image')
+  }
+
+  /** AI-generated headline/subheading/bullets/CTA copy for the branded flyer overlay. */
+  private async generateFlyerCopy(
+    brief: string,
+    brainContext: string,
+    contentType: string,
+  ): Promise<FlyerCopy | null> {
+    try {
+      const response = await this.getOpenAI().chat.completions.create({
+        model: this.config.get('OPENAI_MODEL') ?? 'gpt-4o',
+        messages: [{
+          role: 'user',
+          content: `Write short, punchy marketing-flyer copy for a social media graphic (${contentType} post).
+Brief: ${brief}
+${brainContext ? `Business context: ${brainContext}` : ''}
+
+Return JSON:
+{
+  "headline": string (3-7 words, bold hook, no punctuation at the end),
+  "subheading": string (one short supporting sentence, optional but preferred),
+  "bullets": [{"title": string (2-4 words), "subtitle": string (short phrase, optional)}] — exactly 3 items, real value props/benefits relevant to the brief,
+  "cta": string (short call-to-action, 3-6 words, e.g. "Call Today for a Free Quote")
+}
+Only return the JSON object, nothing else.`,
+        }],
+        temperature: 0.8,
+        response_format: { type: 'json_object' },
+      })
+      const parsed = JSON.parse(response.choices[0].message.content ?? '{}')
+      if (!parsed?.headline || !Array.isArray(parsed?.bullets)) return null
+      return {
+        headline: String(parsed.headline),
+        subheading: parsed.subheading ? String(parsed.subheading) : undefined,
+        bullets: parsed.bullets.slice(0, 3).map((b: any) => ({
+          title: String(b?.title ?? '').slice(0, 60),
+          subtitle: b?.subtitle ? String(b.subtitle).slice(0, 80) : undefined,
+        })).filter((b: any) => b.title),
+        cta: String(parsed.cta ?? 'Contact Us Today'),
+      }
+    } catch (err: any) {
+      this.logger.error(`Flyer copy generation failed: ${err.message}`)
+      return null
+    }
   }
 
   private async buildImagePrompt(
@@ -496,6 +598,7 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     tenantId: string,
     postId: string,
     feedback?: string,
+    imageStyle: ImageStyle = 'branded',
   ): Promise<{ id: string; imageUrl: string | null; imagePrompt: string | null; content: string; platform: string }> {
     await this.requireSocialFeature(tenantId)
     const post = await this.prisma.socialPost.findFirst({ where: { id: postId, tenantId } })
@@ -513,6 +616,8 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
       brainContext,
       post.contentType ?? 'general',
       feedback,
+      tenantId,
+      imageStyle,
     )
 
     const updated = await this.prisma.socialPost.update({

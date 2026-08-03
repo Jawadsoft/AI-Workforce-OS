@@ -89,6 +89,8 @@ export class SocialController {
       platforms: platforms.length > 0 ? platforms : ['facebook'],
       contentType,
       uploadedImageUrl,
+      // Branded overlay is the default; pass imageStyle: 'clean' to get a plain AI photo instead
+      imageStyle: body.imageStyle === 'clean' ? 'clean' : 'branded',
     })
   }
 

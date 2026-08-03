@@ -8,6 +8,7 @@ import { CurrentTenant, CurrentUser } from '../../common/decorators/tenant.decor
 import { TenantsService } from './tenants.service'
 import { EmailService } from '../email/email.service'
 import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
+import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
 
 class OnboardDto {
   @IsString() industry: string
@@ -82,7 +83,8 @@ export class TenantsController {
 
   @Post('reset-workforce')
   @ApiOperation({ summary: 'Deactivate all agents and regenerate from industry templates' })
-  resetWorkforce(@CurrentTenant() tenantId: string, @Body() dto: GenerateWorkforceDto) {
+  async resetWorkforce(@CurrentTenant() tenantId: string, @Body() dto: GenerateWorkforceDto) {
+    await this.featureFlags.requireFeature(tenantId, FEATURES.RESET_WORKFORCE)
     return this.service.resetAndRegenerateWorkforce(tenantId, dto.industry)
   }
 

@@ -131,12 +131,14 @@ export class ChatController {
           send({ step: { label: `Reading ${file.originalname}`, status: 'active' } })
 
           let extractedText = ''
+          let extractionThrew = false
           try {
             extractedText = await this.service.extractAttachmentText(file.buffer, file.mimetype, file.originalname)
             send({ step: { label: `Reading ${file.originalname}`, status: 'done' } })
             send({ step: { label: 'Extracting document content', status: 'active' } })
             send({ step: { label: 'Extracting document content', status: 'done' } })
           } catch (err: any) {
+            extractionThrew = true
             this.logger.warn(`Inline extraction failed for ${file.originalname}: ${err.message}`)
             send({ step: { label: `Reading ${file.originalname}`, status: 'done' } })
             send({ step: { label: 'Processing in background...', status: 'active' } })
@@ -149,15 +151,22 @@ export class ChatController {
             file.buffer, file.mimetype, 'raw',
           ).catch((err: any) => this.logger.warn(`Cloudinary upload failed: ${err.message}`))
 
+          const trimmedText = extractedText?.trim() ?? ''
+          // IMPORTANT: an empty result from a successful extraction (e.g. a scanned/image-only
+          // PDF with no text layer) is NOT the same as "still processing" — if we mislabel it as
+          // __processing__, no background job gets queued (nothing threw) and the agent is left
+          // with zero signal that a file ever arrived, so it wrongly asks the user to upload again.
           attachments = [{
             url: `local://${file.originalname}`,
             name: file.originalname,
             mimeType: file.mimetype,
-            extractedText: extractedText || '__processing__',
+            extractedText: trimmedText ? trimmedText : extractionThrew ? '__processing__' : '__empty__',
           }]
 
-          if (extractedText) {
+          if (trimmedText) {
             send({ step: { label: 'Preparing AI analysis', status: 'active' } })
+          } else if (!extractionThrew) {
+            send({ step: { label: 'No readable text found (may be a scanned/image file)', status: 'done' } })
           }
 
         } else if (isImage) {

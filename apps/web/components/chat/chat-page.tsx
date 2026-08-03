@@ -105,6 +105,7 @@ export function ChatPage() {
   const qc = useQueryClient()
   const searchParams = useSearchParams()
   const bottomRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
@@ -405,6 +406,14 @@ export function ChatPage() {
     if (!message.trim() && !pendingFile) return
     sendText(message, pendingFile)  // pass pendingFile explicitly to avoid stale closure
   }, [message, pendingFile, sendText])
+
+  // Auto-grow the composer textarea as the user types (up to a max height, then scrolls)
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }, [message])
 
   // Keep sendTextRef current so the useSpeech onTranscript always calls the latest sendText
   useEffect(() => {
@@ -1017,9 +1026,9 @@ export function ChatPage() {
                 </div>
               )}
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-end gap-2">
                 {/* Left actions */}
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1 shrink-0 pb-0.5">
                   {fileUploadsEnabled && (
                     <>
                       <input ref={fileInputRef} type="file" className="hidden"
@@ -1047,18 +1056,20 @@ export function ChatPage() {
                   )}
                 </div>
 
-                {/* Text input */}
-                <input
+                {/* Text input — auto-grows with content, Shift+Enter for a newline */}
+                <textarea
+                  ref={textareaRef}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(message, pendingFile) } }}
                   placeholder={isListening ? 'Listening…' : pendingFile ? 'Add a message…' : `Message ${selectedAgent?.name ?? 'agent'}…`}
                   disabled={sending}
-                  className="flex-1 min-w-0 rounded-full border border-border bg-muted/50 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:bg-background transition-colors disabled:opacity-50"
+                  rows={1}
+                  className="flex-1 min-w-0 resize-none rounded-2xl border border-border bg-muted/50 px-4 py-2 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary/30 focus:bg-background transition-colors disabled:opacity-50 max-h-40 overflow-y-auto"
                 />
 
                 {/* Right actions */}
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1 shrink-0 self-end">
                   <button
                     onClick={toggleTts}
                     title={ttsEnabled ? 'Mute voice' : 'Enable voice'}

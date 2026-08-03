@@ -7,6 +7,8 @@ export const FEATURES = {
   TWILIO_COMMUNICATIONS:'twilio_communications',
   STORM_DATA:           'storm_data',
   MARKETPLACE:          'marketplace',
+  CREATE_AGENTS:        'create_agents',
+  RESET_WORKFORCE:      'reset_workforce',
 
   // New modules
   FILE_UPLOADS:         'file_uploads',
@@ -27,4 +29,6 @@ export const DEFAULT_ENABLED_FEATURES: FeatureKey[] = [
   FEATURES.WIDGET,
   FEATURES.DOCUMENT_GENERATION,
   FEATURES.MARKETPLACE,
+  FEATURES.CREATE_AGENTS,
+  FEATURES.RESET_WORKFORCE,
 ]

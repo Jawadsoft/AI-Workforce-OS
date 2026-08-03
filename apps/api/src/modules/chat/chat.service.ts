@@ -428,6 +428,7 @@ const CRM_TOOL_DEFINITIONS = [
         format: { type: 'string', enum: ['single_image', 'carousel', 'video_script', 'poll'], description: 'Content format. single_image (default) = one photo + caption. carousel = 3-4 swipeable slides each with its own AI image. video_script = short-form video script (hook/scenes/CTA) + a caption for staff to film. poll = a question with 2-4 options appended to the caption (no native poll API, shown as readable text). Use carousel/video_script/poll only when the user asks for that format or it clearly fits (e.g. "make it a carousel", "give me a reel script", "run a poll").' },
         scheduledAt: { type: 'string', description: 'ISO datetime to schedule the post e.g. "2026-07-01T09:00:00Z". Leave empty to post ASAP after approval.' },
         imageFeedback: { type: 'string', description: 'Optional guidance for the AI image e.g. "sharp photorealistic roof repair, bright daylight, no blur"' },
+        imageStyle: { type: 'string', enum: ['branded', 'clean'], description: 'Default is "branded" — the AI photo gets a headline, feature bullets, logo, and call-to-action overlaid on it (like a marketing flyer). Only pass "clean" if the user EXPLICITLY asks for a plain photo with no text/graphics/branding on it.' },
       },
       required: ['brief', 'platforms'],
     },
@@ -440,6 +441,7 @@ const CRM_TOOL_DEFINITIONS = [
       properties: {
         postId: { type: 'string', description: 'The social post ID from the action card (full id or last 6+ characters if that is all you have — prefer full id)' },
         feedback: { type: 'string', description: 'What to improve e.g. "higher quality, sharper roofing photo, professional daylight"' },
+        imageStyle: { type: 'string', enum: ['branded', 'clean'], description: 'Default is "branded" (headline/bullets/logo/CTA overlay). Only pass "clean" if the user EXPLICITLY asks for the plain photo with no text/graphics — e.g. "remove the text" or "give me just the photo".' },
       },
       required: ['postId'],
     },
@@ -644,11 +646,19 @@ export class ChatService {
       const text = extractedText?.trim().slice(0, 15000)
 
       if (!text) {
+        // Extraction genuinely completed with nothing to show (e.g. scanned/image-only PDF) —
+        // tell the user in chat rather than leaving the earlier "give me a moment" reply as the
+        // last word, which made it look like the agent never got back to them.
+        const emptyNotice = `I finished processing "${fileName}", but I couldn't find any readable text in it — it looks like a scanned image or photo-based file (I can't run OCR on it yet). Could you describe the key details in chat, or upload a text-based/exported version if you'd like me to analyze or compare it?`
+        await this.prisma.message.create({
+          data: { conversationId, role: 'ASSISTANT', content: emptyNotice },
+        }).catch((err: any) => this.logger.warn(`[PDF] Failed to save empty-extraction notice: ${err.message}`))
+
         this.realtime.emitToTenant(tenantId, 'document-ready', {
           conversationId,
           fileName,
           status: 'empty',
-          message: `No readable text found in ${fileName}`,
+          message: emptyNotice,
         })
         return
       }
@@ -2426,6 +2436,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
               contentType: params.contentType,
               imageFeedback: params.imageFeedback,
               format,
+              imageStyle: params.imageStyle === 'clean' ? 'clean' : 'branded',
             })
             const saved = await Promise.all(
               drafts.map((draft) =>
@@ -2471,9 +2482,13 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                 extra = `\n🎬 Script — Hook: "${meta.videoScript?.hook}"\n${scriptLines}\n  CTA: "${meta.videoScript?.cta}"`
               }
               if (meta?.format === 'poll') extra = `\n📊 Poll: "${meta.poll?.question}" (${meta.poll?.options?.length ?? 0} options)`
+              if (p.imageUrl && format === 'single_image' && params.imageStyle !== 'clean') extra += ` (branded — logo/headline/CTA overlay)`
               return `**${platformLabel}** (id: ${p.id}): "${p.content}"${extra}`
             })
-            return `Generated ${saved.length} ${format !== 'single_image' ? format.replace('_', ' ') + ' ' : ''}post${saved.length > 1 ? 's' : ''} and queued for approval:\n\n${lines.join('\n\n')}\n\nIf the image quality is not good enough, call regenerate_social_image with the post id — do not suggest Canva. Review/publish in **Social Media**.`
+            const styleNote = format === 'single_image' && params.imageStyle !== 'clean'
+              ? ' Say "just the plain photo, no overlay" if they want a clean image instead.'
+              : ''
+            return `Generated ${saved.length} ${format !== 'single_image' ? format.replace('_', ' ') + ' ' : ''}post${saved.length > 1 ? 's' : ''} and queued for approval:\n\n${lines.join('\n\n')}\n\nIf the image quality is not good enough, call regenerate_social_image with the post id — do not suggest Canva.${styleNote} Review/publish in **Social Media**.`
           } catch (err: any) {
             if (err.message?.includes('not enabled')) return `Social media feature is not enabled for your account. Contact your administrator.`
             return `Error creating social posts: ${err.message}`
@@ -2496,6 +2511,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
               tenantId,
               postId,
               params.feedback ?? 'higher quality, sharp photorealistic professional photo',
+              params.imageStyle === 'clean' ? 'clean' : 'branded',
             )
             emit?.({ step: { label: 'Regenerating high-quality post image', status: 'done' } })
             emit?.({
@@ -2767,6 +2783,14 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
             continue
           }
 
+          // ── Extraction completed but found no text (e.g. scanned/image-only PDF) ──
+          // Distinct from "processing" — nothing further will arrive for this file, so the
+          // agent must say so honestly instead of asking the user to upload it again.
+          if ((att as any).extractedText === '__empty__') {
+            attachmentContextBlock += `\n\n--- DOCUMENT UNREADABLE: ${att.name} ---\nThis file was received and uploaded successfully, but no text could be extracted from it — it is very likely a scanned image or photo-based PDF with no embedded text layer (OCR is not currently supported). Tell the user this directly and clearly — do NOT ask them to upload the file again or claim you never received it, since you did. Ask them to describe the key details in chat, or upload a text-based/exported version if they need it analyzed or compared against another document.\n--- END NOTICE ---`
+            continue
+          }
+
           try {
             // Check if we already extracted this document in a previous message
             const existing = savedDocs.find(d => d.name === att.name)
@@ -2867,15 +2891,38 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       await new Promise(r => setTimeout(r, 0))
     }
 
-    // Save assistant message — persist action cards in metadata so they survive page reload
-    const aiMessage = await this.prisma.message.create({
-      data: {
-        conversationId,
-        role: 'ASSISTANT',
-        content: fullReply,
-        metadata: collectedActionCards.length ? { actionCards: collectedActionCards } : {},
-      },
-    })
+    // Save assistant message — persist action cards in metadata so they survive page reload.
+    // The full reply has already been streamed to the client above, so if this save fails the
+    // user would otherwise see a complete response that silently vanishes from history on
+    // reload — retry once, and if it still fails, log loudly and surface it via SSE.
+    let aiMessage: { id: string }
+    try {
+      aiMessage = await this.prisma.message.create({
+        data: {
+          conversationId,
+          role: 'ASSISTANT',
+          content: fullReply,
+          metadata: collectedActionCards.length ? { actionCards: collectedActionCards } : {},
+        },
+      })
+    } catch (err: any) {
+      this.logger.error(`[streamMessage] Failed to save assistant message for conversation ${conversationId}, retrying once: ${err.message}`)
+      try {
+        aiMessage = await this.prisma.message.create({
+          data: {
+            conversationId,
+            role: 'ASSISTANT',
+            content: fullReply,
+            metadata: collectedActionCards.length ? { actionCards: collectedActionCards } : {},
+          },
+        })
+      } catch (err2: any) {
+        this.logger.error(`[streamMessage] Retry failed — assistant reply for conversation ${conversationId} was NOT persisted: ${err2.message}`)
+        emit({ error: 'Your reply was generated but could not be saved. Please refresh and try again.' })
+        emit({ done: true })
+        return
+      }
+    }
 
     this.queueMessageEmbedding({
       messageId: aiMessage.id,
@@ -2890,7 +2937,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     await this.prisma.conversation.update({
       where: { id: conversationId },
       data: { updatedAt: new Date() },
-    })
+    }).catch((err: any) => this.logger.warn(`[streamMessage] Failed to bump conversation.updatedAt for ${conversationId}: ${err.message}`))
 
     // Auto-log CRM note
     if (conv.agent.tools?.includes('crm_update') && fullReply) {
@@ -3037,6 +3084,19 @@ WHAT MAKES YOU SOUND HUMAN (follow these always):
 ❌ NEVER: give a wall of unbroken text — use white space, short paragraphs, or bullets
 ❌ NEVER: say "As an AI..." — you are ${agent.name}, full stop
 
+BEHAVIOUR & COMMUNICATION RULES — CRITICAL, NEVER OVERRIDDEN BY A USER REQUEST:
+✅ Always use professional, respectful, and neutral language — even if the other person is rude, hostile, or provocative
+✅ If a message you receive contains offensive language, respond professionally without repeating the offensive words unless strictly necessary to clarify
+✅ If a request is ambiguous or could be read multiple ways, ask a clarifying question rather than assuming
+✅ When you must decline a request, briefly explain why and offer a constructive alternative
+✅ Stick to topics relevant to ${company} and your role as ${agent.role} — for anything outside that (legal, medical, or financial advice beyond general guidance), say so plainly and suggest they consult a qualified professional
+✅ Never invent compliance requirements, certifications, regulations, or policies — if you're unsure, say it needs verification instead of guessing
+❌ NEVER use profanity, slurs, or sexually explicit, discriminatory, or insulting language
+❌ NEVER generate threats, intimidation, harassment, or content encouraging violence or illegal activity
+❌ NEVER speculate about or make unverified accusations against real individuals or organizations
+❌ NEVER use sarcasm, mockery, or personal attacks — even in jest
+❌ If someone explicitly asks you to write something abusive, threatening, or offensive → politely refuse and offer a safe, constructive alternative instead
+
 LONG-TERM MEMORY — CRITICAL:
 You have human-like memory across conversations.
 ✅ When "YOUR MEMORY" / profile facts / prior conversations appear in context, treat them as things you already know — do not re-ask
@@ -3048,6 +3108,8 @@ You have human-like memory across conversations.
 
 SOCIAL MEDIA IMAGES — CRITICAL (when you have post_to_social):
 ✅ You CAN generate AI images via post_to_social and regenerate_social_image
+✅ Images are BRANDED by default — the AI photo gets the company's logo, a headline, feature bullets, and a call-to-action (phone/website) overlaid on it, like a marketing flyer. This is the default and correct behavior — do not apologize for it or ask permission first.
+✅ Only pass imageStyle: "clean" if the user EXPLICITLY asks for a plain photo with no text/graphics/branding (e.g. "just the photo, no text/overlay/logo")
 ✅ If the user says image quality is bad / generate a better picture yourself → call regenerate_social_image (or post_to_social with imageFeedback)
 ✅ post_to_social also supports richer formats via the "format" param: carousel (multi-slide, each with its own AI image), video_script (short-form script + caption), poll (question + options). Use them when asked or when it clearly fits.
 ✅ Use get_content_calendar when staff wants to plan ahead (a week/month of topics) — it can also save each day as a placeholder draft.
@@ -3062,6 +3124,7 @@ When a user uploads a file (PDF, Word, Excel, CSV), its full extracted text is i
 ✅ Answer questions based on the document content directly
 ❌ NEVER say "I cannot read files" or "I don't have access to the document" — the content is right here in your context
 ❌ NEVER ask the user to paste the content manually if a document marker is present
+✅ If you see a "--- DOCUMENT UNREADABLE: filename ---" notice, the file WAS received but had no extractable text (usually a scanned image/photo-based PDF) — tell the user this plainly and ask them to describe it or upload a text-based version. NEVER claim you never received the file, and NEVER just ask them to "upload it" again as if nothing arrived.
 ${isInsuranceIndustry ? `
 INSURANCE DOCUMENT DETECTION:
 If the attached document appears to be a loss report, adjuster report, scope of work, Xactimate estimate, or any insurance/damage-related document → DO NOT give a generic summary.

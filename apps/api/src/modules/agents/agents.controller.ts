@@ -8,6 +8,8 @@ import { Roles } from '../../common/decorators/roles.decorator'
 import { CurrentTenant } from '../../common/decorators/tenant.decorator'
 import { AgentsService } from './agents.service'
 import { ElevenLabsProvider } from '../../ai/providers/elevenlabs.provider'
+import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
+import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
 
 class CreateAgentDto {
   @IsString() name: string
@@ -43,6 +45,7 @@ export class AgentsController {
   constructor(
     private readonly service: AgentsService,
     private readonly voice: ElevenLabsProvider,
+    private readonly featureFlags: FeatureFlagsService,
   ) {}
 
   @Get()
@@ -53,7 +56,8 @@ export class AgentsController {
 
   @Get('templates')
   @ApiOperation({ summary: 'Get marketplace templates' })
-  getTemplates() {
+  async getTemplates(@CurrentTenant() tenantId: string) {
+    await this.featureFlags.requireFeature(tenantId, FEATURES.MARKETPLACE)
     return this.service.getTemplates()
   }
 
@@ -73,7 +77,8 @@ export class AgentsController {
   @UseGuards(RolesGuard)
   @Roles('MANAGER')
   @ApiOperation({ summary: 'Create custom agent' })
-  create(@CurrentTenant() tenantId: string, @Body() dto: CreateAgentDto) {
+  async create(@CurrentTenant() tenantId: string, @Body() dto: CreateAgentDto) {
+    await this.featureFlags.requireFeature(tenantId, FEATURES.CREATE_AGENTS)
     return this.service.create(tenantId, dto)
   }
 
@@ -81,7 +86,8 @@ export class AgentsController {
   @UseGuards(RolesGuard)
   @Roles('MANAGER')
   @ApiOperation({ summary: 'Install agent from marketplace template' })
-  installTemplate(@CurrentTenant() tenantId: string, @Param('templateId') templateId: string) {
+  async installTemplate(@CurrentTenant() tenantId: string, @Param('templateId') templateId: string) {
+    await this.featureFlags.requireFeature(tenantId, FEATURES.MARKETPLACE)
     return this.service.installTemplate(tenantId, templateId)
   }
 

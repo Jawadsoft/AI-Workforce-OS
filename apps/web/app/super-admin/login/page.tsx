@@ -33,6 +33,10 @@ export default function SuperAdminLoginPage() {
         return
       }
       localStorage.setItem('sa_access_token', token)
+      // Also populate the shared session token/cookie so pages that use the
+      // regular auth store (e.g. /help) recognize this super-admin as logged in.
+      localStorage.setItem('access_token', token)
+      document.cookie = `access_token=${token}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`
       router.replace('/super-admin/dashboard')
     } catch (err: any) {
       setError(err.response?.data?.message || 'Login failed')

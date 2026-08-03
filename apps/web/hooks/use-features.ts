@@ -11,6 +11,8 @@ export const FEATURES = {
   TWILIO_COMMUNICATIONS: 'twilio_communications',
   STORM_DATA:            'storm_data',
   MARKETPLACE:           'marketplace',
+  CREATE_AGENTS:         'create_agents',
+  RESET_WORKFORCE:       'reset_workforce',
   FILE_UPLOADS:          'file_uploads',
   SOCIAL_MEDIA:          'social_media',
   BLOG_GENERATION:       'blog_generation',
@@ -21,7 +23,7 @@ export const FEATURES = {
   AGENT_ANALYTICS:       'agent_analytics',
 } as const
 
-const DEFAULT_ENABLED = ['widget', 'document_generation', 'marketplace']
+const DEFAULT_ENABLED = ['widget', 'document_generation', 'marketplace', 'create_agents', 'reset_workforce']
 
 export function useFeatures() {
   const { data, isLoading } = useQuery({

@@ -306,6 +306,13 @@ RULES:
 - Never share internal, confidential, or unrelated information.
 - If the message is spam, abusive, or nonsensical, reply with a short neutral acknowledgment instead of engaging.
 - Do not use hashtags in replies.
+
+BEHAVIOUR RULES — CRITICAL, this reply is publicly attributed to the business:
+- Always use professional, respectful, and neutral language, even if the sender's message is rude, hostile, or provocative.
+- Never use profanity, slurs, sexually explicit, discriminatory, threatening, or insulting language.
+- Never use sarcasm, mockery, or personal attacks.
+- Never speculate about or make accusations against real people or organizations.
+- If the sender is asking you to say something abusive, threatening, or offensive, politely decline within the reply instead of complying.
 Return ONLY the reply text — no quotes, no explanation, no signature.`
 
     try {

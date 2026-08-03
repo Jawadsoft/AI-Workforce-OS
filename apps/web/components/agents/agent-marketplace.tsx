@@ -4,8 +4,9 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
-import { ChevronLeft, Zap, Download, Loader2, CheckCircle2 } from 'lucide-react'
+import { ChevronLeft, Zap, Download, Loader2, CheckCircle2, Lock } from 'lucide-react'
 import { resolveAvatarUrl } from '@/lib/utils'
+import { useFeatures, FEATURES } from '@/hooks/use-features'
 
 const INDUSTRY_LABELS: Record<string, string> = {
   ROOFING: 'Roofing',
@@ -41,6 +42,8 @@ const ROLE_ICONS: Record<string, string> = {
 
 export function AgentMarketplace() {
   const qc = useQueryClient()
+  const { isEnabled, isLoading: featuresLoading } = useFeatures()
+  const marketplaceEnabled = isEnabled(FEATURES.MARKETPLACE)
   const [installing, setInstalling] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [industryFilter, setIndustryFilter] = useState('')
@@ -48,6 +51,7 @@ export function AgentMarketplace() {
   const { data: templates = [], isLoading } = useQuery({
     queryKey: ['agent-templates'],
     queryFn: () => api.get('/agents/templates').then((r) => r.data),
+    enabled: marketplaceEnabled,
   })
 
   const { data: existingAgents = [] } = useQuery({
@@ -79,6 +83,23 @@ export function AgentMarketplace() {
     const matchesIndustry = !industryFilter || (t.industries ?? []).includes(industryFilter)
     return matchesSearch && matchesIndustry
   })
+
+  if (!featuresLoading && !marketplaceEnabled) {
+    return (
+      <div className="max-w-3xl mx-auto p-8 text-center space-y-4">
+        <div className="flex items-center gap-3 mb-2">
+          <Link href="/agents" className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground">
+            <ChevronLeft className="w-5 h-5" />
+          </Link>
+        </div>
+        <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto">
+          <Lock className="w-8 h-8 text-primary" />
+        </div>
+        <h2 className="text-xl font-bold">Agent Marketplace</h2>
+        <p className="text-muted-foreground">This feature is not enabled for your account. Contact your administrator.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">

@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
-import { ChevronLeft, Save, Loader2 } from 'lucide-react'
+import { ChevronLeft, Save, Loader2, Lock } from 'lucide-react'
+import { useFeatures, FEATURES } from '@/hooks/use-features'
 
 const INDUSTRIES = ['ROOFING', 'CAR_DEALERSHIP', 'CLEANING', 'SECURITY', 'PROPERTY_MANAGEMENT', 'HEALTHCARE', 'CONSTRUCTION', 'REAL_ESTATE', 'OTHER']
 const DEFAULT_TOOLS = ['create_task', 'crm_update', 'send_email', 'search_knowledge', 'generate_document', 'schedule_appointment']
@@ -13,6 +14,8 @@ const DEFAULT_TOOLS = ['create_task', 'crm_update', 'send_email', 'search_knowle
 export function CreateAgentForm() {
   const router = useRouter()
   const qc = useQueryClient()
+  const { isEnabled, isLoading: featuresLoading } = useFeatures()
+  const createAgentsEnabled = isEnabled(FEATURES.CREATE_AGENTS)
   const [form, setForm] = useState({
     name: '',
     role: '',
@@ -37,6 +40,23 @@ export function CreateAgentForm() {
       ...f,
       tools: f.tools.includes(t) ? f.tools.filter((x) => x !== t) : [...f.tools, t],
     }))
+
+  if (!featuresLoading && !createAgentsEnabled) {
+    return (
+      <div className="max-w-3xl mx-auto p-8 text-center space-y-4">
+        <div className="flex items-center gap-3 mb-2">
+          <Link href="/agents" className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground">
+            <ChevronLeft className="w-5 h-5" />
+          </Link>
+        </div>
+        <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto">
+          <Lock className="w-8 h-8 text-primary" />
+        </div>
+        <h2 className="text-xl font-bold">Create AI Agent</h2>
+        <p className="text-muted-foreground">This feature is not enabled for your account. Contact your administrator.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">

@@ -8,6 +8,7 @@ import { Plus, Search, EyeOff, Eye, Zap, RefreshCw, Loader2, Pencil, X, Check, M
 import { useAuthStore } from '@/stores/auth.store'
 import { resolveAvatarUrl } from '@/lib/utils'
 import { canEditAgents } from '@/lib/roles'
+import { useFeatures, FEATURES } from '@/hooks/use-features'
 
 const STATUS_COLORS: Record<string, string> = {
   ACTIVE: 'bg-green-500/10 text-green-500',
@@ -22,6 +23,10 @@ export function AgentsPage() {
   const [resetting, setResetting] = useState(false)
   const { user, fetchMe, isAuthenticated } = useAuthStore()
   const canEdit = canEditAgents(user?.role)
+  const { isEnabled } = useFeatures()
+  const marketplaceEnabled = isEnabled(FEATURES.MARKETPLACE)
+  const createAgentsEnabled = isEnabled(FEATURES.CREATE_AGENTS)
+  const resetWorkforceEnabled = isEnabled(FEATURES.RESET_WORKFORCE)
 
   useEffect(() => { if (!isAuthenticated) fetchMe() }, [])
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -90,25 +95,31 @@ export function AgentsPage() {
         </div>
         {/* Actions — icon-only on mobile, full labels on sm+ */}
         <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            onClick={handleResetWorkforce}
-            disabled={resetting}
-            title="Reset Workforce"
-            className="flex items-center gap-1.5 border border-border px-2.5 py-2 rounded-md text-sm hover:bg-accent transition-colors text-muted-foreground"
-          >
-            {resetting ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            <span className="hidden sm:inline">Reset Workforce</span>
-          </button>
-          <Link href="/agents/marketplace"
-            className="flex items-center gap-1.5 border border-border px-2.5 py-2 rounded-md text-sm hover:bg-accent transition-colors">
-            <Zap className="w-4 h-4" />
-            <span className="hidden sm:inline">Marketplace</span>
-          </Link>
-          <Link href="/agents/create"
-            className="flex items-center gap-1.5 bg-primary text-primary-foreground px-2.5 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors">
-            <Plus className="w-4 h-4" />
-            <span className="hidden sm:inline">Add Agent</span>
-          </Link>
+          {resetWorkforceEnabled && (
+            <button
+              onClick={handleResetWorkforce}
+              disabled={resetting}
+              title="Reset Workforce"
+              className="flex items-center gap-1.5 border border-border px-2.5 py-2 rounded-md text-sm hover:bg-accent transition-colors text-muted-foreground"
+            >
+              {resetting ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              <span className="hidden sm:inline">Reset Workforce</span>
+            </button>
+          )}
+          {marketplaceEnabled && (
+            <Link href="/agents/marketplace"
+              className="flex items-center gap-1.5 border border-border px-2.5 py-2 rounded-md text-sm hover:bg-accent transition-colors">
+              <Zap className="w-4 h-4" />
+              <span className="hidden sm:inline">Marketplace</span>
+            </Link>
+          )}
+          {createAgentsEnabled && (
+            <Link href="/agents/create"
+              className="flex items-center gap-1.5 bg-primary text-primary-foreground px-2.5 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors">
+              <Plus className="w-4 h-4" />
+              <span className="hidden sm:inline">Add Agent</span>
+            </Link>
+          )}
         </div>
       </div>
 

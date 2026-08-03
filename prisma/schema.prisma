@@ -42,6 +42,7 @@ model Tenant {
   stormReports      StormReport[]
   conversationSummaries ConversationSummary[]
   agentMemoryFacts  AgentMemoryFact[]
+  messageChunks     MessageChunk[]
   featureFlags      TenantFeatureFlag[]
   socialAccounts    SocialAccount[]
   socialPosts       SocialPost[]
@@ -104,6 +105,7 @@ model Agent {
   assignedTickets      ActivityTicket[]       @relation("TicketAssignee")
   conversationSummaries ConversationSummary[]
   memoryFacts          AgentMemoryFact[]
+  messageChunks        MessageChunk[]
 }
 
 model AgentTemplate {
@@ -659,6 +661,31 @@ model AgentMemoryFact {
 
   @@index([tenantId, agentId, subjectKey])
   @@index([tenantId, agentId, deletedAt])
+}
+
+// Raw-message vector store — chunked + embedded copy of every chat message.
+// Used as a fallback recall layer when the compressed runningSummary/episodic
+// search (which only ever covers the conversation's earliest ~60 messages)
+// misses something that was said further into a long-running conversation.
+model MessageChunk {
+  id             String   @id @default(cuid())
+  tenantId       String
+  agentId        String
+  conversationId String
+  messageId      String
+  subjectKey     String? // user:ID | customer:ID | phone:E164 | email:addr | anon:convId
+  role           String // USER | ASSISTANT
+  chunkIndex     Int      @default(0)
+  content        String   @db.Text
+  embedding      Json?
+  createdAt      DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, agentId, conversationId])
+  @@index([tenantId, agentId, subjectKey])
+  @@index([messageId])
 }
 
 // ─────────────────────────────────────────────

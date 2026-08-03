@@ -28,6 +28,7 @@ import { CloudinaryModule } from './common/cloudinary/cloudinary.module'
 import { FeatureFlagsModule } from './common/feature-flags/feature-flags.module'
 import { QueueModule } from './queue/queue.module'
 import { PdfExtractionModule } from './queue/pdf-extraction.module'
+import { MessageEmbeddingModule } from './queue/message-embedding.module'
 import { RealtimeModule } from './realtime/realtime.module'
 import { IntegrationsModule } from './modules/integrations/integrations.module'
 import { DocumentTemplatesModule } from './modules/document-templates/document-templates.module'
@@ -55,6 +56,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     FeatureFlagsModule,
     QueueModule,
     PdfExtractionModule,
+    MessageEmbeddingModule,
     RealtimeModule,
     AIModule,
     AuthModule,

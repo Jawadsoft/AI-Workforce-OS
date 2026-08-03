@@ -374,6 +374,7 @@ ${transcript.slice(-2500)}`
       subjectKey?: string
       runningSummary?: string | null
       topK?: number
+      conversationId?: string
     },
   ): Promise<string> {
     const subjectKey = opts?.subjectKey
@@ -401,8 +402,77 @@ ${transcript.slice(-2500)}`
 
     if (episodic) parts.push(episodic.trim())
 
+    // Fallback cascade: the running summary only ever covers a conversation's
+    // earliest ~60 messages (see summariseConversation), so anything said later
+    // in a long-running thread can fall into a gap that's neither in the live
+    // 40-message window nor in the compressed summary/episodic layers above.
+    // Only pay for this extra raw-message search when the cheaper layers found
+    // nothing relevant.
+    if (!episodic && opts?.conversationId) {
+      const rawRecall = await this.searchRawMessages(agentId, tenantId, userMessage, opts.conversationId, subjectKey)
+      if (rawRecall) parts.push(rawRecall.trim())
+    }
+
     if (!parts.length) return ''
     return `\n\nYOUR MEMORY (use this; do not pretend you forgot):\n${parts.join('\n\n')}`
+  }
+
+  /**
+   * Raw-message vector search — fallback recall layer over MessageChunk.
+   * Searches this conversation's own chunked messages (plus any other chunks
+   * for the same subject) so detail that fell out of both the live 40-message
+   * window and the frozen running summary can still be found on demand.
+   */
+  async searchRawMessages(
+    agentId: string,
+    tenantId: string,
+    query: string,
+    conversationId: string,
+    subjectKey?: string,
+    topK = 4,
+  ): Promise<string> {
+    try {
+      const chunks = await this.prisma.messageChunk.findMany({
+        where: {
+          tenantId,
+          agentId,
+          OR: [
+            { conversationId },
+            ...(subjectKey ? [{ subjectKey }] : []),
+          ],
+        },
+        select: { content: true, embedding: true, role: true, conversationId: true, createdAt: true },
+        orderBy: { createdAt: 'desc' },
+        take: 300,
+      })
+      if (!chunks.length) return ''
+
+      const queryEmbedding = await this.ai.embed(query)
+      const queryLC = query.toLowerCase()
+      const words = queryLC.split(/\s+/).filter((w) => w.length > 3)
+
+      const scored = chunks
+        .filter((c) => Array.isArray(c.embedding) && (c.embedding as number[]).length > 0)
+        .map((c) => {
+          const score = cosineSimilarity(queryEmbedding, c.embedding as number[])
+          const hasKeywordMatch = words.some((w) => c.content.toLowerCase().includes(w))
+          return { ...c, score: score + (hasKeywordMatch ? 0.05 : 0) }
+        })
+        .filter((c) => c.score > 0.4)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topK)
+
+      if (!scored.length) return ''
+
+      const lines = scored.map((c) => {
+        const sameThread = c.conversationId === conversationId ? '' : ' (other conversation)'
+        return `[Earlier in this chat${sameThread} — ${c.role === 'USER' ? 'them' : 'you'}]: ${c.content.slice(0, 400)}`
+      })
+      return `RAW MESSAGE RECALL (older content not captured in the summary above):\n${lines.join('\n\n')}`
+    } catch (err: any) {
+      this.logger.warn(`[Memory] Raw message search failed for agent ${agentId}: ${err.message}`)
+      return ''
+    }
   }
 
   /**

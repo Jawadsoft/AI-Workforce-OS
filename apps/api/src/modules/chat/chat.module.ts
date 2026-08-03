@@ -19,7 +19,7 @@ import { RealtimeModule } from '../../realtime/realtime.module'
 // TypeScript file dependency and crash module scanning.
 @Module({
   imports: [
-    BullModule.registerQueue({ name: 'knowledge-processing' }),
+    BullModule.registerQueue({ name: 'knowledge-processing' }, { name: 'message-embedding' }),
     AIModule, CrmModule, BrainModule, KnowledgeModule, TasksModule,
     DocumentsModule, StormModule, MemoryModule, SocialModule, CloudinaryModule,
     RealtimeModule,

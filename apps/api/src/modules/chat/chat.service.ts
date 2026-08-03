@@ -589,7 +589,29 @@ export class ChatService {
     private readonly social: SocialService,
     private readonly realtime: RealtimeGateway,
     @InjectQueue('knowledge-processing') private readonly extractionQueue: Queue,
+    @InjectQueue('message-embedding') private readonly embeddingQueue: Queue,
   ) {}
+
+  // Fire-and-forget: chunk + embed a message into the raw-message vector store
+  // (MessageChunk). Races against a short timeout so a slow/down Redis never
+  // blocks or delays the chat response — same defensive pattern as queuePdfExtraction.
+  private queueMessageEmbedding(payload: {
+    messageId: string
+    conversationId: string
+    tenantId: string
+    agentId: string
+    subjectKey?: string
+    role: 'USER' | 'ASSISTANT'
+    content: string
+  }) {
+    if (!payload.content?.trim()) return
+    void Promise.race([
+      this.embeddingQueue.add('embed-message', payload, { attempts: 2, backoff: 3000, removeOnComplete: true, removeOnFail: 50 }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Queue timeout')), 1000)),
+    ]).catch((err: any) => {
+      this.logger.warn(`[MessageEmbedding] Queue unavailable for message ${payload.messageId}: ${err.message}`)
+    })
+  }
 
   queuePdfExtraction(conversationId: string, tenantId: string, fileName: string, fileBuffer: Buffer, mimeType: string) {
     // Do not block the chat stream on Redis/Bull. In local dev Redis may be down,
@@ -1054,7 +1076,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     if (!conv) throw new NotFoundException('Conversation not found')
 
     // Save user message
-    await this.prisma.message.create({
+    const userMsgRow = await this.prisma.message.create({
       data: { conversationId, role: 'USER', content },
     })
 
@@ -1107,6 +1129,16 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       conversationId,
     })
 
+    this.queueMessageEmbedding({
+      messageId: userMsgRow.id,
+      conversationId,
+      tenantId,
+      agentId: conv.agent.id,
+      subjectKey: memorySubjectKey,
+      role: 'USER',
+      content,
+    })
+
     // ── RAG + Memory + ticket fetch (all in parallel) ──────────────
     const [ragContext, memoryContext, ticketsBlock, teamRoster] = await Promise.all([
       this.knowledge.retrieveContext(conv.agent.id, content, mergedSettings.industry, conv.agent.role),
@@ -1114,6 +1146,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         subjectKey: memorySubjectKey,
         runningSummary: (conv as any).runningSummary,
         topK: 5,
+        conversationId,
       }),
       this.tickets.buildPromptBlock(tenantId, conv.agent.id, conversationId),
       this.prisma.agent.findMany({
@@ -1171,6 +1204,16 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
 
     const aiMessage = await this.prisma.message.create({
       data: { conversationId, role: 'ASSISTANT', content: aiReply },
+    })
+
+    this.queueMessageEmbedding({
+      messageId: aiMessage.id,
+      conversationId,
+      tenantId,
+      agentId: conv.agent.id,
+      subjectKey: memorySubjectKey,
+      role: 'ASSISTANT',
+      content: aiReply,
     })
 
     await this.prisma.conversation.update({
@@ -2588,7 +2631,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         : '')
 
     // Save user message (with attachments metadata)
-    await this.prisma.message.create({
+    const streamUserMsgRow = await this.prisma.message.create({
       data: {
         conversationId,
         role: 'USER',
@@ -2668,12 +2711,23 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       conversationId,
     })
 
+    this.queueMessageEmbedding({
+      messageId: streamUserMsgRow.id,
+      conversationId,
+      tenantId,
+      agentId: conv.agent.id,
+      subjectKey: streamSubjectKey,
+      role: 'USER',
+      content: effectiveContent,
+    })
+
     const [ragContext, memoryContext, streamTicketsBlock, streamTeamRoster] = await Promise.all([
       this.knowledge.retrieveContext(conv.agent.id, content, mergedSettings.industry, conv.agent.role),
       this.memory.buildMemoryContext(conv.agent.id, tenantId, content, {
         subjectKey: streamSubjectKey,
         runningSummary: (conv as any).runningSummary,
         topK: 5,
+        conversationId,
       }),
       this.tickets.buildPromptBlock(tenantId, conv.agent.id, conversationId),
       this.prisma.agent.findMany({
@@ -2821,6 +2875,16 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         content: fullReply,
         metadata: collectedActionCards.length ? { actionCards: collectedActionCards } : {},
       },
+    })
+
+    this.queueMessageEmbedding({
+      messageId: aiMessage.id,
+      conversationId,
+      tenantId,
+      agentId: conv.agent.id,
+      subjectKey: streamSubjectKey,
+      role: 'ASSISTANT',
+      content: fullReply,
     })
 
     await this.prisma.conversation.update({

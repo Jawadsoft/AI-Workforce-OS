@@ -57,6 +57,7 @@ function redisConnectionOptions(opts: {
       { name: 'document-generation' },
       { name: 'email' },
       { name: 'webhooks' },
+      { name: 'message-embedding' },
     ),
   ],
   exports: [BullModule],

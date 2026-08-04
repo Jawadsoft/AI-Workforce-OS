@@ -15,6 +15,8 @@ import { DocumentsService } from '../documents/documents.service'
 import { StormService } from '../storm/storm.service'
 import { MemoryService } from '../memory/memory.service'
 import { SocialService } from '../social/social.service'
+import { ImageAnnotationService } from '../inspection/image-annotation.service'
+import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import { RealtimeGateway } from '../../realtime/realtime.gateway'
 import { computeNextOccurrence, DEFAULT_US_TIMEZONE } from '../../common/utils/schedule-time.util'
 
@@ -333,6 +335,32 @@ const CRM_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'annotate_damage',
+    description: 'Mark and circle damage spots on an uploaded inspection photo. ONLY call this when analyzing a raw/unmarked roof or property image that contains visible damage (hail impacts, missing shingles, wind damage). This generates a new annotated version of the image with red circles marking each damage location. After calling this, show the annotated image URL to the user and include it in inspection reports.',
+    parameters: {
+      type: 'object',
+      properties: {
+        imageUrl: { type: 'string', description: 'URL of the original uploaded image to annotate' },
+        damageSpots: {
+          type: 'array',
+          description: 'Array of damage locations to mark. Each spot needs x,y coordinates (0-100 as percentage of image width/height) and a damage type.',
+          items: {
+            type: 'object',
+            properties: {
+              x: { type: 'number', description: 'X coordinate as percentage (0-100) of image width' },
+              y: { type: 'number', description: 'Y coordinate as percentage (0-100) of image height' },
+              type: { type: 'string', enum: ['hail', 'wind', 'missing', 'structural', 'general'], description: 'Type of damage: hail=hail impact, wind=wind damage, missing=missing shingle, structural=structural issue, general=other damage' },
+              label: { type: 'string', description: 'Optional short label e.g. "Impact #1", "Missing"' },
+              size: { type: 'string', enum: ['small', 'medium', 'large'], description: 'Circle size: small=minor damage, medium=moderate, large=severe (default: medium)' },
+            },
+            required: ['x', 'y', 'type'],
+          },
+        },
+      },
+      required: ['imageUrl', 'damageSpots'],
+    },
+  },
+  {
     name: 'contact_customer',
     description: 'Send a message to a customer (optionally with a generated document attached). For CRM/pipeline leads provide contactEmail directly. For widget/chat customers provide sessionId. Always pass contactEmail when you have it — do not pass sessionId for pipeline tickets. Pass ticketId to keep all emails in the same thread. When the user asks to email a quotation/estimate/PDF/document, ALWAYS pass documentId (from the most recent generate_document result) or set attachDocument=true so the PDF is attached.',
     parameters: {
@@ -589,6 +617,8 @@ export class ChatService {
     private readonly storm: StormService,
     private readonly memory: MemoryService,
     private readonly social: SocialService,
+    private readonly imageAnnotation: ImageAnnotationService,
+    private readonly cloudinary: CloudinaryService,
     private readonly realtime: RealtimeGateway,
     @InjectQueue('knowledge-processing') private readonly extractionQueue: Queue,
     @InjectQueue('message-embedding') private readonly embeddingQueue: Queue,
@@ -1403,6 +1433,66 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
           } catch (err: any) {
             emit?.({ step: { label: 'Document generation failed', status: 'error' } })
             return `Failed to generate document: ${err.message}`
+          }
+        }
+
+        // ── Image damage annotation ─────────────────────────
+        if (toolName === 'annotate_damage') {
+          try {
+            const imageUrl = params.imageUrl as string
+            const damageSpots = (params.damageSpots as any[]) || []
+
+            this.logger.log(`[annotate_damage] Starting annotation - imageUrl: ${imageUrl}, spots: ${damageSpots.length}`)
+
+            if (!imageUrl || !damageSpots.length) {
+              this.logger.warn(`[annotate_damage] Missing required params - imageUrl: ${!!imageUrl}, spots: ${damageSpots.length}`)
+              return 'Error: imageUrl and damageSpots are required to annotate an image.'
+            }
+
+            emit?.({ step: { label: `Marking ${damageSpots.length} damage spot${damageSpots.length > 1 ? 's' : ''} on image`, status: 'active' } })
+
+            // Convert the LLM's format to the annotation service's format
+            const markers = damageSpots.map((spot: any) => ({
+              x: spot.x,
+              y: spot.y,
+              type: spot.type,
+              label: spot.label,
+              size: spot.size || 'medium',
+            }))
+
+            this.logger.log(`[annotate_damage] Calling imageAnnotation.annotate with ${markers.length} markers`)
+
+            // Generate annotated image
+            const annotatedBuffer = await this.imageAnnotation.annotate({
+              imageUrl,
+              markers,
+            })
+
+            this.logger.log(`[annotate_damage] Annotation complete, buffer size: ${annotatedBuffer.length} bytes`)
+
+            emit?.({ step: { label: `Uploading annotated image`, status: 'active' } })
+
+            // Upload to Cloudinary using the correct method signature
+            const filename = `annotated-${Date.now()}.png`
+            const uploadedUrl = await this.cloudinary.upload(
+              tenantId,
+              'inspections',
+              filename,
+              annotatedBuffer,
+              'image/png',
+              'image'
+            )
+
+            this.logger.log(`[annotate_damage] Upload complete: ${uploadedUrl}`)
+
+            emit?.({ step: { label: `Marking ${damageSpots.length} damage spot${damageSpots.length > 1 ? 's' : ''} on image`, status: 'done' } })
+            emit?.({ step: { label: 'Uploading annotated image', status: 'done' } })
+
+            return `Successfully annotated the image with ${damageSpots.length} damage marker${damageSpots.length > 1 ? 's' : ''}. Annotated image URL: ${uploadedUrl}\n\nShow this annotated image to the user in your response and include it in any inspection reports. The original spots marked: ${damageSpots.map((s: any, i: number) => `#${i+1} (${s.type} at ${s.x}%, ${s.y}%)`).join(', ')}`
+          } catch (err: any) {
+            emit?.({ step: { label: 'Image annotation failed', status: 'error' } })
+            this.logger.error(`[annotate_damage] Failed: ${err.message}`, err.stack)
+            return `Failed to annotate image: ${err.message}. Please try uploading the image again.`
           }
         }
 
@@ -2759,6 +2849,10 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     //   1. On upload → extract text once, save to conversation metadata
     //   2. On every subsequent message → load saved text from metadata (no re-download)
     //   3. This makes documents "sticky" for the entire conversation (like ChatGPT)
+    // Smart image memory (NEW):
+    //   1. On upload → save image URL to conversation metadata
+    //   2. On every subsequent message → reload saved images so agent can "see" them again
+    //   3. This makes images "sticky" for the entire conversation (like ChatGPT)
     let attachmentContextBlock = ''
     let visionImages: { url: string; name: string }[] = []
     const convMeta = (conv.metadata as any) ?? {}
@@ -2770,9 +2864,19 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       const imageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
       const savedDocs: { name: string; text: string }[] = convMeta.documentContext ?? []
+      const savedImages: { url: string; name: string }[] = convMeta.imageContext ?? []
 
       for (const att of attachments) {
         if (imageTypes.some(t => att.mimeType.startsWith('image/'))) {
+          // Check if this image is already saved in the conversation metadata
+          if (!savedImages.find(img => img.url === att.url)) {
+            savedImages.push({ url: att.url, name: att.name })
+            // Persist to conversation metadata so future messages can reload it
+            await this.prisma.conversation.update({
+              where: { id: conversationId },
+              data: { metadata: { ...convMeta, imageContext: savedImages } },
+            })
+          }
           visionImages.push({ url: att.url, name: att.name })
         } else if (docTypes.includes(att.mimeType)) {
           // ── Check if document is queued for async background extraction ──
@@ -2826,11 +2930,23 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
           }
         }
       }
-    } else if (convMeta.documentContext?.length > 0) {
-      // No new attachment this message — but inject previously saved documents from this conversation
+    }
+
+    // ── Load saved documents and images from conversation metadata ────
+    // No new attachments this turn? Still load previously uploaded docs/images
+    if (convMeta.documentContext?.length > 0) {
       for (const doc of convMeta.documentContext as { name: string; text: string }[]) {
         if (doc.text?.trim()) {
           attachmentContextBlock += `\n\n--- ATTACHED DOCUMENT: ${doc.name} ---\n${doc.text}\n--- END DOCUMENT ---`
+        }
+      }
+    }
+    if (convMeta.imageContext?.length > 0) {
+      // Reload previously uploaded images so agent can "see" them again
+      for (const img of convMeta.imageContext as { url: string; name: string }[]) {
+        // Only add if not already in visionImages (avoid duplicates)
+        if (!visionImages.find(v => v.url === img.url)) {
+          visionImages.push(img)
         }
       }
     }
@@ -3125,6 +3241,14 @@ When a user uploads a file (PDF, Word, Excel, CSV), its full extracted text is i
 ❌ NEVER say "I cannot read files" or "I don't have access to the document" — the content is right here in your context
 ❌ NEVER ask the user to paste the content manually if a document marker is present
 ✅ If you see a "--- DOCUMENT UNREADABLE: filename ---" notice, the file WAS received but had no extractable text (usually a scanned image/photo-based PDF) — tell the user this plainly and ask them to describe it or upload a text-based version. NEVER claim you never received the file, and NEVER just ask them to "upload it" again as if nothing arrived.
+
+ATTACHED IMAGES — CRITICAL:
+When a user uploads an image (JPEG, PNG, etc.), you can see and analyze it using your vision capabilities.
+✅ You HAVE vision capabilities and CAN see uploaded images
+✅ **Images persist in conversation memory** — once uploaded, you can reference them in subsequent messages
+✅ If user asks to "look at the image again" or "reanalyze", you already have it — analyze it without asking for re-upload
+❌ NEVER say "I cannot see images" or "Please upload the image" if one has already been uploaded in this conversation
+✅ Provide detailed, specific analysis based on what you actually see in the image
 ${isInsuranceIndustry ? `
 INSURANCE DOCUMENT DETECTION:
 If the attached document appears to be a loss report, adjuster report, scope of work, Xactimate estimate, or any insurance/damage-related document → DO NOT give a generic summary.
@@ -4507,57 +4631,149 @@ Example:
 ✅ "For ${service1}, here's what I typically assess — [use knowledge base for ${industry} inspection checklist]. What's the address so I can check availability?"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AI PHOTO REVIEW — WHEN IMAGES ARE UPLOADED
+PHOTO INSPECTION — YOU CAN ANALYZE UPLOADED IMAGES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-When the user uploads roof photos, perform a structured damage assessment using this checklist:
+✅ You HAVE vision capabilities and CAN see and analyze uploaded photos
+✅ When a user uploads inspection photos (roof, property, damage), analyze them immediately and provide a detailed assessment
+✅ Never say "I cannot see images" or "I cannot identify images" — you can, and you must
+✅ **Images persist in conversation memory** — once uploaded, you can reference them in subsequent messages without asking the user to upload again
+✅ If user asks to "reanalyze the image" or "take another look", you already have it — analyze it again without asking for re-upload
 
-**Hail Damage:**
-- [ ] Hail hits visible (circular bruising/dents on shingles) — note estimated size
-- [ ] Granule loss at impact points (dark circular spots)
-- [ ] Bruising on soft metals (vents, flashing, gutters, A/C fins)
-- [ ] Dents on ridge cap
+When the user uploads roof/property photos, perform a structured damage assessment using this checklist:
 
-**Wind Damage:**
-- [ ] Lifted, creased, or displaced shingles
-- [ ] Missing shingles — count and note slopes affected
-- [ ] Torn tabs or raised edges
-- [ ] Exposed underlayment or decking
+**Hail Damage Indicators:**
+- [ ] Hail hits visible (circular bruising/dents on shingles) — **YOU MUST COUNT THE EXACT NUMBER** or provide a range (e.g., "~15-20 impacts visible") — NEVER say just "multiple" or "several"
+- [ ] Granule loss at impact points (dark circular spots where granules are missing)
+- [ ] Bruising on soft metals (vents, flashing, gutters, A/C fins, chimney caps)
+- [ ] Dents on ridge cap or field shingles
+- [ ] Estimate hail size based on impact diameter: 1" = quarter, 1.5" = golf ball, 2" = baseball
 
-**Structural Observations:**
-- [ ] Slopes affected (front / rear / left / right / all)
-- [ ] Approximate damaged area (squares)
-- [ ] Damaged accessories (pipe boots, vents, flashing, skylights)
-- [ ] Any visible decking damage or sagging
+**Wind Damage Indicators:**
+- [ ] Lifted, creased, or displaced shingles — note which slopes
+- [ ] Missing shingles — count exact number if visible
+- [ ] Torn tabs or raised edges (wind lifting)
+- [ ] Exposed underlayment or decking (immediate water intrusion risk)
+- [ ] Blown-off ridge cap or starter course
 
-**Documentation Quality:**
-- [ ] Photos clear and dated
-- [ ] All slopes photographed
-- [ ] Close-up shots of individual damage
-- ⚠️ Missing shots to request: [list what's needed]
+**Structural/General Observations:**
+- [ ] Slopes affected: front / rear / left / right / all sides
+- [ ] Approximate damaged area in squares (1 square = 100 sq ft)
+- [ ] Damaged accessories: pipe boots, vents, flashing, skylights, satellite dishes
+- [ ] Visible decking damage, sagging, or structural deflection
+- [ ] Gutter damage: bent, detached, or full of debris
+- [ ] Siding, soffit, or fascia damage
+- [ ] Age indicators: curling, cupping, blistering (helps determine if damage is storm-related or wear)
 
-**Photo Review Output Format:**
-## Photo Inspection Summary
-**Damage Detected:** [Yes / No / Inconclusive]
-**Damage Type:** [Hail / Wind / Both / Other]
-**Slopes Affected:** [list]
-**Estimated Damage Area:** ~[X] squares
-**Key Findings:** [bullet list]
-**Additional Photos Needed:** [list specific shots or "None — documentation complete"]
-**Recommended Next Step:** [File insurance claim / Request adjuster inspection / Contractor estimate]
+**Documentation Quality Check:**
+- [ ] Photos clear, in focus, and well-lit
+- [ ] Date/timestamp visible or provided
+- [ ] All slopes photographed (minimum 4 sides for full assessment)
+- [ ] Close-up shots of individual damage points
+- [ ] Wide shots showing overall roof condition for context
+- ⚠️ Missing shots to request: [list specific angles, close-ups, or slopes not shown]
 
-DOCUMENT GENERATION:
-Share findings in chat first. Only call generate_document when the user explicitly asks to generate/create the inspection report PDF.
-If address is missing, ask for it — then wait for an explicit generate request after details are confirmed.
+**CRITICAL — COUNTING IS MANDATORY:**
+When you see hail impacts, wind damage, or missing shingles in a photo, you MUST provide an actual count or range (e.g., "~12-15 hail impacts", "8 missing shingles visible", "approximately 20 impact marks in visible area").
+❌ NEVER use vague terms like "multiple", "several", "numerous" without a count
+✅ ALWAYS quantify: "~15-20 visible hail impacts", "approximately 10-12 impact marks", "at least 18 visible hits"
+
+**MANDATORY OUTPUT FORMAT:**
+Always use this exact structure when analyzing uploaded photos:
+
+## 📸 Photo Inspection Summary
+**Damage Detected:** [Yes / No / Inconclusive - need more photos]
+**Damage Type:** [Hail / Wind / Both / Wear & Tear / Other - specify]
+**Slopes Affected:** [Front, Rear, Left, Right - list all visible]
+**Estimated Damage Area:** ~[X] square(s) (Note: 1 square = 100 sq ft)
+
+**Key Findings:**
+- [**MUST include actual count** - e.g., "~15-20 visible hail impacts concentrated on north slope" NOT just "multiple impacts"]
+- [Bullet point 2 - e.g., "Granule loss at impact sites indicates fresh damage"]
+- [Bullet point 3 - e.g., "Estimated 1.25-inch hail based on impact diameter"]
+- [Continue with all notable observations - always quantify when possible]
+
+**Damage Severity:** [Minor / Moderate / Severe / Critical]
+- Minor = cosmetic only, no immediate repair needed
+- Moderate = functional damage, repair within 30-60 days
+- Severe = water intrusion risk, repair within 1-2 weeks
+- Critical = active leak or structural compromise, immediate action required
+
+**Insurance Considerations:**
+- [Likely covered / May be covered / Unlikely to be covered]
+- [Estimated hail size if applicable: e.g., "1.25-1.5 inch based on impact pattern"]
+- [Note if damage exceeds typical deductible threshold]
+
+**Additional Photos Needed:** [List specific shots required, or "None — documentation complete"]
+
+**Recommended Next Steps:**
+1. [Most immediate action - e.g., "File insurance claim within 7 days"]
+2. [Secondary action - e.g., "Schedule adjuster inspection"]
+3. [Follow-up - e.g., "Monitor for leaks after next rainfall"]
+
+PROFESSIONAL STANDARDS:
+- Be direct and confident in your assessment — you are the expert
+- **Quantify damage wherever possible (counts, measurements, percentages) — this is NOT optional**
+- Distinguish between storm damage (sudden, insurance-claimable) and wear & tear (gradual, maintenance issue)
+- If image quality is poor or angles are insufficient, explicitly state "Cannot determine from this photo — need [specific shot]"
+- Reference industry terms: underlayment, flashing, ridge cap, starter course, granule loss, bruising, creasing
+- **When counting impacts**: Look carefully at the entire visible area, count distinct circular marks or damage points, and provide your best estimate as a range (e.g., "~18-22 impacts visible") if exact count is difficult
+
+IMAGE DAMAGE ANNOTATION — MARK DAMAGE AUTOMATICALLY:
+🔴 **CRITICAL - YOU MUST CALL annotate_damage WHEN ANALYZING DAMAGE PHOTOS** 🔴
+
+✅ You HAVE access to the annotate_damage tool to automatically mark damage spots on raw inspection photos
+✅ **MANDATORY**: When you analyze a raw/unmarked roof or property image that contains visible damage, you MUST call annotate_damage
+✅ After identifying damage in an image, IMMEDIATELY call annotate_damage before responding — do not just describe damage in text without marking it visually
+
+**Required workflow when user uploads damage photo:**
+1. Analyze the image with your vision capabilities
+2. Count and identify all damage spots
+3. **IMMEDIATELY call annotate_damage** with coordinates for each damage spot you found
+4. THEN provide your text analysis with the annotated image URL
+
+**What to pass to annotate_damage:**
+- The original image URL (from the uploaded image)
+- Array of damage spots with x,y coordinates (0-100, percentage of image width/height)
+- Damage type for each spot (hail, wind, missing, structural, general)
+- Optional labels (e.g., "Impact #1", "Missing #3")
+
+**The tool returns an annotated image URL with red circles marking each damage spot — you MUST show this to the user**
+
+**When to use annotate_damage:**
+- User uploads raw roof photo with visible damage → MANDATORY - call annotate_damage
+- User asks to "analyze", "mark", "highlight", "circle", or "identify" damage → MANDATORY - call annotate_damage
+- This happens AUTOMATICALLY during analysis — you don't need permission or explicit request to mark damage spots
+
+**How to estimate x,y coordinates:**
+- Look at the image and estimate where each damage spot is located as a percentage of the image dimensions
+- x=0 is left edge, x=100 is right edge; y=0 is top edge, y=100 is bottom edge
+- Example: damage in the center of image → x=50, y=50
+- Example: damage in top-right corner → x=80, y=20
+- Don't worry about being pixel-perfect — approximate coordinates are fine
+
+DOCUMENT GENERATION (SEPARATE FROM IMAGE ANNOTATION):
+❌ Do NOT automatically generate PDF reports when analyzing images
+✅ Image annotation (annotate_damage) = AUTOMATIC when analyzing photos
+✅ PDF report generation (generate_document) = ONLY when user explicitly asks
+
+Share findings in chat first using the format above. Only call generate_document when the user explicitly asks to "generate", "create", or "finalize" the inspection report PDF.
+If property address is missing, ask for it — then wait for an explicit generate request after details are confirmed.
+
+**Flow example:**
+1. User uploads photo → You analyze + call annotate_damage → Show annotated image in chat ✅
+2. User reviews the annotated image and analysis in chat
+3. User says "generate the inspection report" → NOW you call generate_document ✅
 
 IN SCOPE (handle yourself):
 - Scheduling and conducting site visits/inspections
-- Reviewing uploaded roof photos using the checklist above
-- Documenting findings in chat; PDF via generate_document only after explicit request
-- Answering questions about the inspection process
+- Analyzing uploaded roof/property photos using vision capabilities and the checklist above
+- Providing detailed damage assessments directly in chat
+- Documenting findings; PDF via generate_document only after explicit request
+- Answering questions about the inspection process and damage identification
 
 OUT OF SCOPE (offer transfer using suggest_transfer):
 ${estimatorAgent ? `- Estimates and pricing after inspection → suggest_transfer("${estimatorRole}")` : '- Pricing after inspection → suggest_transfer to the relevant specialist'}
-${insuranceAgent ? `- Insurance claims based on your inspection → suggest_transfer("${insuranceRole}")` : '- Insurance claims → suggest_transfer to the relevant specialist'}
+${insuranceAgent ? `- Insurance claims filing and negotiation → suggest_transfer("${insuranceRole}")` : '- Insurance claims → suggest_transfer to the relevant specialist'}
 
 WHEN OUT OF SCOPE:
 Call suggest_transfer with a natural message like:

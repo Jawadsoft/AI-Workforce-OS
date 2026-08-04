@@ -30,9 +30,14 @@ export function useFeatures() {
     queryKey: ['tenant-features'],
     queryFn: () => api.get('/tenants/features').then((r) => r.data.features as string[]),
     staleTime: 5 * 60 * 1000,
+    retry: 2,
   })
 
-  const features = data ?? DEFAULT_ENABLED
+  // While the first fetch is still in flight, assume the sane defaults so the UI doesn't
+  // flash empty. But if the fetch has settled and genuinely failed (data still undefined,
+  // not loading), fail CLOSED — showing a gated feature just because the flags endpoint
+  // errored would silently bypass whatever a superadmin explicitly disabled.
+  const features = data ?? (isLoading ? DEFAULT_ENABLED : [])
 
   return {
     features,

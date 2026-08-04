@@ -11,6 +11,7 @@ import { DocumentsModule } from '../documents/documents.module'
 import { StormModule } from '../storm/storm.module'
 import { MemoryModule } from '../memory/memory.module'
 import { SocialModule } from '../social/social.module'
+import { InspectionModule } from '../inspection/inspection.module'
 import { CloudinaryModule } from '../../common/cloudinary/cloudinary.module'
 import { RealtimeModule } from '../../realtime/realtime.module'
 
@@ -21,7 +22,7 @@ import { RealtimeModule } from '../../realtime/realtime.module'
   imports: [
     BullModule.registerQueue({ name: 'knowledge-processing' }, { name: 'message-embedding' }),
     AIModule, CrmModule, BrainModule, KnowledgeModule, TasksModule,
-    DocumentsModule, StormModule, MemoryModule, SocialModule, CloudinaryModule,
+    DocumentsModule, StormModule, MemoryModule, SocialModule, InspectionModule, CloudinaryModule,
     RealtimeModule,
   ],
   providers: [ChatService],

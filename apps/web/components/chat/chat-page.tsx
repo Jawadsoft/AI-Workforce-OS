@@ -903,7 +903,10 @@ export function ChatPage() {
               )}
 
               {/* Optimistic attachment preview — shown immediately after upload, before refetch */}
-              {uploadedAttachment && (
+              {/* Only show if attachment hasn't been persisted to database yet (avoid duplicate display) */}
+              {uploadedAttachment && !dbMessages.some((m: Message) => 
+                m.attachments?.some((att: Attachment) => att.url === uploadedAttachment.url)
+              ) && (
                 <div className="flex justify-end">
                   <div className="max-w-[72%]">
                     {uploadedAttachment.mimeType.startsWith('image/') ? (
@@ -1056,12 +1059,29 @@ export function ChatPage() {
                   )}
                 </div>
 
-                {/* Text input — auto-grows with content, Shift+Enter for a newline */}
+                {/* Text input — auto-grows with content, Shift+Enter for a newline, drag-and-drop enabled */}
                 <textarea
                   ref={textareaRef}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(message, pendingFile) } }}
+                  onDragOver={(e) => {
+                    if (!fileUploadsEnabled || sending) return
+                    e.preventDefault()
+                    e.stopPropagation()
+                    e.currentTarget.classList.add('ring-2', 'ring-primary/40', 'bg-primary/5')
+                  }}
+                  onDragLeave={(e) => {
+                    e.currentTarget.classList.remove('ring-2', 'ring-primary/40', 'bg-primary/5')
+                  }}
+                  onDrop={(e) => {
+                    if (!fileUploadsEnabled || sending) return
+                    e.preventDefault()
+                    e.stopPropagation()
+                    e.currentTarget.classList.remove('ring-2', 'ring-primary/40', 'bg-primary/5')
+                    const file = e.dataTransfer.files?.[0]
+                    if (file) setPendingFile(file)
+                  }}
                   placeholder={isListening ? 'Listening…' : pendingFile ? 'Add a message…' : `Message ${selectedAgent?.name ?? 'agent'}…`}
                   disabled={sending}
                   rows={1}

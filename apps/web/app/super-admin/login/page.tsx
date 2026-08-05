@@ -28,7 +28,7 @@ export default function SuperAdminLoginPage() {
       const { data } = await axios.post(`${getApiUrl()}/auth/login`, { email, password })
       const token = data.access_token
       const payload = JSON.parse(atob(token.split('.')[1]))
-      if (payload.role !== 'SUPER_ADMIN') {
+      if (payload.role !== 'SUPER_ADMIN' && payload.role !== 'SCOPED_ADMIN') {
         setError('Access denied: not a super admin account')
         return
       }

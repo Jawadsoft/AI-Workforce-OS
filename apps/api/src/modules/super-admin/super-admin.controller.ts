@@ -50,6 +50,37 @@ class CreateSuperAdminDto {
   @IsString() name: string
 }
 
+class CreateTenantDto {
+  @IsString() name: string
+  @IsString() slug: string
+  @IsString() ownerName: string
+  @IsEmail() ownerEmail: string
+  @IsOptional() @IsString() industry?: string
+}
+
+class CreateScopedAdminDto {
+  @IsEmail() email: string
+  @IsString() password: string
+  @IsString() name: string
+  @IsOptional() @IsString() maxTenants?: number
+  @IsOptional() @IsArray() permissions?: string[]
+}
+
+class UpdateScopedAdminLimitsDto {
+  @IsOptional() @IsString() maxTenants?: number
+  @IsOptional() @IsArray() permissions?: string[]
+}
+
+class AssignTenantDto {
+  @IsString() adminUserId: string
+  @IsString() tenantId: string
+}
+
+class RevokeTenantDto {
+  @IsString() adminUserId: string
+  @IsString() tenantId: string
+}
+
 class SetFeatureFlagDto {
   @IsString() feature: string
   @IsBoolean() enabled: boolean
@@ -102,62 +133,68 @@ export class SuperAdminController {
 
   @Get('stats')
   @ApiOperation({ summary: 'Get platform-wide stats' })
-  getStats() {
-    return this.service.getStats()
+  getStats(@Req() req: any) {
+    return this.service.getStats(req.user?.allowedTenantIds)
   }
 
   @Get('tenants')
   @ApiOperation({ summary: 'List all tenants' })
-  listTenants() {
-    return this.service.listTenants()
+  listTenants(@Req() req: any) {
+    return this.service.listTenants(req.user?.allowedTenantIds)
   }
 
   @Get('tenants/pending')
   @ApiOperation({ summary: 'List tenants awaiting approval' })
-  listPendingTenants() {
-    return this.service.listPendingTenants()
+  listPendingTenants(@Req() req: any) {
+    return this.service.listPendingTenants(req.user?.allowedTenantIds)
   }
 
   @Post('tenants/:id/approve')
   @ApiOperation({ summary: 'Approve a pending tenant signup' })
-  approveTenant(@Param('id') id: string) {
-    return this.service.approveTenant(id)
+  approveTenant(@Param('id') id: string, @Req() req: any) {
+    return this.service.approveTenant(id, req.user?.allowedTenantIds)
   }
 
   @Post('tenants/:id/reject')
   @ApiOperation({ summary: 'Reject and delete a pending tenant signup' })
-  rejectTenant(@Param('id') id: string) {
-    return this.service.rejectTenant(id)
+  rejectTenant(@Param('id') id: string, @Req() req: any) {
+    return this.service.rejectTenant(id, req.user?.allowedTenantIds)
   }
 
   @Get('tenants/:id')
   @ApiOperation({ summary: 'Get tenant detail' })
-  getTenant(@Param('id') id: string) {
-    return this.service.getTenant(id)
+  getTenant(@Param('id') id: string, @Req() req: any) {
+    return this.service.getTenant(id, req.user?.allowedTenantIds)
   }
 
   @Patch('tenants/:id/config')
   @ApiOperation({ summary: 'Update tenant industry and CRM config' })
-  updateTenantConfig(@Param('id') id: string, @Body() dto: UpdateTenantConfigDto) {
-    return this.service.updateTenantConfig(id, dto)
+  updateTenantConfig(@Param('id') id: string, @Body() dto: UpdateTenantConfigDto, @Req() req: any) {
+    return this.service.updateTenantConfig(id, dto, req.user?.allowedTenantIds)
   }
 
   @Post('tenants/:id/suspend')
   @ApiOperation({ summary: 'Suspend a tenant' })
-  suspendTenant(@Param('id') id: string) {
-    return this.service.suspendTenant(id)
+  suspendTenant(@Param('id') id: string, @Req() req: any) {
+    return this.service.suspendTenant(id, req.user?.allowedTenantIds)
   }
 
   @Post('tenants/:id/activate')
   @ApiOperation({ summary: 'Activate a suspended tenant' })
-  activateTenant(@Param('id') id: string) {
-    return this.service.activateTenant(id)
+  activateTenant(@Param('id') id: string, @Req() req: any) {
+    return this.service.activateTenant(id, req.user?.allowedTenantIds)
   }
 
   @Delete('tenants/:id')
   @ApiOperation({ summary: 'Permanently delete a tenant' })
-  deleteTenant(@Param('id') id: string) {
-    return this.service.deleteTenant(id)
+  deleteTenant(@Param('id') id: string, @Req() req: any) {
+    return this.service.deleteTenant(id, req.user?.allowedTenantIds)
+  }
+
+  @Post('tenants/create')
+  @ApiOperation({ summary: 'Create a new tenant (requires email verification)' })
+  createTenant(@Body() dto: CreateTenantDto, @Req() req: any) {
+    return this.service.createTenantWithVerification(dto, req.user.id, req.user.role)
   }
 
   @Get('templates')
@@ -194,6 +231,44 @@ export class SuperAdminController {
   @ApiOperation({ summary: 'Create a new super admin user' })
   createSuperAdmin(@Body() dto: CreateSuperAdminDto) {
     return this.service.createSuperAdmin(dto)
+  }
+
+  // ── Scoped Admin Management ───────────────────────────────────────
+
+  @Post('scoped-admins')
+  @ApiOperation({ summary: 'Create a new scoped admin (limited to specific tenants)' })
+  createScopedAdmin(@Body() dto: CreateScopedAdminDto, @Req() req: any) {
+    return this.service.createScopedAdmin({ ...dto, createdByAdminId: req.user.id })
+  }
+
+  @Get('scoped-admins')
+  @ApiOperation({ summary: 'List all scoped admins created by the current root admin' })
+  listSubAdmins(@Req() req: any) {
+    return this.service.listSubAdmins(req.user.id)
+  }
+
+  @Post('scoped-admins/assign')
+  @ApiOperation({ summary: 'Assign a tenant to a scoped admin' })
+  assignTenant(@Body() dto: AssignTenantDto, @Req() req: any) {
+    return this.service.assignTenant(dto.adminUserId, dto.tenantId, req.user.id)
+  }
+
+  @Delete('scoped-admins/revoke')
+  @ApiOperation({ summary: 'Revoke tenant access from a scoped admin' })
+  revokeTenant(@Body() dto: RevokeTenantDto) {
+    return this.service.revokeTenant(dto.adminUserId, dto.tenantId)
+  }
+
+  @Delete('scoped-admins/:id')
+  @ApiOperation({ summary: 'Delete a scoped admin (also revokes all their tenant assignments)' })
+  deleteScopedAdmin(@Param('id') id: string) {
+    return this.service.deleteScopedAdmin(id)
+  }
+
+  @Patch('scoped-admins/:id/limits')
+  @ApiOperation({ summary: 'Update tenant limit and permissions for a scoped admin' })
+  updateScopedAdminLimits(@Param('id') id: string, @Body() dto: UpdateScopedAdminLimitsDto) {
+    return this.service.updateScopedAdminLimits(id, dto)
   }
 
   // ── Feature Flags ─────────────────────────────────────────────────

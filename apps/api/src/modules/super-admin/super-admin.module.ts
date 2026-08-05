@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common'
 import { SuperAdminService } from './super-admin.service'
 import { SuperAdminController, SuperAdminBootstrapController } from './super-admin.controller'
+import { SuperAdminGuard } from '../../common/guards/super-admin.guard'
 import { PrismaModule } from '../../common/prisma/prisma.module'
 import { FeatureFlagsModule } from '../../common/feature-flags/feature-flags.module'
 import { KnowledgeModule } from '../knowledge/knowledge.module'
@@ -9,7 +10,7 @@ import { HelpModule } from '../help/help.module'
 
 @Module({
   imports: [PrismaModule, FeatureFlagsModule, AIModule, KnowledgeModule, HelpModule],
-  providers: [SuperAdminService],
+  providers: [SuperAdminService, SuperAdminGuard],
   controllers: [SuperAdminController, SuperAdminBootstrapController],
 })
 export class SuperAdminModule {}

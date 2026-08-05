@@ -85,10 +85,15 @@ interface Template {
   industries: string[]; isPublic: boolean; avatar?: string; tools: string[]
 }
 interface TenantAgent { id: string; name: string; role: string; status: string }
+interface SubAdmin {
+  id: string; email: string; name: string; isActive: boolean; createdAt: string
+  managedTenantsCount: number
+  managedTenants: { id: string; name: string; slug: string; isActive: boolean }[]
+}
 
 const emptyConfig = { industry: '', crmProvider: '', crmName: '', crmBaseUrl: '', crmApiKey: '' }
 
-const TABS = ['Overview', 'Approvals', 'Tenants', 'Marketplace', 'Industry Knowledge']
+const TABS = ['Overview', 'Approvals', 'Tenants', 'Sub-Admins', 'Marketplace', 'Industry Knowledge']
 
 const ALL_FEATURE_FLAGS = [
   { key: 'widget',               label: 'Website Widget',           desc: 'Public chat widget embed' },
@@ -138,6 +143,7 @@ const glass = {
 
 export default function SuperAdminDashboard() {
   const router = useRouter()
+  const [userRole, setUserRole] = useState<string>('')
   const [tab, setTab] = useState('Overview')
   const [stats, setStats] = useState<Stats | null>(null)
   const [tenants, setTenants] = useState<Tenant[]>([])
@@ -157,22 +163,52 @@ export default function SuperAdminDashboard() {
   const [featureTenant, setFeatureTenant] = useState<Tenant | null>(null)
   const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({})
   const [featureSaving, setFeatureSaving] = useState(false)
+  const [subAdmins, setSubAdmins] = useState<SubAdmin[]>([])
+  const [showNewSubAdmin, setShowNewSubAdmin] = useState(false)
+  const [subAdminForm, setSubAdminForm] = useState({ email: '', password: '', name: '', maxTenants: 5, permissions: [] as string[] })
+  const [subAdminSaving, setSubAdminSaving] = useState(false)
+  const [assigningAdmin, setAssigningAdmin] = useState<SubAdmin | null>(null)
+  const [unassignedTenants, setUnassignedTenants] = useState<Tenant[]>([])
+  const [showCreateTenant, setShowCreateTenant] = useState(false)
+  const [createTenantForm, setCreateTenantForm] = useState({ name: '', slug: '', ownerName: '', ownerEmail: '', industry: '' })
+  const [createTenantSaving, setCreateTenantSaving] = useState(false)
+  const [verificationLink, setVerificationLink] = useState('')
 
   const api = useSAApi()
+
+  // Extract user role from JWT token
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('sa_access_token') : ''
+    if (token) {
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]))
+        setUserRole(payload.role || '')
+      } catch (err) {
+        console.error('Failed to parse token:', err)
+      }
+    }
+  }, [])
+
+  // Filter tabs based on user role
+  const availableTabs = userRole === 'SCOPED_ADMIN' 
+    ? TABS.filter(t => t !== 'Sub-Admins' && t !== 'Marketplace' && t !== 'Industry Knowledge')
+    : TABS
 
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [statsRes, tenantsRes, templatesRes, pendingRes] = await Promise.all([
+      const [statsRes, tenantsRes, templatesRes, pendingRes, subAdminsRes] = await Promise.all([
         api.get('/super-admin/stats'),
         api.get('/super-admin/tenants'),
         api.get('/super-admin/templates'),
         api.get('/super-admin/tenants/pending'),
+        api.get('/super-admin/scoped-admins'),
       ])
       setStats(statsRes.data)
       setTenants(tenantsRes.data)
       setTemplates(templatesRes.data)
       setPendingTenants(pendingRes.data)
+      setSubAdmins(subAdminsRes.data)
     } catch {
       router.replace('/super-admin/login')
     } finally {
@@ -191,6 +227,72 @@ export default function SuperAdminDashboard() {
     if (!confirm('Permanently delete this tenant? All data will be lost.')) return
     await api.delete(`/super-admin/tenants/${id}`)
     loadData()
+  }
+
+  async function createSubAdmin() {
+    if (!subAdminForm.email || !subAdminForm.password || !subAdminForm.name) {
+      alert('Please fill all fields')
+      return
+    }
+    setSubAdminSaving(true)
+    try {
+      await api.post('/super-admin/scoped-admins', subAdminForm)
+      setShowNewSubAdmin(false)
+      setSubAdminForm({ email: '', password: '', name: '', maxTenants: 5, permissions: [] })
+      loadData()
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to create scoped admin')
+    } finally {
+      setSubAdminSaving(false)
+    }
+  }
+
+  async function deleteSubAdmin(id: string) {
+    if (!confirm('Delete this scoped admin? All tenant assignments will be revoked.')) return
+    await api.delete(`/super-admin/scoped-admins/${id}`)
+    loadData()
+  }
+
+  async function assignTenant(adminUserId: string, tenantId: string) {
+    try {
+      await api.post('/super-admin/scoped-admins/assign', { adminUserId, tenantId })
+      loadData()
+      setAssigningAdmin(null)
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to assign tenant')
+    }
+  }
+
+  async function revokeTenant(adminUserId: string, tenantId: string) {
+    if (!confirm('Revoke access to this tenant from the scoped admin?')) return
+    await api.delete('/super-admin/scoped-admins/revoke', { data: { adminUserId, tenantId } })
+    loadData()
+  }
+
+  function openAssignModal(admin: SubAdmin) {
+    setAssigningAdmin(admin)
+    // Calculate unassigned tenants (tenants not already assigned to this admin)
+    const assignedIds = new Set(admin.managedTenants.map(t => t.id))
+    setUnassignedTenants(tenants.filter(t => !assignedIds.has(t.id)))
+  }
+
+  async function createTenant() {
+    if (!createTenantForm.name || !createTenantForm.slug || !createTenantForm.ownerName || !createTenantForm.ownerEmail) {
+      alert('Please fill all required fields')
+      return
+    }
+    setCreateTenantSaving(true)
+    try {
+      const res = await api.post('/super-admin/tenants/create', createTenantForm)
+      setVerificationLink(res.data.verificationLink)
+      setCreateTenantForm({ name: '', slug: '', ownerName: '', ownerEmail: '', industry: '' })
+      loadData()
+      alert('Tenant created! Verification link generated.')
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to create tenant')
+    } finally {
+      setCreateTenantSaving(false)
+    }
   }
 
   async function openFeatureFlags(tenant: Tenant) {
@@ -331,7 +433,7 @@ export default function SuperAdminDashboard() {
         </div>
 
         <nav className="flex-1 p-3 space-y-1">
-          {TABS.map(t => (
+          {availableTabs.map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -400,6 +502,23 @@ export default function SuperAdminDashboard() {
                 onConfigure={openConfigModal}
                 onWidget={openWidgetModal}
                 onFeatures={openFeatureFlags}
+                userRole={userRole}
+                onCreateTenant={() => setShowCreateTenant(true)}
+              />
+            )}
+            {tab === 'Sub-Admins' && (
+              <SubAdminsTab
+                subAdmins={subAdmins}
+                tenants={tenants}
+                showNewSubAdmin={showNewSubAdmin}
+                setShowNewSubAdmin={setShowNewSubAdmin}
+                subAdminForm={subAdminForm}
+                setSubAdminForm={setSubAdminForm}
+                subAdminSaving={subAdminSaving}
+                onCreateSubAdmin={createSubAdmin}
+                onDeleteSubAdmin={deleteSubAdmin}
+                onOpenAssign={openAssignModal}
+                onRevokeTenant={revokeTenant}
               />
             )}
             {tab === 'Marketplace' && (
@@ -680,6 +799,161 @@ export default function SuperAdminDashboard() {
           </div>
         </div>
       )}
+
+      {/* Assign Tenant Modal */}
+      {assigningAdmin && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-md rounded-2xl p-6 space-y-4" style={glass.cardElevated}>
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-white">Assign Tenant</h2>
+                <p className="text-sm text-gray-400 mt-0.5">Add tenant access for {assigningAdmin.name}</p>
+              </div>
+              <button onClick={() => setAssigningAdmin(null)} className="text-gray-500 hover:text-white text-xl leading-none transition-colors">×</button>
+            </div>
+
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {unassignedTenants.length === 0 ? (
+                <p className="text-sm text-gray-400 py-4 text-center">All tenants are already assigned to this admin.</p>
+              ) : (
+                unassignedTenants.map(t => (
+                  <button
+                    key={t.id}
+                    onClick={() => assignTenant(assigningAdmin.id, t.id)}
+                    className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-left transition-colors"
+                    style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-white">{t.name}</p>
+                      <p className="text-xs text-gray-400">{t.slug} • {t.industry ?? 'No industry'}</p>
+                    </div>
+                    <span className={`px-2 py-0.5 rounded-full text-xs ${t.isActive ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'}`}>
+                      {t.isActive ? 'Active' : 'Suspended'}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+
+            <div className="pt-2">
+              <GlassButton onClick={() => setAssigningAdmin(null)} variant="secondary" className="w-full">
+                Close
+              </GlassButton>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Tenant Modal */}
+      {showCreateTenant && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="rounded-2xl p-6 w-full max-w-md space-y-4" style={{ background: 'rgba(255,255,255,0.06)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.10)', boxShadow: '0 8px 40px rgba(0,0,0,0.5)' }}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">Create New Tenant</h3>
+              <button onClick={() => setShowCreateTenant(false)} className="text-gray-400 hover:text-white text-xl">×</button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Tenant Name *</label>
+                <input
+                  value={createTenantForm.name}
+                  onChange={e => setCreateTenantForm({ ...createTenantForm, name: e.target.value })}
+                  className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none transition-all"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+                  placeholder="Acme Roofing Company"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Slug * (unique identifier)</label>
+                <input
+                  value={createTenantForm.slug}
+                  onChange={e => setCreateTenantForm({ ...createTenantForm, slug: e.target.value.toLowerCase().replace(/\s+/g, '-') })}
+                  className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none transition-all"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+                  placeholder="acme-roofing"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Owner Name *</label>
+                <input
+                  value={createTenantForm.ownerName}
+                  onChange={e => setCreateTenantForm({ ...createTenantForm, ownerName: e.target.value })}
+                  className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none transition-all"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+                  placeholder="John Smith"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Owner Email *</label>
+                <input
+                  type="email"
+                  value={createTenantForm.ownerEmail}
+                  onChange={e => setCreateTenantForm({ ...createTenantForm, ownerEmail: e.target.value })}
+                  className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none transition-all"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+                  placeholder="john@acmeroofing.com"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Industry (optional)</label>
+                <select
+                  value={createTenantForm.industry}
+                  onChange={e => setCreateTenantForm({ ...createTenantForm, industry: e.target.value })}
+                  className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none transition-all"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+                >
+                  <option value="">-- Select Industry --</option>
+                  <option value="ROOFING">Roofing</option>
+                  <option value="HVAC">HVAC</option>
+                  <option value="CLEANING">Cleaning</option>
+                  <option value="SECURITY">Security</option>
+                  <option value="REAL_ESTATE">Real Estate</option>
+                  <option value="OTHER">Other</option>
+                </select>
+              </div>
+            </div>
+
+            {verificationLink && (
+              <div className="rounded-lg p-3 text-xs" style={{ background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.20)' }}>
+                <p className="text-green-400 font-semibold mb-2">✓ Tenant Created!</p>
+                <p className="text-gray-300 mb-2">Verification link:</p>
+                <input
+                  readOnly
+                  value={verificationLink}
+                  className="w-full bg-black/30 text-green-300 px-2 py-1 rounded text-xs font-mono"
+                  onClick={e => e.currentTarget.select()}
+                />
+                <p className="text-gray-400 mt-2 text-xs">Send this link to the tenant owner to verify their account.</p>
+              </div>
+            )}
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => { setShowCreateTenant(false); setVerificationLink('') }}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-gray-300 transition-colors"
+                style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+              >
+                {verificationLink ? 'Close' : 'Cancel'}
+              </button>
+              {!verificationLink && (
+                <button
+                  onClick={createTenant}
+                  disabled={createTenantSaving}
+                  className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50"
+                  style={{ background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)' }}
+                >
+                  {createTenantSaving ? 'Creating...' : 'Create Tenant'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -915,7 +1189,7 @@ function ApprovalsTab({ tenants, onApprove, onReject }: {
 
 // ── Tenants Tab ───────────────────────────────────────────────────
 
-function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure, onWidget, onFeatures }: {
+function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure, onWidget, onFeatures, userRole, onCreateTenant }: {
   tenants: Tenant[]
   search: string
   onSearch: (v: string) => void
@@ -924,6 +1198,8 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
   onConfigure: (t: Tenant) => void
   onWidget: (t: Tenant) => void
   onFeatures: (t: Tenant) => void
+  userRole?: string
+  onCreateTenant?: () => void
 }) {
   return (
     <div className="space-y-6">
@@ -932,7 +1208,17 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
           <h1 className="text-2xl font-bold text-white">Tenant Management</h1>
           <p className="text-gray-400 mt-1">{tenants.length} tenants total</p>
         </div>
-        <input
+        <div className="flex items-center gap-3">
+          {userRole === 'SCOPED_ADMIN' && onCreateTenant && (
+            <button
+              onClick={onCreateTenant}
+              className="px-4 py-2 rounded-xl font-medium text-sm text-white transition-colors"
+              style={{ background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)' }}
+            >
+              + Create Tenant
+            </button>
+          )}
+          <input
           value={search}
           onChange={e => onSearch(e.target.value)}
           placeholder="Search tenants..."
@@ -947,6 +1233,7 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
             e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
           }}
         />
+        </div>
       </div>
 
       <div className="rounded-xl overflow-hidden" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
@@ -1042,6 +1329,175 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+// ── Sub-Admins Tab ────────────────────────────────────────────────
+
+function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin, subAdminForm, setSubAdminForm, subAdminSaving, onCreateSubAdmin, onDeleteSubAdmin, onOpenAssign, onRevokeTenant }: {
+  subAdmins: SubAdmin[]
+  tenants: Tenant[]
+  showNewSubAdmin: boolean
+  setShowNewSubAdmin: (v: boolean) => void
+  subAdminForm: { email: string; password: string; name: string; maxTenants: number; permissions: string[] }
+  setSubAdminForm: (v: { email: string; password: string; name: string; maxTenants: number; permissions: string[] }) => void
+  subAdminSaving: boolean
+  onCreateSubAdmin: () => void
+  onDeleteSubAdmin: (id: string) => void
+  onOpenAssign: (admin: SubAdmin) => void
+  onRevokeTenant: (adminUserId: string, tenantId: string) => void
+}) {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Scoped Sub-Admins</h1>
+          <p className="text-gray-400 mt-1">{subAdmins.length} scoped admin{subAdmins.length !== 1 ? 's' : ''} created</p>
+        </div>
+        <button
+          onClick={() => setShowNewSubAdmin(true)}
+          className="px-4 py-2 rounded-xl font-medium text-sm text-white transition-colors"
+          style={{ background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)' }}
+        >
+          + Create Scoped Admin
+        </button>
+      </div>
+
+      {subAdmins.length === 0 ? (
+        <div className="rounded-xl p-12 flex flex-col items-center justify-center gap-3 text-center" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+          <div className="w-14 h-14 rounded-full flex items-center justify-center" style={{ background: 'rgba(99,102,241,0.10)' }}>
+            <Shield className="w-6 h-6 text-indigo-400" />
+          </div>
+          <p className="text-gray-300 font-medium">No scoped admins yet</p>
+          <p className="text-gray-500 text-sm">Create sub-admins with limited access to specific tenants.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {subAdmins.map(admin => (
+            <div key={admin.id} className="rounded-xl p-5 space-y-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center text-indigo-300 font-bold text-sm shrink-0" style={{ background: 'rgba(99,102,241,0.15)' }}>
+                    {admin.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-semibold text-white truncate">{admin.name}</p>
+                    <p className="text-sm text-gray-400 truncate">{admin.email}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${admin.isActive ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'}`}>
+                    {admin.isActive ? 'Active' : 'Suspended'}
+                  </span>
+                  <button onClick={() => onOpenAssign(admin)} className="text-indigo-400 hover:text-indigo-300 text-sm px-3 py-1.5 rounded-lg transition-colors" style={{ background: 'rgba(99,102,241,0.10)' }}>
+                    Assign Tenant
+                  </button>
+                  <button onClick={() => onDeleteSubAdmin(admin.id)} className="text-red-400 hover:text-red-300 text-sm px-3 py-1.5 rounded-lg transition-colors" style={{ background: 'rgba(239,68,68,0.10)' }}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+
+              {admin.managedTenantsCount > 0 && (
+                <div className="border-t border-white/10 pt-3">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Assigned Tenants ({admin.managedTenantsCount})</p>
+                  <div className="flex flex-wrap gap-2">
+                    {admin.managedTenants.map(t => (
+                      <div key={t.id} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                        <span className="text-white">{t.name}</span>
+                        <button onClick={() => onRevokeTenant(admin.id, t.id)} className="text-red-400 hover:text-red-300 text-xs">×</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Create Sub-Admin Modal */}
+      {showNewSubAdmin && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="rounded-2xl p-6 w-full max-w-md space-y-4" style={{ background: 'rgba(255,255,255,0.06)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.10)', boxShadow: '0 8px 40px rgba(0,0,0,0.5)' }}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">Create Scoped Admin</h3>
+              <button onClick={() => setShowNewSubAdmin(false)} className="text-gray-400 hover:text-white text-xl">×</button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Name</label>
+                <input
+                  value={subAdminForm.name}
+                  onChange={e => setSubAdminForm({ ...subAdminForm, name: e.target.value })}
+                  className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none transition-all"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+                  placeholder="John Doe"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Email</label>
+                <input
+                  type="email"
+                  value={subAdminForm.email}
+                  onChange={e => setSubAdminForm({ ...subAdminForm, email: e.target.value })}
+                  className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none transition-all"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+                  placeholder="admin@example.com"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Password</label>
+                <input
+                  type="password"
+                  value={subAdminForm.password}
+                  onChange={e => setSubAdminForm({ ...subAdminForm, password: e.target.value })}
+                  className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none transition-all"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+                  placeholder="••••••••"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Max Tenants</label>
+                <input
+                  type="number"
+                  value={subAdminForm.maxTenants}
+                  onChange={e => setSubAdminForm({ ...subAdminForm, maxTenants: parseInt(e.target.value) || 0 })}
+                  className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none transition-all"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+                  placeholder="5"
+                  min="1"
+                  max="100"
+                />
+                <p className="text-xs text-gray-500 mt-1">Maximum number of tenants this admin can manage</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => setShowNewSubAdmin(false)}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-gray-300 transition-colors"
+                style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={onCreateSubAdmin}
+                disabled={subAdminSaving}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50"
+                style={{ background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)' }}
+              >
+                {subAdminSaving ? 'Creating...' : 'Create'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

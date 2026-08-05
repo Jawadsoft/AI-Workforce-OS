@@ -12,41 +12,42 @@ datasource db {
 // ─────────────────────────────────────────────
 
 model Tenant {
-  id          String   @id @default(cuid())
-  name        String
-  slug        String   @unique
-  industry    Industry?
-  plan        String   @default("free")
-  isActive    Boolean  @default(true)
-  isApproved  Boolean  @default(false)
-  settings    Json     @default("{}")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String    @id @default(cuid())
+  name       String
+  slug       String    @unique
+  industry   Industry?
+  plan       String    @default("free")
+  isActive   Boolean   @default(true)
+  isApproved Boolean   @default(false)
+  settings   Json      @default("{}")
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
-  users         User[]
-  agents        Agent[]
-  conversations Conversation[]
-  tasks         Task[]
-  tickets       ActivityTicket[]
-  approvals     Approval[]
-  knowledgeDocs KnowledgeDocument[]
-  documents         GeneratedDocument[]
-  documentTemplates DocumentTemplate[]
-  crmConnections    CRMConnection[]
-  webhooks          Webhook[]
-  auditLogs         AuditLog[]
-  commLogs          CommunicationLog[]
-  connectedAccounts ConnectedAccount[]
-  emailAgentRules   EmailAgentRule[]
-  processedEmails   ProcessedEmail[]
-  stormReports      StormReport[]
+  users                 User[]
+  agents                Agent[]
+  conversations         Conversation[]
+  tasks                 Task[]
+  tickets               ActivityTicket[]
+  approvals             Approval[]
+  knowledgeDocs         KnowledgeDocument[]
+  documents             GeneratedDocument[]
+  documentTemplates     DocumentTemplate[]
+  crmConnections        CRMConnection[]
+  webhooks              Webhook[]
+  auditLogs             AuditLog[]
+  commLogs              CommunicationLog[]
+  connectedAccounts     ConnectedAccount[]
+  emailAgentRules       EmailAgentRule[]
+  processedEmails       ProcessedEmail[]
+  stormReports          StormReport[]
   conversationSummaries ConversationSummary[]
-  agentMemoryFacts  AgentMemoryFact[]
-  messageChunks     MessageChunk[]
-  featureFlags      TenantFeatureFlag[]
-  socialAccounts    SocialAccount[]
-  socialPosts       SocialPost[]
-  socialInteractions SocialInteraction[]
+  agentMemoryFacts      AgentMemoryFact[]
+  messageChunks         MessageChunk[]
+  featureFlags          TenantFeatureFlag[]
+  socialAccounts        SocialAccount[]
+  socialPosts           SocialPost[]
+  socialInteractions    SocialInteraction[]
+  assignedAdmins        SuperAdminTenantAccess[]
 }
 
 // ─────────────────────────────────────────────
@@ -54,22 +55,47 @@ model Tenant {
 // ─────────────────────────────────────────────
 
 model User {
-  id        String   @id @default(cuid())
-  tenantId  String
-  email     String   @unique
-  name      String
-  password  String
-  role      UserRole @default(USER)
-  avatar    String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String   @id @default(cuid())
+  tenantId         String
+  email            String   @unique
+  name             String
+  password         String
+  role             UserRole @default(USER)
+  avatar           String?
+  isActive         Boolean  @default(true)
+  createdByAdminId String?
+  maxTenants       Int?     @default(5)
+  permissions      String[] @default([])
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  messages      Message[]
-  tasks         Task[]               @relation("TaskAssignee")
-  approvals     Approval[]           @relation("ApprovalReviewer")
-  resetTokens   PasswordResetToken[]
+  tenant           Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  messages         Message[]
+  tasks            Task[]                   @relation("TaskAssignee")
+  approvals        Approval[]               @relation("ApprovalReviewer")
+  resetTokens      PasswordResetToken[]
+  createdByAdmin   User?                    @relation("SubAdminCreator", fields: [createdByAdminId], references: [id])
+  createdSubAdmins User[]                   @relation("SubAdminCreator")
+  managedTenants   SuperAdminTenantAccess[] @relation("AdminTenantAssignments")
+}
+
+// ─────────────────────────────────────────────
+// SUPER ADMIN TENANT ACCESS
+// ─────────────────────────────────────────────
+
+model SuperAdminTenantAccess {
+  id          String   @id @default(cuid())
+  adminUserId String
+  tenantId    String
+  assignedAt  DateTime @default(now())
+  assignedBy  String?
+
+  admin  User   @relation("AdminTenantAssignments", fields: [adminUserId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([adminUserId, tenantId])
+  @@index([adminUserId])
+  @@index([tenantId])
 }
 
 // ─────────────────────────────────────────────
@@ -77,35 +103,35 @@ model User {
 // ─────────────────────────────────────────────
 
 model Agent {
-  id           String      @id @default(cuid())
-  tenantId     String
-  name         String
-  role         String
-  industry     Industry
-  avatar       String?
-  voiceId      String?
-  prompt       String      @db.Text
-  status       AgentStatus @default(ACTIVE)
-  permissions  String[]
-  tools        String[]
-  approvalRules Json       @default("{}")
-  isTemplate   Boolean     @default(false)
-  templateId   String?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  id            String      @id @default(cuid())
+  tenantId      String
+  name          String
+  role          String
+  industry      Industry
+  avatar        String?
+  voiceId       String?
+  prompt        String      @db.Text
+  status        AgentStatus @default(ACTIVE)
+  permissions   String[]
+  tools         String[]
+  approvalRules Json        @default("{}")
+  isTemplate    Boolean     @default(false)
+  templateId    String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  conversations Conversation[]
-  tasks         Task[]
-  approvals     Approval[]
-  knowledgeDocs AgentKnowledge[]
-  crmAccess     AgentCRMAccess[]
-  emailRules    EmailAgentRule[]
-  createdTickets       ActivityTicket[]       @relation("TicketCreator")
-  assignedTickets      ActivityTicket[]       @relation("TicketAssignee")
+  tenant                Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversations         Conversation[]
+  tasks                 Task[]
+  approvals             Approval[]
+  knowledgeDocs         AgentKnowledge[]
+  crmAccess             AgentCRMAccess[]
+  emailRules            EmailAgentRule[]
+  createdTickets        ActivityTicket[]      @relation("TicketCreator")
+  assignedTickets       ActivityTicket[]      @relation("TicketAssignee")
   conversationSummaries ConversationSummary[]
-  memoryFacts          AgentMemoryFact[]
-  messageChunks        MessageChunk[]
+  memoryFacts           AgentMemoryFact[]
+  messageChunks         MessageChunk[]
 }
 
 model AgentTemplate {
@@ -169,7 +195,7 @@ model Conversation {
   status         String   @default("OPEN")
   isPrimary      Boolean  @default(false)
   metadata       Json     @default("{}")
-  runningSummary String?  @db.Text  // always-injected rolling summary of this thread
+  runningSummary String?  @db.Text // always-injected rolling summary of this thread
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -268,19 +294,19 @@ model KnowledgeDocument {
   status    String   @default("processing")
   createdAt DateTime @default(now())
 
-  tenant  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  chunks  KnowledgeChunk[]
-  agents  AgentKnowledge[]
+  tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  chunks KnowledgeChunk[]
+  agents AgentKnowledge[]
 }
 
 model KnowledgeChunk {
-  id         String                      @id @default(cuid())
+  id         String   @id @default(cuid())
   documentId String
-  content    String                      @db.Text
+  content    String   @db.Text
   embedding  Json?
-  metadata   Json                        @default("{}")
+  metadata   Json     @default("{}")
   chunkIndex Int
-  createdAt  DateTime                    @default(now())
+  createdAt  DateTime @default(now())
 
   document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 }
@@ -303,7 +329,7 @@ model AgentKnowledge {
 
 model IndustryKnowledgePack {
   id          String   @id @default(cuid())
-  industry    String   @unique  // "ROOFING", "CLEANING", "HVAC", "PLUMBING"
+  industry    String   @unique // "ROOFING", "CLEANING", "HVAC", "PLUMBING"
   name        String
   description String?
   isActive    Boolean  @default(true)
@@ -317,7 +343,7 @@ model IndustryKnowledgeDoc {
   id         String   @id @default(cuid())
   packId     String
   name       String
-  category   String   // "PRICING", "PRODUCTS", "INSURANCE", "PROCESS", "LEGAL", "TERMINOLOGY"
+  category   String // "PRICING", "PRODUCTS", "INSURANCE", "PROCESS", "LEGAL", "TERMINOLOGY"
   agentRoles String[] // ["estimator","sales","intake"] — which roles this doc is relevant for
   content    String   @db.Text
   isActive   Boolean  @default(true)
@@ -343,16 +369,16 @@ model IndustryKnowledgeChunk {
 // ─────────────────────────────────────────────
 
 model GeneratedDocument {
-  id         String   @id @default(cuid())
-  tenantId   String
-  agentId    String?
-  title      String
-  type       String
-  format     String   @default("PDF")
-  fileUrl    String?
-  content    Json?
-  status     String   @default("generating")
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  tenantId  String
+  agentId   String?
+  title     String
+  type      String
+  format    String   @default("PDF")
+  fileUrl   String?
+  content   Json?
+  status    String   @default("generating")
+  createdAt DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
@@ -387,14 +413,14 @@ model CRMConnection {
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
 
-  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   agentAccess AgentCRMAccess[]
 }
 
 model AgentCRMAccess {
-  agentId       String
-  connectionId  String
-  permissions   String[]
+  agentId      String
+  connectionId String
+  permissions  String[]
 
   agent      Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
   connection CRMConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
@@ -422,22 +448,22 @@ model PasswordResetToken {
 // ─────────────────────────────────────────────
 
 model CommunicationLog {
-  id          String          @id @default(cuid())
-  tenantId    String
-  channel     CommChannel     // SMS | WHATSAPP | VOICE
-  direction   CommDirection   // INBOUND | OUTBOUND
-  from        String
-  to          String
-  body        String?         @db.Text
-  status      String          @default("sent")
-  twilioSid   String?
-  durationSec Int?            // for calls
-  agentId     String?
+  id             String        @id @default(cuid())
+  tenantId       String
+  channel        CommChannel // SMS | WHATSAPP | VOICE
+  direction      CommDirection // INBOUND | OUTBOUND
+  from           String
+  to             String
+  body           String?       @db.Text
+  status         String        @default("sent")
+  twilioSid      String?
+  durationSec    Int? // for calls
+  agentId        String?
   conversationId String?
-  metadata    Json            @default("{}")
-  createdAt   DateTime        @default(now())
+  metadata       Json          @default("{}")
+  createdAt      DateTime      @default(now())
 
-  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 enum CommChannel {
@@ -464,7 +490,7 @@ model Webhook {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   logs   WebhookLog[]
 }
 
@@ -485,15 +511,15 @@ model WebhookLog {
 // ─────────────────────────────────────────────
 
 model AuditLog {
-  id        String   @id @default(cuid())
-  tenantId  String
-  userId    String?
-  action    String
-  resource  String
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String?
+  action     String
+  resource   String
   resourceId String?
-  metadata  Json     @default("{}")
-  ipAddress String?
-  createdAt DateTime @default(now())
+  metadata   Json     @default("{}")
+  ipAddress  String?
+  createdAt  DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
@@ -503,21 +529,21 @@ model AuditLog {
 // ─────────────────────────────────────────────
 
 model ConnectedAccount {
-  id                   String   @id @default(cuid())
-  tenantId             String
-  provider             String   // 'google' | 'microsoft'
-  accountEmail         String
-  accountName          String?
-  encryptedAccessToken String   @db.Text
-  encryptedRefreshToken String? @db.Text
-  scopes               String[] // granted scopes
-  expiresAt            DateTime?
-  status               String   @default("active") // active | expired | revoked
-  metadata             Json     @default("{}") // imap host/port/secure, display name, etc.
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                    String    @id @default(cuid())
+  tenantId              String
+  provider              String // 'google' | 'microsoft'
+  accountEmail          String
+  accountName           String?
+  encryptedAccessToken  String    @db.Text
+  encryptedRefreshToken String?   @db.Text
+  scopes                String[] // granted scopes
+  expiresAt             DateTime?
+  status                String    @default("active") // active | expired | revoked
+  metadata              Json      @default("{}") // imap host/port/secure, display name, etc.
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
-  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   processedEmails ProcessedEmail[]
 
   @@unique([tenantId, provider, accountEmail])
@@ -526,12 +552,12 @@ model ConnectedAccount {
 model EmailAgentRule {
   id                  String   @id @default(cuid())
   tenantId            String
-  emailType           String   // lead_inquiry | complaint | quote_request | etc.
+  emailType           String // lead_inquiry | complaint | quote_request | etc.
   mode                String   @default("notify_only") // auto_reply | auto_draft | approval_required | notify_only | block
   replyTemplate       String?  @db.Text
   confidenceThreshold Int      @default(80)
   isActive            Boolean  @default(true)
-  assignedAgentId     String?  // which agent writes/sends replies for this email type
+  assignedAgentId     String? // which agent writes/sends replies for this email type
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -551,12 +577,12 @@ model ProcessedEmail {
   fromName           String?
   subject            String?
   receivedAt         DateTime
-  classification     String?  // email type
+  classification     String? // email type
   confidence         Int?
   extractedData      Json     @default("{}")
-  action             String?  // replied | drafted | archived | flagged | escalated | blocked
+  action             String? // replied | drafted | archived | flagged | escalated | blocked
   status             String   @default("pending") // pending | actioned | skipped | failed
-  draftReplyId       String?  // Gmail draft ID if draft was created
+  draftReplyId       String? // Gmail draft ID if draft was created
   approvalId         String?
   taskId             String?
   errorMessage       String?
@@ -581,21 +607,21 @@ model ActivityTicket {
   title            String
   subject          String?
   description      String?      @db.Text
-  notes            String?      @db.Text  // handoff notes, agent-to-agent context
+  notes            String?      @db.Text // handoff notes, agent-to-agent context
   type             String       @default("GENERAL")
   status           TicketStatus @default(OPEN)
   priority         TaskPriority @default(MEDIUM)
   contactRef       String?
   contactPhone     String?
   contactEmail     String?
-  leadId           String?      // CRM lead ID — all pipeline tickets for one lead share this value
+  leadId           String? // CRM lead ID — all pipeline tickets for one lead share this value
   createdByAgentId String?
   assignedAgentId  String?
   nextAction       String?      @db.Text
   followUpAt       DateTime?
   resolvedAt       DateTime?
   activityLog      Json         @default("[]")
-  searchEmbedding  Json?        // vector embedding of title+description+notes for intent search
+  searchEmbedding  Json? // vector embedding of title+description+notes for intent search
   metadata         Json         @default("{}")
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
@@ -620,14 +646,14 @@ model ConversationSummary {
   id             String    @id @default(cuid())
   tenantId       String
   agentId        String
-  conversationId String?   // null for handoff memories (no direct conversation)
-  summaryType    String    @default("CONVERSATION")  // "CONVERSATION" | "HANDOFF" | "EPISODE"
+  conversationId String? // null for handoff memories (no direct conversation)
+  summaryType    String    @default("CONVERSATION") // "CONVERSATION" | "HANDOFF" | "EPISODE"
   summary        String    @db.Text
   keyEntities    String[]
   embedding      Json?
   messageCount   Int       @default(0)
-  subjectKey     String?   // identity binding: user:/customer:/phone:/email:/anon:
-  importance     Int       @default(0)  // 0-5; >=4 survives nightly cleanup
+  subjectKey     String? // identity binding: user:/customer:/phone:/email:/anon:
+  importance     Int       @default(0) // 0-5; >=4 survives nightly cleanup
   deletedAt      DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -645,7 +671,7 @@ model AgentMemoryFact {
   id                   String    @id @default(cuid())
   tenantId             String
   agentId              String
-  subjectKey           String    // user:ID | customer:ID | phone:E164 | email:addr | anon:convId
+  subjectKey           String // user:ID | customer:ID | phone:E164 | email:addr | anon:convId
   fact                 String    @db.Text
   category             String    @default("general") // identity | preference | decision | constraint | general
   embedding            Json?
@@ -711,6 +737,7 @@ enum Industry {
 
 enum UserRole {
   SUPER_ADMIN
+  SCOPED_ADMIN
   TENANT_OWNER
   TENANT_ADMIN
   MANAGER
@@ -781,19 +808,19 @@ enum CRMProvider {
 // ─────────────────────────────────────────────
 
 model StormReport {
-  id          String   @id @default(cuid())
-  tenantId    String
-  reportDate  DateTime // the date the storm occurred (UTC)
-  type        String   // "hail" | "tornado" | "wind"
-  time        String?  // original UTC time string e.g. "1930"
-  state       String   // two-letter state e.g. "TX"
-  county      String?
-  location    String?  // e.g. "3 ESE Houston"
-  lat         Float?
-  lon         Float?
-  size        Float?   // hail: inches. wind: mph. tornado: null
-  comments    String?
-  createdAt   DateTime @default(now())
+  id         String   @id @default(cuid())
+  tenantId   String
+  reportDate DateTime // the date the storm occurred (UTC)
+  type       String // "hail" | "tornado" | "wind"
+  time       String? // original UTC time string e.g. "1930"
+  state      String // two-letter state e.g. "TX"
+  county     String?
+  location   String? // e.g. "3 ESE Houston"
+  lat        Float?
+  lon        Float?
+  size       Float? // hail: inches. wind: mph. tornado: null
+  comments   String?
+  createdAt  DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -807,15 +834,15 @@ model StormReport {
 // ─────────────────────────────────────────────
 
 model TenantFeatureFlag {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   tenantId  String
   feature   String
-  enabled   Boolean  @default(false)
+  enabled   Boolean   @default(false)
   enabledAt DateTime?
   enabledBy String?
   notes     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -828,19 +855,19 @@ model TenantFeatureFlag {
 // ─────────────────────────────────────────────
 
 model SocialAccount {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   tenantId     String
-  platform     String   // "facebook" | "instagram" | "linkedin" | "x"
+  platform     String // "facebook" | "instagram" | "linkedin" | "x"
   accountName  String
   pageId       String?
-  accessToken  String   @db.Text
-  refreshToken String?  @db.Text
+  accessToken  String    @db.Text
+  refreshToken String?   @db.Text
   expiresAt    DateTime?
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   posts        SocialPost[]
   interactions SocialInteraction[]
 
@@ -858,7 +885,7 @@ model SocialPost {
   imageUrl        String?
   imagePrompt     String?
   contentType     String    @default("general") // "educational" | "promotional" | "story" | "team" | "review" | "general"
-  status          String    @default("draft")   // "draft" | "pending_approval" | "scheduled" | "published" | "failed"
+  status          String    @default("draft") // "draft" | "pending_approval" | "scheduled" | "published" | "failed"
   scheduledAt     DateTime?
   publishedAt     DateTime?
   platformPostId  String?
@@ -884,11 +911,11 @@ model SocialInteraction {
   tenantId        String
   socialAccountId String
   agentId         String?
-  platform        String    // "facebook" | "instagram"
-  type            String    // "comment" | "message"
-  externalId      String    // platform comment id or message id
-  parentId        String?   // post id (comment) or conversation thread id (message)
-  senderId        String?   // commenter PSID/IGSID or sender PSID/IGSID
+  platform        String // "facebook" | "instagram"
+  type            String // "comment" | "message"
+  externalId      String // platform comment id or message id
+  parentId        String? // post id (comment) or conversation thread id (message)
+  senderId        String? // commenter PSID/IGSID or sender PSID/IGSID
   senderName      String?
   content         String    @db.Text
   replyContent    String?   @db.Text

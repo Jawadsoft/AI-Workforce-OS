@@ -4,7 +4,7 @@ import {
 } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes } from '@nestjs/swagger'
 import { FileInterceptor } from '@nestjs/platform-express'
-import { IsString, IsOptional, IsBoolean, IsArray, IsEmail } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsArray, IsEmail, IsInt } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { SuperAdminGuard } from '../../common/guards/super-admin.guard'
 import { SuperAdminService } from './super-admin.service'
@@ -62,12 +62,12 @@ class CreateScopedAdminDto {
   @IsEmail() email: string
   @IsString() password: string
   @IsString() name: string
-  @IsOptional() @IsString() maxTenants?: number
+  @IsOptional() @IsInt() maxTenants?: number
   @IsOptional() @IsArray() permissions?: string[]
 }
 
 class UpdateScopedAdminLimitsDto {
-  @IsOptional() @IsString() maxTenants?: number
+  @IsOptional() @IsInt() maxTenants?: number
   @IsOptional() @IsArray() permissions?: string[]
 }
 

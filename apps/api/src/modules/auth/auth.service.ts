@@ -59,6 +59,89 @@ export class AuthService {
     return this.signToken(user.id, user.tenantId, user.role)
   }
 
+  // ── SSO Login ──────────────────────────────────────────────────────
+  
+  async generateSsoToken(email: string, source: string) {
+    // Find the user by email
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      include: { tenant: { select: { isApproved: true } } }
+    })
+
+    if (!user) {
+      throw new NotFoundException('User not found')
+    }
+
+    // Check if user is active
+    if (!user.isActive) {
+      throw new UnauthorizedException('Account is deactivated')
+    }
+
+    // Check if tenant is approved (skip for super admins)
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'SCOPED_ADMIN' && !user.tenant?.isApproved) {
+      throw new UnauthorizedException('Account is pending approval')
+    }
+
+    // Generate a secure random token
+    const token = crypto.randomBytes(32).toString('hex')
+
+    // Create SSO token (expires in 5 minutes)
+    await this.prisma.ssoToken.create({
+      data: {
+        userId: user.id,
+        token,
+        source,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 minutes
+      }
+    })
+
+    // Return the token and redirect URL
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
+    const redirectUrl = `${frontendUrl}/sso?token=${token}&source=${source}`
+
+    return { 
+      token, 
+      redirectUrl,
+      expiresIn: 300 // 5 minutes in seconds
+    }
+  }
+
+  async ssoLogin(token: string, source: string) {
+    // Find the SSO token in the database
+    const ssoToken = await this.prisma.ssoToken.findFirst({
+      where: { 
+        token,
+        source,
+        used: false,
+        expiresAt: { gt: new Date() }
+      },
+      include: { user: { include: { tenant: { select: { isApproved: true } } } } }
+    })
+
+    if (!ssoToken) {
+      throw new UnauthorizedException('Invalid or expired SSO token')
+    }
+
+    const user = ssoToken.user
+
+    // Check if user is active
+    if (!user.isActive) throw new UnauthorizedException('Account is deactivated')
+
+    // Check if tenant is approved (skip for super admins)
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'SCOPED_ADMIN' && !user.tenant?.isApproved) {
+      throw new UnauthorizedException('Your account is pending approval')
+    }
+
+    // Mark token as used (single-use for security)
+    await this.prisma.ssoToken.update({
+      where: { id: ssoToken.id },
+      data: { used: true }
+    })
+
+    // Return JWT
+    return this.signToken(user.id, user.tenantId, user.role)
+  }
+
   async getMe(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },

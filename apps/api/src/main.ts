@@ -68,7 +68,8 @@ async function bootstrap() {
         'http://192.168.1.55:3000',
         'https://192.168.1.55:3000',
         process.env.FRONTEND_URL ?? 'http://localhost:3000',
-      ]
+        process.env.STORMBUDDI_URL, // Allow StormBuddi CRM for SSO
+      ].filter(Boolean) // Remove any undefined values
       if (!origin || allowed.includes(origin)) {
         callback(null, true)
       } else {

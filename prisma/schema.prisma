@@ -74,6 +74,7 @@ model User {
   tasks            Task[]                   @relation("TaskAssignee")
   approvals        Approval[]               @relation("ApprovalReviewer")
   resetTokens      PasswordResetToken[]
+  ssoTokens        SsoToken[]
   createdByAdmin   User?                    @relation("SubAdminCreator", fields: [createdByAdminId], references: [id])
   createdSubAdmins User[]                   @relation("SubAdminCreator")
   managedTenants   SuperAdminTenantAccess[] @relation("AdminTenantAssignments")
@@ -930,4 +931,21 @@ model SocialInteraction {
   @@unique([platform, externalId])
   @@index([tenantId, createdAt])
   @@index([socialAccountId])
+}
+
+// SSO tokens for external CRM integrations (e.g., StormBuddi)
+// Tokens are single-use and expire after 5 minutes
+model SsoToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  source    String   // "stormbuddi" | other CRM identifiers
+  used      Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token, source])
+  @@index([userId])
 }

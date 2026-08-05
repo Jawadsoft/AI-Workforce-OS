@@ -1,5 +1,5 @@
-import { Controller, Post, Get, Body, HttpCode, HttpStatus, UseGuards } from '@nestjs/common'
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
+import { Controller, Post, Get, Body, HttpCode, HttpStatus, UseGuards, Headers, UnauthorizedException } from '@nestjs/common'
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiHeader } from '@nestjs/swagger'
 import { IsEmail, IsString, MinLength } from 'class-validator'
 import { AuthService } from './auth.service'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
@@ -31,10 +31,28 @@ class ChangePasswordDto {
   @IsString() @MinLength(8) newPassword: string
 }
 
+class SsoLoginDto {
+  @IsString() token: string
+  @IsString() source: string // e.g., 'stormbuddi'
+}
+
+class GenerateSsoTokenDto {
+  @IsEmail() email: string
+  @IsString() source: string // e.g., 'stormbuddi'
+}
+
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
+
+  // Helper method to verify API key
+  private verifyApiKey(apiKey: string | undefined): void {
+    const validApiKey = process.env.SSO_API_KEY
+    if (!validApiKey || !apiKey || apiKey !== validApiKey) {
+      throw new UnauthorizedException('Invalid API key')
+    }
+  }
 
   @Post('register')
   @ApiOperation({ summary: 'Register a new tenant and owner' })
@@ -47,6 +65,25 @@ export class AuthController {
   @ApiOperation({ summary: 'Login' })
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto.email, dto.password)
+  }
+
+  @Post('sso-login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Single Sign-On login via external CRM' })
+  ssoLogin(@Body() dto: SsoLoginDto) {
+    return this.auth.ssoLogin(dto.token, dto.source)
+  }
+
+  @Post('generate-sso-token')
+  @HttpCode(HttpStatus.OK)
+  @ApiHeader({ name: 'x-api-key', description: 'API Key for SSO token generation' })
+  @ApiOperation({ summary: 'Generate SSO token for external CRM (requires API key)' })
+  async generateSsoToken(
+    @Headers('x-api-key') apiKey: string,
+    @Body() dto: GenerateSsoTokenDto,
+  ) {
+    this.verifyApiKey(apiKey)
+    return this.auth.generateSsoToken(dto.email, dto.source)
   }
 
   @Post('forgot-password')

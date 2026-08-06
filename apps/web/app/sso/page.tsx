@@ -12,11 +12,11 @@ export default function SsoPage() {
 
   useEffect(() => {
     const handleSsoLogin = async () => {
-      try {
-        // Get token and source from URL parameters
-        const token = searchParams.get('token')
-        const source = searchParams.get('source') || 'stormbuddi'
+      // Get token and source from URL parameters
+      const token = searchParams.get('token')
+      const source = searchParams.get('source') || 'stormbuddi'
 
+      try {
         if (!token) {
           setError('Missing SSO token')
           setProcessing(false)

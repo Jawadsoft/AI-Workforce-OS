@@ -18,13 +18,49 @@ export class IntegrationService {
     industry?: string
     externalTenantId?: string
   }) {
-    // Check if user already exists
+    // Check if user already exists (idempotent provisioning)
     const existingUser = await this.prisma.user.findUnique({
       where: { email: data.ownerEmail },
+      include: { tenant: true },
     })
 
     if (existingUser) {
-      throw new ConflictException('User with this email already exists')
+      // User already provisioned - return existing tenant info
+      const tenant = existingUser.tenant
+
+      // Optionally update externalTenantId if provided and different
+      if (data.externalTenantId && tenant) {
+        const currentSettings = (tenant.settings as any) || {}
+        if (currentSettings.externalTenantId !== data.externalTenantId) {
+          await this.prisma.tenant.update({
+            where: { id: tenant.id },
+            data: {
+              settings: {
+                ...currentSettings,
+                externalTenantId: data.externalTenantId,
+              },
+            },
+          })
+        }
+      }
+
+      return {
+        success: true,
+        alreadyProvisioned: true,
+        tenant: tenant
+          ? {
+              id: tenant.id,
+              name: tenant.name,
+              slug: tenant.slug,
+            }
+          : null,
+        user: {
+          id: existingUser.id,
+          email: existingUser.email,
+          name: existingUser.name,
+        },
+        message: 'User already has an account. Use SSO to log in.',
+      }
     }
 
     // Generate slug from company name

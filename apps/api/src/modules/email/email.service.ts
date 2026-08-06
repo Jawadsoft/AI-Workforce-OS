@@ -346,6 +346,22 @@ export class EmailService {
     })
   }
 
+  // ── Template: Welcome & Verification ──────────────────────────────
+
+  async sendWelcome(params: {
+    tenantId?: string
+    to: string
+    name: string
+    verificationUrl: string
+  }): Promise<void> {
+    await this.send({
+      tenantId: params.tenantId,
+      to: params.to,
+      subject: 'Welcome to AI Workforce OS - Verify Your Account',
+      html: this.welcomeTemplate(params.name, params.verificationUrl),
+    })
+  }
+
   // ── Template: Team Invite ─────────────────────────────────────────
 
   async sendTeamInvite(params: {
@@ -419,6 +435,27 @@ export class EmailService {
       </div>
       <p style="color:#94a3b8;font-size:13px;">If you didn't request this, you can safely ignore this email. Your password won't change.</p>
       <p style="color:#94a3b8;font-size:12px;margin-top:16px;">Or copy this link: <a href="${resetUrl}" style="color:#2563eb;">${resetUrl}</a></p>
+    `)
+  }
+
+  private welcomeTemplate(name: string, verificationUrl: string): string {
+    return this.wrapEmail(`
+      <h2 style="color:#1e293b;margin-bottom:8px;">Welcome to AI Workforce OS! 🚀</h2>
+      <p style="color:#64748b;">Hi ${name},</p>
+      <p style="color:#64748b;">Your account has been created successfully. To get started, please verify your email address by clicking the button below.</p>
+      <div style="text-align:center;margin:32px 0;">
+        <a href="${verificationUrl}" style="background:#84cc16;color:#000;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px;">Verify Email Address</a>
+      </div>
+      <p style="color:#64748b;font-size:14px;margin-top:24px;">Once verified, you'll be able to:</p>
+      <ul style="color:#64748b;font-size:14px;line-height:1.8;">
+        <li>Set your password</li>
+        <li>Access your AI Workforce dashboard</li>
+        <li>Deploy AI employees for your team</li>
+        <li>Connect your CRM and knowledge base</li>
+      </ul>
+      <p style="color:#94a3b8;font-size:13px;margin-top:24px;">This verification link expires in <strong>7 days</strong>.</p>
+      <p style="color:#94a3b8;font-size:13px;">If you didn't create this account, you can safely ignore this email.</p>
+      <p style="color:#94a3b8;font-size:12px;margin-top:16px;">Or copy this link: <a href="${verificationUrl}" style="color:#84cc16;">${verificationUrl}</a></p>
     `)
   }
 

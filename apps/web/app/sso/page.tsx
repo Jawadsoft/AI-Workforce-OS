@@ -19,7 +19,7 @@ export default function SsoPage() {
       console.log('🚀 SSO LOGIN STARTED')
       console.log('Token received:', token ? `${token.substring(0, 20)}...` : 'NONE')
       console.log('Source:', source)
-      console.log('API URL from env:', process.env.NEXT_PUBLIC_API_URL)
+      console.log('API URL (HARDCODED FOR TESTING):', 'https://ai-workforce-os-1.onrender.com/api/v1')
 
       try {
         if (!token) {
@@ -28,12 +28,13 @@ export default function SsoPage() {
           return
         }
 
-        // Call the SSO login endpoint
-        console.log('Making SSO login request to:', `${process.env.NEXT_PUBLIC_API_URL}/auth/sso-login`)
+        // Call the SSO login endpoint (HARDCODED FOR TESTING)
+        const API_URL = 'https://ai-workforce-os-1.onrender.com/api/v1'
+        console.log('Making SSO login request to:', `${API_URL}/auth/sso-login`)
         console.log('With token:', token)
         console.log('With source:', source)
         
-        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/sso-login`, {
+        const response = await fetch(`${API_URL}/auth/sso-login`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -59,14 +60,15 @@ export default function SsoPage() {
         router.push('/dashboard')
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'SSO login failed'
+        const API_URL = 'https://ai-workforce-os-1.onrender.com/api/v1'
         console.error('=== SSO ERROR ===')
         console.error('Error:', err)
-        console.error('API URL:', process.env.NEXT_PUBLIC_API_URL)
+        console.error('API URL (HARDCODED):', API_URL)
         console.error('Token:', token)
         console.error('Source:', source)
         
         // BLOCK WITH ALERT TO SEE ERROR
-        alert(`🚨 SSO ERROR 🚨\n\nError: ${errorMessage}\n\nAPI URL: ${process.env.NEXT_PUBLIC_API_URL || 'NOT SET'}\n\nToken: ${token?.substring(0, 30)}...\n\nCheck console (F12) for details`)
+        alert(`🚨 SSO ERROR 🚨\n\nError: ${errorMessage}\n\nAPI URL: ${API_URL} (HARDCODED)\n\nToken: ${token?.substring(0, 30)}...\n\nCheck console (F12) for details`)
         
         setError(errorMessage)
         setProcessing(false)
@@ -110,7 +112,7 @@ export default function SsoPage() {
               <p className="text-sm text-red-300 mb-3 font-bold">⚠️ REDIRECT BLOCKED FOR DEBUGGING</p>
               <p className="text-xs text-gray-300 mb-2 font-semibold">Debug Information:</p>
               <p className="text-xs text-gray-400 break-all mb-2">
-                <strong>API URL:</strong> {process.env.NEXT_PUBLIC_API_URL || '❌ NOT SET - THIS IS THE PROBLEM!'}
+                <strong>API URL:</strong> https://ai-workforce-os-1.onrender.com/api/v1 (HARDCODED FOR TESTING)
               </p>
               <p className="text-xs text-gray-400 break-all mb-2">
                 <strong>Token:</strong> {searchParams.get('token')?.substring(0, 30)}...
@@ -126,7 +128,7 @@ export default function SsoPage() {
               onClick={() => {
                 console.log('=== FULL DEBUG INFO ===');
                 console.log('Error:', error);
-                console.log('API URL:', process.env.NEXT_PUBLIC_API_URL);
+                console.log('API URL (HARDCODED):', 'https://ai-workforce-os-1.onrender.com/api/v1');
                 console.log('Full Token:', searchParams.get('token'));
                 console.log('Source:', searchParams.get('source'));
                 alert('Debug info copied to console. Press F12 to view.');

@@ -16,6 +16,11 @@ export default function SsoPage() {
       const token = searchParams.get('token')
       const source = searchParams.get('source') || 'stormbuddi'
 
+      console.log('🚀 SSO LOGIN STARTED')
+      console.log('Token received:', token ? `${token.substring(0, 20)}...` : 'NONE')
+      console.log('Source:', source)
+      console.log('API URL from env:', process.env.NEXT_PUBLIC_API_URL)
+
       try {
         if (!token) {
           setError('Missing SSO token')
@@ -53,11 +58,17 @@ export default function SsoPage() {
         // Redirect to dashboard
         router.push('/dashboard')
       } catch (err) {
-        console.error('SSO login error:', err)
-        console.error('API URL being called:', process.env.NEXT_PUBLIC_API_URL)
+        const errorMessage = err instanceof Error ? err.message : 'SSO login failed'
+        console.error('=== SSO ERROR ===')
+        console.error('Error:', err)
+        console.error('API URL:', process.env.NEXT_PUBLIC_API_URL)
         console.error('Token:', token)
         console.error('Source:', source)
-        setError(err instanceof Error ? err.message : 'SSO login failed')
+        
+        // BLOCK WITH ALERT TO SEE ERROR
+        alert(`🚨 SSO ERROR 🚨\n\nError: ${errorMessage}\n\nAPI URL: ${process.env.NEXT_PUBLIC_API_URL || 'NOT SET'}\n\nToken: ${token?.substring(0, 30)}...\n\nCheck console (F12) for details`)
+        
+        setError(errorMessage)
         setProcessing(false)
       }
     }
@@ -93,21 +104,22 @@ export default function SsoPage() {
                 />
               </svg>
             </div>
-            <h2 className="text-xl font-semibold text-white">Login Failed - Debug Mode</h2>
-            <p className="text-sm text-gray-400 text-center">{error}</p>
-            <div className="mt-4 p-4 bg-gray-900/50 rounded border border-gray-700 text-left w-full">
+            <h2 className="text-xl font-semibold text-white">🚨 SSO ERROR - DEBUG MODE 🚨</h2>
+            <p className="text-sm text-red-400 text-center font-semibold">{error}</p>
+            <div className="mt-4 p-4 bg-red-900/20 rounded border-2 border-red-500 text-left w-full">
+              <p className="text-sm text-red-300 mb-3 font-bold">⚠️ REDIRECT BLOCKED FOR DEBUGGING</p>
               <p className="text-xs text-gray-300 mb-2 font-semibold">Debug Information:</p>
-              <p className="text-xs text-gray-400 break-all">
-                Open browser console (F12) to see detailed error logs
+              <p className="text-xs text-gray-400 break-all mb-2">
+                <strong>API URL:</strong> {process.env.NEXT_PUBLIC_API_URL || '❌ NOT SET - THIS IS THE PROBLEM!'}
               </p>
-              <p className="text-xs text-gray-400 mt-2">
-                API URL: {process.env.NEXT_PUBLIC_API_URL || 'NOT SET'}
+              <p className="text-xs text-gray-400 break-all mb-2">
+                <strong>Token:</strong> {searchParams.get('token')?.substring(0, 30)}...
               </p>
-              <p className="text-xs text-gray-400">
-                Token: {searchParams.get('token')?.substring(0, 20)}...
+              <p className="text-xs text-gray-400 mb-2">
+                <strong>Source:</strong> {searchParams.get('source')}
               </p>
-              <p className="text-xs text-gray-400">
-                Source: {searchParams.get('source')}
+              <p className="text-xs text-yellow-300 mt-3">
+                ⚠️ Open browser console (F12) to see detailed error logs
               </p>
             </div>
             <button
@@ -117,19 +129,15 @@ export default function SsoPage() {
                 console.log('API URL:', process.env.NEXT_PUBLIC_API_URL);
                 console.log('Full Token:', searchParams.get('token'));
                 console.log('Source:', searchParams.get('source'));
-                // Temporarily disabled redirect for debugging
-                // router.push('/login')
+                alert('Debug info copied to console. Press F12 to view.');
               }}
               className="mt-4 px-6 py-2 bg-lime-400 text-black font-semibold rounded-lg hover:bg-lime-500 transition"
             >
-              Copy Debug Info to Console
+              📋 Copy Full Debug Info to Console
             </button>
-            <button
-              onClick={() => router.push('/login')}
-              className="mt-2 px-6 py-2 bg-gray-600 text-white font-semibold rounded-lg hover:bg-gray-700 transition"
-            >
-              Go to Login
-            </button>
+            <p className="text-xs text-gray-500 mt-4">
+              Login redirect is BLOCKED. Close this tab when done debugging.
+            </p>
           </div>
         ) : null}
       </div>

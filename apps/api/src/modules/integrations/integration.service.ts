@@ -34,14 +34,24 @@ export class IntegrationService {
       .replace(/[^a-z0-9-]/g, '')
     const slug = `${baseSlug}-${Date.now()}`
 
+    // Validate and convert industry to uppercase enum value
+    const validIndustries = [
+      'ROOFING', 'CAR_DEALERSHIP', 'CLEANING', 'SECURITY',
+      'PROPERTY_MANAGEMENT', 'HEALTHCARE', 'CONSTRUCTION',
+      'REAL_ESTATE', 'HVAC', 'LANDSCAPING', 'PEST_CONTROL',
+      'INSURANCE', 'HUMAN_RESOURCES', 'OTHER'
+    ]
+    const industryValue = data.industry ? data.industry.toUpperCase() : 'OTHER'
+    const industry = validIndustries.includes(industryValue) ? industryValue : 'OTHER'
+
     // Create tenant
     const tenant = await this.prisma.tenant.create({
       data: {
         name: data.companyName,
         slug,
-        industry: data.industry || 'general',
+        industry,
         isApproved: true, // Auto-approve for external integrations
-        metadata: data.externalTenantId
+        settings: data.externalTenantId
           ? { externalTenantId: data.externalTenantId }
           : {},
       },

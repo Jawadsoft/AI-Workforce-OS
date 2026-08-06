@@ -100,7 +100,7 @@ export class IntegrationService {
     const tempPassword = crypto.randomBytes(16).toString('hex')
     const hashedPassword = await bcrypt.hash(tempPassword, 12)
 
-    // Create owner user
+    // Create owner user (auto-activated for external integrations)
     const user = await this.prisma.user.create({
       data: {
         email: data.ownerEmail,
@@ -108,7 +108,7 @@ export class IntegrationService {
         password: hashedPassword,
         role: 'TENANT_OWNER',
         tenantId: tenant.id,
-        isActive: false, // Will be activated after email verification
+        isActive: true, // Auto-activate for trusted external integrations (enables SSO)
       },
     })
 
@@ -121,7 +121,9 @@ export class IntegrationService {
       },
     })
 
-    // Send verification email
+    // Send welcome email with verification link
+    // Note: Account is already active for SSO, but verification link allows
+    // users to set a password for direct login (optional)
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
     const verificationUrl = `${frontendUrl}/verify-account?token=${verificationToken}`
 

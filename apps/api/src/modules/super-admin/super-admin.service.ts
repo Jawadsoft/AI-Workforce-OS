@@ -521,6 +521,67 @@ export class SuperAdminService {
     return templateTenant.id
   }
 
+  /**
+   * Create default workspace if missing. Optionally clear all template agents (full reset).
+   */
+  async resetTemplateWorkspace(
+    requester: { id: string; role: string },
+    options: { adminId?: string; clearAgents?: boolean } = {},
+  ) {
+    const targetAdminId =
+      requester.role === 'SCOPED_ADMIN' ? requester.id : options.adminId
+
+    if (!targetAdminId) {
+      throw new BadRequestException('adminId is required')
+    }
+
+    if (requester.role === 'SCOPED_ADMIN' && options.adminId && options.adminId !== requester.id) {
+      throw new BadRequestException('Scoped admins can only reset their own default workspace')
+    }
+
+    if (requester.role === 'SUPER_ADMIN') {
+      const admin = await this.prisma.user.findUnique({ where: { id: targetAdminId } })
+      if (!admin || admin.role !== 'SCOPED_ADMIN') {
+        throw new NotFoundException('Scoped admin not found')
+      }
+      if (admin.createdByAdminId !== requester.id) {
+        throw new BadRequestException('You can only manage scoped admins you created')
+      }
+    }
+
+    const before = await this.prisma.user.findUnique({
+      where: { id: targetAdminId },
+      include: { tenant: { select: { settings: true } } },
+    })
+    const hadWorkspace =
+      ((before?.tenant?.settings as Record<string, unknown>) || {}).isScopedAdminTemplate === true
+
+    const templateTenantId = await this.ensureTemplateWorkspace(targetAdminId)
+
+    let clearedAgents = 0
+    if (options.clearAgents) {
+      const result = await this.prisma.agent.deleteMany({ where: { tenantId: templateTenantId } })
+      clearedAgents = result.count
+    }
+
+    const sharedDefaultCount = await this.prisma.agent.count({
+      where: { tenantId: templateTenantId, isSharedDefault: true, status: 'ACTIVE' },
+    })
+
+    return {
+      success: true,
+      created: !hadWorkspace,
+      templateTenantId,
+      clearedAgents,
+      sharedDefaultCount,
+      message: !hadWorkspace
+        ? 'Default workspace created'
+        : options.clearAgents
+          ? 'Default workspace reset (agents cleared)'
+          : 'Default workspace already set',
+    }
+  }
+
   private async resolveTemplateTenantId(requester: { id: string; role: string }, adminId?: string): Promise<string> {
     if (requester.role === 'SCOPED_ADMIN') {
       if (adminId && adminId !== requester.id) {

@@ -267,6 +267,28 @@ export default function SuperAdminDashboard() {
     loadData()
   }
 
+  async function resetScopedWorkspace(admin: SubAdmin, clearAgents = false) {
+    const missing = !admin.templateTenantId
+    if (clearAgents) {
+      if (!confirm(`Clear all default agents for ${admin.name}? New tenants will not get agents until you add shared ones again.`)) return
+    } else if (missing) {
+      if (!confirm(`Setup default workspace for ${admin.name}? They can then add agents that clone to new tenants.`)) return
+    } else {
+      if (!confirm(`Default workspace already exists for ${admin.name}. Re-check / refresh it?`)) return
+    }
+    try {
+      const { data } = await api.post('/super-admin/template-workspace/reset', {
+        adminId: admin.id,
+        clearAgents,
+      })
+      alert(data.message || 'Workspace updated')
+      await loadData()
+      if (missing || clearAgents) setWorkspaceAdmin({ ...admin, templateTenantId: data.templateTenantId })
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to reset workspace')
+    }
+  }
+
   async function assignTenant(adminUserId: string, tenantId: string) {
     try {
       await api.post('/super-admin/scoped-admins/assign', { adminUserId, tenantId })
@@ -534,6 +556,7 @@ export default function SuperAdminDashboard() {
                 onOpenAssign={openAssignModal}
                 onRevokeTenant={revokeTenant}
                 onOpenWorkspace={(admin) => setWorkspaceAdmin(admin)}
+                onResetWorkspace={resetScopedWorkspace}
               />
             )}
             {tab === 'Marketplace' && (
@@ -1374,7 +1397,7 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
 
 // ── Sub-Admins Tab ────────────────────────────────────────────────
 
-function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin, subAdminForm, setSubAdminForm, subAdminSaving, onCreateSubAdmin, onDeleteSubAdmin, onOpenAssign, onRevokeTenant, onOpenWorkspace }: {
+function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin, subAdminForm, setSubAdminForm, subAdminSaving, onCreateSubAdmin, onDeleteSubAdmin, onOpenAssign, onRevokeTenant, onOpenWorkspace, onResetWorkspace }: {
   subAdmins: SubAdmin[]
   tenants: Tenant[]
   showNewSubAdmin: boolean
@@ -1387,6 +1410,7 @@ function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin,
   onOpenAssign: (admin: SubAdmin) => void
   onRevokeTenant: (adminUserId: string, tenantId: string) => void
   onOpenWorkspace: (admin: SubAdmin) => void
+  onResetWorkspace: (admin: SubAdmin, clearAgents?: boolean) => void
 }) {
   return (
     <div className="space-y-6">
@@ -1426,13 +1450,37 @@ function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin,
                     <p className="text-sm text-gray-400 truncate">{admin.email}</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                   <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${admin.isActive ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'}`}>
                     {admin.isActive ? 'Active' : 'Suspended'}
                   </span>
-                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-900/30 text-indigo-300">
-                    {admin.sharedDefaultCount ?? 0} default agent{(admin.sharedDefaultCount ?? 0) === 1 ? '' : 's'}
-                  </span>
+                  {admin.templateTenantId ? (
+                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-900/30 text-indigo-300">
+                      {admin.sharedDefaultCount ?? 0} default agent{(admin.sharedDefaultCount ?? 0) === 1 ? '' : 's'}
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-900/30 text-amber-300">
+                      Workspace not set
+                    </span>
+                  )}
+                  {!admin.templateTenantId ? (
+                    <button
+                      onClick={() => onResetWorkspace(admin, false)}
+                      className="text-amber-300 hover:text-amber-200 text-sm px-3 py-1.5 rounded-lg transition-colors"
+                      style={{ background: 'rgba(245,158,11,0.12)' }}
+                    >
+                      Setup Workspace
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => onResetWorkspace(admin, true)}
+                      className="text-amber-300 hover:text-amber-200 text-sm px-3 py-1.5 rounded-lg transition-colors"
+                      style={{ background: 'rgba(245,158,11,0.12)' }}
+                      title="Clear all default agents"
+                    >
+                      Reset Workspace
+                    </button>
+                  )}
                   <button onClick={() => onOpenWorkspace(admin)} className="text-lime-400 hover:text-lime-300 text-sm px-3 py-1.5 rounded-lg transition-colors" style={{ background: 'rgba(163,230,53,0.10)' }}>
                     Default Agents
                   </button>
@@ -1648,14 +1696,58 @@ function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
 
   const sharedCount = agents.filter(a => a.isSharedDefault && a.status === 'ACTIVE').length
 
+  async function resetOwnWorkspace(clearAgents: boolean) {
+    const msg = clearAgents
+      ? 'Clear all default agents from your workspace? New tenants will not get agents until you add shared ones again.'
+      : 'Create / refresh your default workspace?'
+    if (!confirm(msg)) return
+    setSaving(true)
+    try {
+      const { data } = await api.post('/super-admin/template-workspace/reset', {
+        ...adminBody,
+        clearAgents,
+      })
+      alert(data.message || 'Workspace updated')
+      await load()
+      onChanged?.()
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to reset workspace')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       {!adminId && (
-        <div>
-          <h1 className="text-2xl font-bold text-white">Default Workspace</h1>
-          <p className="text-gray-400 mt-1">
-            Agents marked as shared are automatically added when you create a new tenant.
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-white">Default Workspace</h1>
+            <p className="text-gray-400 mt-1">
+              Agents marked as shared are automatically added when you create a new tenant.
+            </p>
+          </div>
+          <button
+            onClick={() => resetOwnWorkspace(agents.length > 0)}
+            disabled={saving}
+            className="px-3 py-1.5 rounded-lg text-sm text-amber-300 disabled:opacity-50"
+            style={{ background: 'rgba(245,158,11,0.12)' }}
+          >
+            {agents.length > 0 ? 'Reset Workspace' : 'Setup / Refresh Workspace'}
+          </button>
+        </div>
+      )}
+
+      {adminId && (
+        <div className="flex justify-end">
+          <button
+            onClick={() => resetOwnWorkspace(agents.length > 0)}
+            disabled={saving}
+            className="px-3 py-1.5 rounded-lg text-sm text-amber-300 disabled:opacity-50"
+            style={{ background: 'rgba(245,158,11,0.12)' }}
+          >
+            {agents.length > 0 ? 'Reset Workspace' : 'Setup / Refresh Workspace'}
+          </button>
         </div>
       )}
 

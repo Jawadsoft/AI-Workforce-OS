@@ -98,6 +98,11 @@ class UpdateTemplateWorkspaceAgentDto {
   @IsOptional() @IsBoolean() isSharedDefault?: boolean
 }
 
+class ResetTemplateWorkspaceDto {
+  @IsOptional() @IsString() adminId?: string
+  @IsOptional() @IsBoolean() clearAgents?: boolean
+}
+
 class AssignTenantDto {
   @IsString() adminUserId: string
   @IsString() tenantId: string
@@ -299,6 +304,15 @@ export class SuperAdminController {
   }
 
   // ── Scoped Admin Default Workspace (template agents) ──────────────
+
+  @Post('template-workspace/reset')
+  @ApiOperation({ summary: 'Create default workspace if missing; optionally clear agents' })
+  resetTemplateWorkspace(@Body() dto: ResetTemplateWorkspaceDto, @Req() req: any) {
+    return this.service.resetTemplateWorkspace(
+      { id: req.user.id, role: req.user.role },
+      dto,
+    )
+  }
 
   @Get('template-workspace/agents')
   @ApiOperation({ summary: 'List agents in a scoped admin default workspace' })

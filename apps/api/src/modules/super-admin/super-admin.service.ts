@@ -411,16 +411,11 @@ export class SuperAdminService {
         const templateTenantId = isTemplate ? admin.tenantId : null
         let sharedDefaultCount = 0
         if (templateTenantId) {
-          try {
-            sharedDefaultCount = await this.prisma.agent.count({
-              where: { tenantId: templateTenantId, isSharedDefault: true, status: 'ACTIVE' },
-            })
-          } catch {
-            // Column may not exist until migration is applied — fall back
-            sharedDefaultCount = await this.prisma.agent
-              .count({ where: { tenantId: templateTenantId, status: 'ACTIVE' } })
-              .catch(() => 0)
-          }
+          const agents = await this.prisma.agent.findMany({
+            where: { tenantId: templateTenantId, status: 'ACTIVE' },
+            select: { id: true },
+          })
+          sharedDefaultCount = this.filterSharedAgentIds(settings, agents.map((a) => a.id)).length
         }
 
         return {
@@ -575,11 +570,22 @@ export class SuperAdminService {
     if (options.clearAgents) {
       const result = await this.prisma.agent.deleteMany({ where: { tenantId: templateTenantId } })
       clearedAgents = result.count
+      const tenant = await this.prisma.tenant.findUnique({ where: { id: templateTenantId } })
+      const settings = { ...((tenant?.settings as Record<string, unknown>) || {}) }
+      settings.sharedDefaultAgentIds = []
+      await this.prisma.tenant.update({
+        where: { id: templateTenantId },
+        data: { settings },
+      })
     }
 
-    const sharedDefaultCount = await this.prisma.agent.count({
-      where: { tenantId: templateTenantId, isSharedDefault: true, status: 'ACTIVE' },
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: templateTenantId } })
+    const settings = (tenant?.settings as Record<string, unknown>) || {}
+    const agents = await this.prisma.agent.findMany({
+      where: { tenantId: templateTenantId, status: 'ACTIVE' },
+      select: { id: true },
     })
+    const sharedDefaultCount = this.filterSharedAgentIds(settings, agents.map((a) => a.id)).length
 
     return {
       success: true,
@@ -593,6 +599,39 @@ export class SuperAdminService {
           ? 'Default workspace reset (agents cleared)'
           : 'Default workspace already set',
     }
+  }
+
+  /** null sharedDefaultAgentIds = all agents shared; otherwise only listed IDs. */
+  private filterSharedAgentIds(settings: Record<string, unknown>, agentIds: string[]): string[] {
+    if (!Array.isArray(settings.sharedDefaultAgentIds)) return agentIds
+    const allowed = new Set(settings.sharedDefaultAgentIds as string[])
+    return agentIds.filter((id) => allowed.has(id))
+  }
+
+  private async setAgentSharedDefault(tenantId: string, agentId: string, shared: boolean) {
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } })
+    if (!tenant) throw new NotFoundException('Template workspace not found')
+
+    const settings = { ...((tenant.settings as Record<string, unknown>) || {}) }
+    const allAgents = await this.prisma.agent.findMany({
+      where: { tenantId },
+      select: { id: true },
+    })
+    let sharedIds = Array.isArray(settings.sharedDefaultAgentIds)
+      ? [...(settings.sharedDefaultAgentIds as string[])]
+      : allAgents.map((a) => a.id)
+
+    if (shared) {
+      if (!sharedIds.includes(agentId)) sharedIds.push(agentId)
+    } else {
+      sharedIds = sharedIds.filter((id) => id !== agentId)
+    }
+
+    settings.sharedDefaultAgentIds = sharedIds
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { settings },
+    })
   }
 
   private async resolveTemplateTenantId(requester: { id: string; role: string }, adminId?: string): Promise<string> {
@@ -618,11 +657,20 @@ export class SuperAdminService {
 
   async listTemplateWorkspaceAgents(requester: { id: string; role: string }, adminId?: string) {
     const tenantId = await this.resolveTemplateTenantId(requester, adminId)
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } })
+    const settings = (tenant?.settings as Record<string, unknown>) || {}
     const agents = await this.prisma.agent.findMany({
       where: { tenantId },
       orderBy: { name: 'asc' },
     })
-    return { templateTenantId: tenantId, agents }
+    const sharedIds = new Set(this.filterSharedAgentIds(settings, agents.map((a) => a.id)))
+    return {
+      templateTenantId: tenantId,
+      agents: agents.map((a) => ({
+        ...a,
+        isSharedDefault: sharedIds.has(a.id),
+      })),
+    }
   }
 
   async createTemplateWorkspaceAgent(
@@ -654,10 +702,11 @@ export class SuperAdminService {
         permissions: data.permissions ?? ['read_conversations', 'create_tasks'],
         approvalRules: { requireApprovalFor: ['crm_update', 'send_email'] },
         status: 'ACTIVE',
-        isSharedDefault: data.isSharedDefault ?? true,
       },
     })
-    return agent
+
+    await this.setAgentSharedDefault(tenantId, agent.id, data.isSharedDefault ?? true)
+    return { ...agent, isSharedDefault: data.isSharedDefault ?? true }
   }
 
   async installTemplateToWorkspace(
@@ -672,16 +721,17 @@ export class SuperAdminService {
       where: { tenantId, templateId: template.id },
     })
     if (existing) {
-      return this.prisma.agent.update({
+      await this.prisma.agent.update({
         where: { id: existing.id },
-        data: {
-          status: 'ACTIVE',
-          ...(data.isSharedDefault !== undefined && { isSharedDefault: data.isSharedDefault }),
-        },
+        data: { status: 'ACTIVE' },
       })
+      if (data.isSharedDefault !== undefined) {
+        await this.setAgentSharedDefault(tenantId, existing.id, data.isSharedDefault)
+      }
+      return { ...existing, status: 'ACTIVE', isSharedDefault: data.isSharedDefault ?? true }
     }
 
-    return this.prisma.agent.create({
+    const agent = await this.prisma.agent.create({
       data: {
         tenantId,
         name: template.name,
@@ -694,9 +744,11 @@ export class SuperAdminService {
         permissions: ['read_conversations', 'create_tasks'],
         approvalRules: { requireApprovalFor: ['crm_update', 'send_email'] },
         templateId: template.id,
-        isSharedDefault: data.isSharedDefault ?? true,
       },
     })
+
+    await this.setAgentSharedDefault(tenantId, agent.id, data.isSharedDefault ?? true)
+    return { ...agent, isSharedDefault: data.isSharedDefault ?? true }
   }
 
   async updateTemplateWorkspaceAgent(
@@ -716,7 +768,7 @@ export class SuperAdminService {
     const agent = await this.prisma.agent.findFirst({ where: { id: agentId, tenantId } })
     if (!agent) throw new NotFoundException('Agent not found in template workspace')
 
-    return this.prisma.agent.update({
+    const updated = await this.prisma.agent.update({
       where: { id: agentId },
       data: {
         ...(data.name !== undefined && { name: data.name }),
@@ -724,9 +776,14 @@ export class SuperAdminService {
         ...(data.prompt !== undefined && { prompt: data.prompt }),
         ...(data.tools !== undefined && { tools: data.tools }),
         ...(data.status !== undefined && { status: data.status as any }),
-        ...(data.isSharedDefault !== undefined && { isSharedDefault: data.isSharedDefault }),
       },
     })
+
+    if (data.isSharedDefault !== undefined) {
+      await this.setAgentSharedDefault(tenantId, agentId, data.isSharedDefault)
+    }
+
+    return { ...updated, isSharedDefault: data.isSharedDefault }
   }
 
   async deleteTemplateWorkspaceAgent(
@@ -737,6 +794,7 @@ export class SuperAdminService {
     const tenantId = await this.resolveTemplateTenantId(requester, adminId)
     const agent = await this.prisma.agent.findFirst({ where: { id: agentId, tenantId } })
     if (!agent) throw new NotFoundException('Agent not found in template workspace')
+    await this.setAgentSharedDefault(tenantId, agentId, false)
     await this.prisma.agent.delete({ where: { id: agentId } })
     return { success: true }
   }
@@ -747,9 +805,13 @@ export class SuperAdminService {
     targetTenantId: string,
     industry?: string,
   ) {
-    const agents = await this.prisma.agent.findMany({
-      where: { tenantId: sourceTenantId, isSharedDefault: true, status: 'ACTIVE' },
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: sourceTenantId } })
+    const settings = (tenant?.settings as Record<string, unknown>) || {}
+    const allAgents = await this.prisma.agent.findMany({
+      where: { tenantId: sourceTenantId, status: 'ACTIVE' },
     })
+    const sharedIds = new Set(this.filterSharedAgentIds(settings, allAgents.map((a) => a.id)))
+    const agents = allAgents.filter((a) => sharedIds.has(a.id))
 
     if (agents.length === 0) return 0
 
@@ -771,7 +833,6 @@ export class SuperAdminService {
         tools: a.tools,
         approvalRules: a.approvalRules as any,
         templateId: a.templateId,
-        isSharedDefault: false,
       })),
     })
 

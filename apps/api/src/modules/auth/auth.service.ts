@@ -1,9 +1,10 @@
-import { Injectable, UnauthorizedException, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common'
+import { Injectable, UnauthorizedException, ConflictException, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import * as bcrypt from 'bcryptjs'
 import * as crypto from 'crypto'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { EmailService } from '../email/email.service'
+import { IntegrationService } from '../integrations/integration.service'
 
 @Injectable()
 export class AuthService {
@@ -11,6 +12,8 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly email: EmailService,
+    @Inject(forwardRef(() => IntegrationService))
+    private readonly integration: IntegrationService,
   ) {}
 
   async register(data: { email: string; password: string; name: string; companyName: string }) {
@@ -62,15 +65,47 @@ export class AuthService {
 
   // ── SSO Login ──────────────────────────────────────────────────────
   
-  async generateSsoToken(email: string, source: string) {
+  async generateSsoToken(
+    email: string,
+    source: string,
+    provision?: {
+      companyName?: string
+      ownerName?: string
+      industry?: string
+      externalTenantId?: string
+    },
+  ) {
     // Find the user by email
-    const user = await this.prisma.user.findUnique({
+    let user = await this.prisma.user.findUnique({
       where: { email },
       include: { tenant: { select: { isApproved: true } } }
     })
 
+    // If deleted accidentally (or never provisioned) but StormBuddi still has plan access,
+    // recreate the tenant/user when provision details are provided, then continue SSO.
+    if (!user && provision?.companyName && provision?.ownerName) {
+      await this.integration.provisionTenant({
+        companyName: provision.companyName,
+        ownerName: provision.ownerName,
+        ownerEmail: email,
+        industry: provision.industry,
+        externalTenantId: provision.externalTenantId,
+      })
+      user = await this.prisma.user.findUnique({
+        where: { email },
+        include: { tenant: { select: { isApproved: true } } },
+      })
+    }
+
     if (!user) {
-      throw new NotFoundException('User not found')
+      throw new NotFoundException({
+        statusCode: 404,
+        message: 'User not found',
+        error: 'Not Found',
+        code: 'USER_NOT_FOUND',
+        action: 'reprovision',
+        hint: 'Account missing in AI Workforce (deleted or never provisioned). Call provision-tenant, then retry SSO — or send companyName + ownerName with generate-sso-token for auto re-provision.',
+      })
     }
 
     // Check if user is active

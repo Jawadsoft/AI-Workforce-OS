@@ -1,6 +1,6 @@
 import { Controller, Post, Get, Body, HttpCode, HttpStatus, UseGuards, Headers, UnauthorizedException } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiHeader } from '@nestjs/swagger'
-import { IsEmail, IsString, MinLength } from 'class-validator'
+import { IsEmail, IsString, MinLength, IsOptional } from 'class-validator'
 import { AuthService } from './auth.service'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { CurrentUser } from '../../common/decorators/tenant.decorator'
@@ -39,6 +39,11 @@ class SsoLoginDto {
 class GenerateSsoTokenDto {
   @IsEmail() email: string
   @IsString() source: string // e.g., 'stormbuddi'
+  /** Optional — if user was deleted, AI Workforce re-provisions then issues SSO token */
+  @IsOptional() @IsString() companyName?: string
+  @IsOptional() @IsString() ownerName?: string
+  @IsOptional() @IsString() industry?: string
+  @IsOptional() @IsString() externalTenantId?: string
 }
 
 @ApiTags('Auth')
@@ -83,7 +88,12 @@ export class AuthController {
     @Body() dto: GenerateSsoTokenDto,
   ) {
     this.verifyApiKey(apiKey)
-    return this.auth.generateSsoToken(dto.email, dto.source)
+    return this.auth.generateSsoToken(dto.email, dto.source, {
+      companyName: dto.companyName,
+      ownerName: dto.ownerName,
+      industry: dto.industry,
+      externalTenantId: dto.externalTenantId,
+    })
   }
 
   @Post('forgot-password')

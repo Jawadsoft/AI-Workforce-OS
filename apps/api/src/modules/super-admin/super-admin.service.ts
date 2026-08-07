@@ -301,7 +301,12 @@ export class SuperAdminService {
     let platformTenant = await this.prisma.tenant.findFirst({ where: { slug: 'platform-admin' } })
     if (!platformTenant) {
       platformTenant = await this.prisma.tenant.create({
-        data: { name: 'Platform Admin', slug: 'platform-admin' },
+        data: { name: 'Platform Admin', slug: 'platform-admin', isApproved: true, isActive: true },
+      })
+    } else if (!platformTenant.isApproved || !platformTenant.isActive) {
+      platformTenant = await this.prisma.tenant.update({
+        where: { id: platformTenant.id },
+        data: { isApproved: true, isActive: true },
       })
     }
 
@@ -404,11 +409,19 @@ export class SuperAdminService {
         const settings = (admin.tenant?.settings as Record<string, unknown>) || {}
         const isTemplate = settings.isScopedAdminTemplate === true
         const templateTenantId = isTemplate ? admin.tenantId : null
-        const sharedDefaultCount = templateTenantId
-          ? await this.prisma.agent.count({
+        let sharedDefaultCount = 0
+        if (templateTenantId) {
+          try {
+            sharedDefaultCount = await this.prisma.agent.count({
               where: { tenantId: templateTenantId, isSharedDefault: true, status: 'ACTIVE' },
             })
-          : 0
+          } catch {
+            // Column may not exist until migration is applied — fall back
+            sharedDefaultCount = await this.prisma.agent
+              .count({ where: { tenantId: templateTenantId, status: 'ACTIVE' } })
+              .catch(() => 0)
+          }
+        }
 
         return {
           id: admin.id,

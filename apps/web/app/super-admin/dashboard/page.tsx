@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import axios from 'axios'
 import { useRouter } from 'next/navigation'
 import { Shield } from 'lucide-react'
@@ -14,11 +14,20 @@ function getApiBase() {
 }
 
 function useSAApi() {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('sa_access_token') : ''
-  return axios.create({
-    baseURL: getApiBase(),
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-  })
+  return useMemo(() => {
+    const instance = axios.create({
+      baseURL: getApiBase(),
+      headers: { 'Content-Type': 'application/json' },
+    })
+    instance.interceptors.request.use((config) => {
+      if (typeof window !== 'undefined') {
+        const token = localStorage.getItem('sa_access_token')
+        if (token) config.headers.Authorization = `Bearer ${token}`
+      }
+      return config
+    })
+    return instance
+  }, [])
 }
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -223,12 +232,21 @@ export default function SuperAdminDashboard() {
       setTemplates(templatesRes.data)
       setPendingTenants(pendingRes.data)
       setSubAdmins(subAdminsRes.data)
-    } catch {
-      router.replace('/super-admin/login')
+    } catch (err: any) {
+      const status = err?.response?.status
+      // Only kick to login on auth failures — other errors (500, network) were
+      // falsely logging users out right after a successful sign-in.
+      if (status === 401 || status === 403) {
+        localStorage.removeItem('sa_access_token')
+        router.replace('/super-admin/login')
+      } else {
+        console.error('[SuperAdmin] Failed to load dashboard:', err)
+        alert(err?.response?.data?.message || 'Failed to load dashboard data. Check API / migrations.')
+      }
     } finally {
       setLoading(false)
     }
-  }, [router])
+  }, [api, router])
 
   useEffect(() => { loadData() }, [loadData])
 

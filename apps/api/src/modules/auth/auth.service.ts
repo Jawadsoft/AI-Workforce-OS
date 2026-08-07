@@ -52,7 +52,8 @@ export class AuthService {
 
     if (!user.isActive) throw new UnauthorizedException('Account is deactivated')
 
-    if (user.role !== 'SUPER_ADMIN' && !user.tenant?.isApproved) {
+    // Super / scoped admins are not gated by tenant approval
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'SCOPED_ADMIN' && !user.tenant?.isApproved) {
       throw new UnauthorizedException('Your account is pending approval. Please wait for an admin to activate your account.')
     }
 

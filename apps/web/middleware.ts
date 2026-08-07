@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-const PUBLIC_ROUTES = ['/login', '/register', '/forgot-password', '/onboarding']
+const PUBLIC_ROUTES = ['/login', '/register', '/forgot-password', '/onboarding', '/sso']
 const LANDING_ROUTES = ['/']
+// SSO must stay reachable even when already logged in (token handoff / test page)
+const AUTH_BYPASS_ROUTES = ['/sso']
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
@@ -14,6 +16,10 @@ export function middleware(request: NextRequest) {
 
   // Marketing landing is always public (including signed-in users)
   if (LANDING_ROUTES.includes(pathname)) {
+    return NextResponse.next()
+  }
+
+  if (AUTH_BYPASS_ROUTES.some((route) => pathname.startsWith(route))) {
     return NextResponse.next()
   }
 

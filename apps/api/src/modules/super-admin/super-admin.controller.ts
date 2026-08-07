@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Patch, Delete,
-  Param, Body, UseGuards, Req, UploadedFile, UseInterceptors, BadRequestException,
+  Param, Body, UseGuards, Req, Query, UploadedFile, UseInterceptors, BadRequestException,
 } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes } from '@nestjs/swagger'
 import { FileInterceptor } from '@nestjs/platform-express'
@@ -69,6 +69,33 @@ class CreateScopedAdminDto {
 class UpdateScopedAdminLimitsDto {
   @IsOptional() @IsInt() maxTenants?: number
   @IsOptional() @IsArray() permissions?: string[]
+}
+
+class CreateTemplateWorkspaceAgentDto {
+  @IsOptional() @IsString() adminId?: string
+  @IsString() name: string
+  @IsString() role: string
+  @IsOptional() @IsString() industry?: string
+  @IsString() prompt: string
+  @IsOptional() @IsArray() tools?: string[]
+  @IsOptional() @IsArray() permissions?: string[]
+  @IsOptional() @IsBoolean() isSharedDefault?: boolean
+}
+
+class InstallTemplateWorkspaceAgentDto {
+  @IsOptional() @IsString() adminId?: string
+  @IsString() templateId: string
+  @IsOptional() @IsBoolean() isSharedDefault?: boolean
+}
+
+class UpdateTemplateWorkspaceAgentDto {
+  @IsOptional() @IsString() adminId?: string
+  @IsOptional() @IsString() name?: string
+  @IsOptional() @IsString() role?: string
+  @IsOptional() @IsString() prompt?: string
+  @IsOptional() @IsArray() tools?: string[]
+  @IsOptional() @IsString() status?: string
+  @IsOptional() @IsBoolean() isSharedDefault?: boolean
 }
 
 class AssignTenantDto {
@@ -269,6 +296,63 @@ export class SuperAdminController {
   @ApiOperation({ summary: 'Update tenant limit and permissions for a scoped admin' })
   updateScopedAdminLimits(@Param('id') id: string, @Body() dto: UpdateScopedAdminLimitsDto) {
     return this.service.updateScopedAdminLimits(id, dto)
+  }
+
+  // ── Scoped Admin Default Workspace (template agents) ──────────────
+
+  @Get('template-workspace/agents')
+  @ApiOperation({ summary: 'List agents in a scoped admin default workspace' })
+  listTemplateWorkspaceAgents(@Req() req: any, @Query('adminId') adminId?: string) {
+    return this.service.listTemplateWorkspaceAgents(
+      { id: req.user.id, role: req.user.role },
+      adminId,
+    )
+  }
+
+  @Post('template-workspace/agents')
+  @ApiOperation({ summary: 'Create an agent on the scoped admin default workspace' })
+  createTemplateWorkspaceAgent(@Body() dto: CreateTemplateWorkspaceAgentDto, @Req() req: any) {
+    return this.service.createTemplateWorkspaceAgent(
+      { id: req.user.id, role: req.user.role },
+      dto,
+    )
+  }
+
+  @Post('template-workspace/agents/install-template')
+  @ApiOperation({ summary: 'Install a marketplace template into the default workspace' })
+  installTemplateWorkspaceAgent(@Body() dto: InstallTemplateWorkspaceAgentDto, @Req() req: any) {
+    return this.service.installTemplateToWorkspace(
+      { id: req.user.id, role: req.user.role },
+      dto,
+    )
+  }
+
+  @Patch('template-workspace/agents/:id')
+  @ApiOperation({ summary: 'Update a default-workspace agent (including share toggle)' })
+  updateTemplateWorkspaceAgent(
+    @Param('id') id: string,
+    @Body() dto: UpdateTemplateWorkspaceAgentDto,
+    @Req() req: any,
+  ) {
+    return this.service.updateTemplateWorkspaceAgent(
+      { id: req.user.id, role: req.user.role },
+      id,
+      dto,
+    )
+  }
+
+  @Delete('template-workspace/agents/:id')
+  @ApiOperation({ summary: 'Remove an agent from the default workspace' })
+  deleteTemplateWorkspaceAgent(
+    @Param('id') id: string,
+    @Req() req: any,
+    @Query('adminId') adminId?: string,
+  ) {
+    return this.service.deleteTemplateWorkspaceAgent(
+      { id: req.user.id, role: req.user.role },
+      id,
+      adminId,
+    )
   }
 
   // ── Feature Flags ─────────────────────────────────────────────────

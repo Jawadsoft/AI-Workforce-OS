@@ -40,7 +40,13 @@ export class SuperAdminService {
       },
     })
 
-    return tenants.map(t => ({
+    return tenants
+      .filter((t) => {
+        if (t.slug === 'platform-admin') return false
+        const settings = (t.settings as Record<string, unknown>) || {}
+        return settings.isScopedAdminTemplate !== true
+      })
+      .map(t => ({
       id: t.id,
       name: t.name,
       slug: t.slug,
@@ -326,13 +332,16 @@ export class SuperAdminService {
     const existing = await this.prisma.user.findUnique({ where: { email: data.email } })
     if (existing) throw new BadRequestException('Email already exists')
 
-    // Scoped admins belong to the same platform tenant as root admins
-    let platformTenant = await this.prisma.tenant.findFirst({ where: { slug: 'platform-admin' } })
-    if (!platformTenant) {
-      platformTenant = await this.prisma.tenant.create({
-        data: { name: 'Platform Admin', slug: 'platform-admin', isApproved: true, isActive: true },
-      })
-    }
+    const emailSlug = data.email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 24) || 'admin'
+    const templateTenant = await this.prisma.tenant.create({
+      data: {
+        name: `${data.name} — Default Workspace`,
+        slug: `scoped-${emailSlug}-${Date.now()}`,
+        isApproved: true,
+        isActive: true,
+        settings: { isScopedAdminTemplate: true },
+      },
+    })
 
     const hashed = await bcrypt.hash(data.password, 12)
     const user = await this.prisma.user.create({
@@ -341,14 +350,22 @@ export class SuperAdminService {
         name: data.name,
         password: hashed,
         role: 'SCOPED_ADMIN',
-        tenantId: platformTenant.id,
+        tenantId: templateTenant.id,
         createdByAdminId: data.createdByAdminId,
         maxTenants: data.maxTenants ?? 5,
         permissions: data.permissions ?? [],
       },
     })
 
-    return { id: user.id, email: user.email, name: user.name, role: user.role, maxTenants: user.maxTenants, permissions: user.permissions }
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      maxTenants: user.maxTenants,
+      permissions: user.permissions,
+      templateTenantId: templateTenant.id,
+    }
   }
 
   async updateScopedAdminLimits(adminId: string, data: { maxTenants?: number; permissions?: string[] }) {
@@ -374,6 +391,7 @@ export class SuperAdminService {
         where: { createdByAdminId: rootAdminId, role: 'SCOPED_ADMIN' },
         orderBy: { createdAt: 'desc' },
         include: {
+          tenant: { select: { id: true, name: true, slug: true, settings: true } },
           managedTenants: {
             include: {
               tenant: { select: { id: true, name: true, slug: true, isActive: true } },
@@ -382,14 +400,28 @@ export class SuperAdminService {
         },
       })
 
-      return subAdmins.map(admin => ({
-        id: admin.id,
-        email: admin.email,
-        name: admin.name,
-        isActive: admin.isActive,
-        createdAt: admin.createdAt,
-        managedTenantsCount: admin.managedTenants.length,
-        managedTenants: admin.managedTenants.map(mt => mt.tenant),
+      return Promise.all(subAdmins.map(async (admin) => {
+        const settings = (admin.tenant?.settings as Record<string, unknown>) || {}
+        const isTemplate = settings.isScopedAdminTemplate === true
+        const templateTenantId = isTemplate ? admin.tenantId : null
+        const sharedDefaultCount = templateTenantId
+          ? await this.prisma.agent.count({
+              where: { tenantId: templateTenantId, isSharedDefault: true, status: 'ACTIVE' },
+            })
+          : 0
+
+        return {
+          id: admin.id,
+          email: admin.email,
+          name: admin.name,
+          isActive: admin.isActive,
+          createdAt: admin.createdAt,
+          maxTenants: admin.maxTenants,
+          templateTenantId,
+          sharedDefaultCount,
+          managedTenantsCount: admin.managedTenants.length,
+          managedTenants: admin.managedTenants.map(mt => mt.tenant),
+        }
       }))
     } catch (err) {
       // If table doesn't exist yet (migration not run), return empty array
@@ -420,9 +452,256 @@ export class SuperAdminService {
   }
 
   async deleteScopedAdmin(id: string) {
-    // Deleting a scoped admin will cascade-delete their tenant assignments (onDelete: Cascade)
+    const admin = await this.prisma.user.findUnique({
+      where: { id },
+      include: { tenant: { select: { id: true, settings: true } } },
+    })
+    if (!admin || admin.role !== 'SCOPED_ADMIN') {
+      throw new NotFoundException('Scoped admin not found')
+    }
+
+    const settings = (admin.tenant?.settings as Record<string, unknown>) || {}
+    const templateTenantId =
+      settings.isScopedAdminTemplate === true ? admin.tenantId : null
+
+    // Move off template tenant before deleting it (if applicable)
+    if (templateTenantId) {
+      let platformTenant = await this.prisma.tenant.findFirst({ where: { slug: 'platform-admin' } })
+      if (!platformTenant) {
+        platformTenant = await this.prisma.tenant.create({
+          data: { name: 'Platform Admin', slug: 'platform-admin', isApproved: true, isActive: true },
+        })
+      }
+      await this.prisma.user.update({
+        where: { id },
+        data: { tenantId: platformTenant.id },
+      })
+    }
+
     await this.prisma.user.delete({ where: { id } })
+
+    if (templateTenantId) {
+      await this.prisma.tenant.delete({ where: { id: templateTenantId } }).catch(() => {})
+    }
+
     return { success: true, message: 'Scoped admin deleted' }
+  }
+
+  /** Ensure scoped admin has a dedicated template workspace tenant (backfill older accounts). */
+  async ensureTemplateWorkspace(adminId: string): Promise<string> {
+    const admin = await this.prisma.user.findUnique({
+      where: { id: adminId },
+      include: { tenant: true },
+    })
+    if (!admin || admin.role !== 'SCOPED_ADMIN') {
+      throw new NotFoundException('Scoped admin not found')
+    }
+
+    const settings = (admin.tenant?.settings as Record<string, unknown>) || {}
+    if (settings.isScopedAdminTemplate === true) {
+      return admin.tenantId
+    }
+
+    const emailSlug = admin.email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 24) || 'admin'
+    const templateTenant = await this.prisma.tenant.create({
+      data: {
+        name: `${admin.name} — Default Workspace`,
+        slug: `scoped-${emailSlug}-${Date.now()}`,
+        isApproved: true,
+        isActive: true,
+        settings: { isScopedAdminTemplate: true },
+      },
+    })
+
+    await this.prisma.user.update({
+      where: { id: adminId },
+      data: { tenantId: templateTenant.id },
+    })
+
+    return templateTenant.id
+  }
+
+  private async resolveTemplateTenantId(requester: { id: string; role: string }, adminId?: string): Promise<string> {
+    if (requester.role === 'SCOPED_ADMIN') {
+      if (adminId && adminId !== requester.id) {
+        throw new BadRequestException('Scoped admins can only manage their own default workspace')
+      }
+      return this.ensureTemplateWorkspace(requester.id)
+    }
+
+    if (!adminId) {
+      throw new BadRequestException('adminId is required')
+    }
+    const admin = await this.prisma.user.findUnique({ where: { id: adminId } })
+    if (!admin || admin.role !== 'SCOPED_ADMIN') {
+      throw new NotFoundException('Scoped admin not found')
+    }
+    if (admin.createdByAdminId !== requester.id) {
+      throw new BadRequestException('You can only manage scoped admins you created')
+    }
+    return this.ensureTemplateWorkspace(adminId)
+  }
+
+  async listTemplateWorkspaceAgents(requester: { id: string; role: string }, adminId?: string) {
+    const tenantId = await this.resolveTemplateTenantId(requester, adminId)
+    const agents = await this.prisma.agent.findMany({
+      where: { tenantId },
+      orderBy: { name: 'asc' },
+    })
+    return { templateTenantId: tenantId, agents }
+  }
+
+  async createTemplateWorkspaceAgent(
+    requester: { id: string; role: string },
+    data: {
+      adminId?: string
+      name: string
+      role: string
+      industry?: string
+      prompt: string
+      tools?: string[]
+      permissions?: string[]
+      isSharedDefault?: boolean
+    },
+  ) {
+    const tenantId = await this.resolveTemplateTenantId(requester, data.adminId)
+    const industry = (data.industry && Object.values(Industry).includes(data.industry as Industry)
+      ? data.industry
+      : 'OTHER') as Industry
+
+    const agent = await this.prisma.agent.create({
+      data: {
+        tenantId,
+        name: data.name,
+        role: data.role,
+        industry,
+        prompt: data.prompt,
+        tools: data.tools ?? ['create_task', 'crm_update', 'send_email'],
+        permissions: data.permissions ?? ['read_conversations', 'create_tasks'],
+        approvalRules: { requireApprovalFor: ['crm_update', 'send_email'] },
+        status: 'ACTIVE',
+        isSharedDefault: data.isSharedDefault ?? true,
+      },
+    })
+    return agent
+  }
+
+  async installTemplateToWorkspace(
+    requester: { id: string; role: string },
+    data: { adminId?: string; templateId: string; isSharedDefault?: boolean },
+  ) {
+    const tenantId = await this.resolveTemplateTenantId(requester, data.adminId)
+    const template = await this.prisma.agentTemplate.findUnique({ where: { id: data.templateId } })
+    if (!template) throw new NotFoundException('Template not found')
+
+    const existing = await this.prisma.agent.findFirst({
+      where: { tenantId, templateId: template.id },
+    })
+    if (existing) {
+      return this.prisma.agent.update({
+        where: { id: existing.id },
+        data: {
+          status: 'ACTIVE',
+          ...(data.isSharedDefault !== undefined && { isSharedDefault: data.isSharedDefault }),
+        },
+      })
+    }
+
+    return this.prisma.agent.create({
+      data: {
+        tenantId,
+        name: template.name,
+        role: template.role,
+        industry: (template.industries[0] ?? 'OTHER') as Industry,
+        prompt: template.defaultPrompt,
+        tools: template.tools,
+        avatar: template.avatar,
+        status: 'ACTIVE',
+        permissions: ['read_conversations', 'create_tasks'],
+        approvalRules: { requireApprovalFor: ['crm_update', 'send_email'] },
+        templateId: template.id,
+        isSharedDefault: data.isSharedDefault ?? true,
+      },
+    })
+  }
+
+  async updateTemplateWorkspaceAgent(
+    requester: { id: string; role: string },
+    agentId: string,
+    data: {
+      adminId?: string
+      name?: string
+      role?: string
+      prompt?: string
+      tools?: string[]
+      status?: string
+      isSharedDefault?: boolean
+    },
+  ) {
+    const tenantId = await this.resolveTemplateTenantId(requester, data.adminId)
+    const agent = await this.prisma.agent.findFirst({ where: { id: agentId, tenantId } })
+    if (!agent) throw new NotFoundException('Agent not found in template workspace')
+
+    return this.prisma.agent.update({
+      where: { id: agentId },
+      data: {
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.role !== undefined && { role: data.role }),
+        ...(data.prompt !== undefined && { prompt: data.prompt }),
+        ...(data.tools !== undefined && { tools: data.tools }),
+        ...(data.status !== undefined && { status: data.status as any }),
+        ...(data.isSharedDefault !== undefined && { isSharedDefault: data.isSharedDefault }),
+      },
+    })
+  }
+
+  async deleteTemplateWorkspaceAgent(
+    requester: { id: string; role: string },
+    agentId: string,
+    adminId?: string,
+  ) {
+    const tenantId = await this.resolveTemplateTenantId(requester, adminId)
+    const agent = await this.prisma.agent.findFirst({ where: { id: agentId, tenantId } })
+    if (!agent) throw new NotFoundException('Agent not found in template workspace')
+    await this.prisma.agent.delete({ where: { id: agentId } })
+    return { success: true }
+  }
+
+  /** Clone shared-default agents from scoped admin template into a new child tenant. */
+  private async cloneSharedDefaultAgents(
+    sourceTenantId: string,
+    targetTenantId: string,
+    industry?: string,
+  ) {
+    const agents = await this.prisma.agent.findMany({
+      where: { tenantId: sourceTenantId, isSharedDefault: true, status: 'ACTIVE' },
+    })
+
+    if (agents.length === 0) return 0
+
+    const targetIndustry = (industry && Object.values(Industry).includes(industry as Industry)
+      ? industry
+      : null) as Industry | null
+
+    await this.prisma.agent.createMany({
+      data: agents.map((a) => ({
+        tenantId: targetTenantId,
+        name: a.name,
+        role: a.role,
+        industry: targetIndustry ?? a.industry,
+        avatar: a.avatar,
+        voiceId: a.voiceId,
+        prompt: a.prompt,
+        status: 'ACTIVE' as const,
+        permissions: a.permissions,
+        tools: a.tools,
+        approvalRules: a.approvalRules as any,
+        templateId: a.templateId,
+        isSharedDefault: false,
+      })),
+    })
+
+    return agents.length
   }
 
   /** Helper: check if a tenant ID is in the allowed list for a scoped admin (null allowedTenantIds = root, all allowed) */
@@ -496,7 +775,8 @@ export class SuperAdminService {
       },
     })
 
-    // If created by scoped admin, auto-assign the tenant to them
+    // If created by scoped admin, auto-assign the tenant to them and clone default agents
+    let clonedAgents = 0
     if (adminRole === 'SCOPED_ADMIN') {
       await this.prisma.superAdminTenantAccess.create({
         data: {
@@ -505,6 +785,13 @@ export class SuperAdminService {
           assignedBy: createdByAdminId,
         },
       })
+
+      const templateTenantId = await this.ensureTemplateWorkspace(createdByAdminId)
+      clonedAgents = await this.cloneSharedDefaultAgents(
+        templateTenantId,
+        tenant.id,
+        data.industry,
+      )
     }
 
     // Return verification link (in production, send this via email)
@@ -515,6 +802,7 @@ export class SuperAdminService {
       message: 'Tenant created. Verification email sent to owner.',
       tenant: { id: tenant.id, name: tenant.name, slug: tenant.slug },
       owner: { id: owner.id, email: owner.email, name: owner.name },
+      clonedAgents,
       verificationLink, // Remove this in production, only send via email
     }
   }

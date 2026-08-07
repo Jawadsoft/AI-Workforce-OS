@@ -89,11 +89,24 @@ interface SubAdmin {
   id: string; email: string; name: string; isActive: boolean; createdAt: string
   managedTenantsCount: number
   managedTenants: { id: string; name: string; slug: string; isActive: boolean }[]
+  templateTenantId?: string | null
+  sharedDefaultCount?: number
+  maxTenants?: number | null
+}
+
+interface TemplateWorkspaceAgent {
+  id: string
+  name: string
+  role: string
+  status: string
+  isSharedDefault: boolean
+  prompt: string
+  tools: string[]
 }
 
 const emptyConfig = { industry: '', crmProvider: '', crmName: '', crmBaseUrl: '', crmApiKey: '' }
 
-const TABS = ['Overview', 'Approvals', 'Tenants', 'Sub-Admins', 'Marketplace', 'Industry Knowledge']
+const TABS = ['Overview', 'Approvals', 'Tenants', 'Sub-Admins', 'Marketplace', 'Industry Knowledge', 'Default Workspace']
 
 const ALL_FEATURE_FLAGS = [
   { key: 'widget',               label: 'Website Widget',           desc: 'Public chat widget embed' },
@@ -168,6 +181,7 @@ export default function SuperAdminDashboard() {
   const [subAdminForm, setSubAdminForm] = useState({ email: '', password: '', name: '', maxTenants: 5, permissions: [] as string[] })
   const [subAdminSaving, setSubAdminSaving] = useState(false)
   const [assigningAdmin, setAssigningAdmin] = useState<SubAdmin | null>(null)
+  const [workspaceAdmin, setWorkspaceAdmin] = useState<SubAdmin | null>(null)
   const [unassignedTenants, setUnassignedTenants] = useState<Tenant[]>([])
   const [showCreateTenant, setShowCreateTenant] = useState(false)
   const [createTenantForm, setCreateTenantForm] = useState({ name: '', slug: '', ownerName: '', ownerEmail: '', industry: '' })
@@ -190,9 +204,9 @@ export default function SuperAdminDashboard() {
   }, [])
 
   // Filter tabs based on user role
-  const availableTabs = userRole === 'SCOPED_ADMIN' 
-    ? TABS.filter(t => t !== 'Sub-Admins' && t !== 'Marketplace' && t !== 'Industry Knowledge')
-    : TABS
+  const availableTabs = userRole === 'SCOPED_ADMIN'
+    ? TABS.filter(t => !['Sub-Admins', 'Marketplace', 'Industry Knowledge'].includes(t))
+    : TABS.filter(t => t !== 'Default Workspace')
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -519,6 +533,7 @@ export default function SuperAdminDashboard() {
                 onDeleteSubAdmin={deleteSubAdmin}
                 onOpenAssign={openAssignModal}
                 onRevokeTenant={revokeTenant}
+                onOpenWorkspace={(admin) => setWorkspaceAdmin(admin)}
               />
             )}
             {tab === 'Marketplace' && (
@@ -533,9 +548,33 @@ export default function SuperAdminDashboard() {
               />
             )}
             {tab === 'Industry Knowledge' && <IndustryKnowledgeTab api={api} glass={glass} />}
+            {tab === 'Default Workspace' && userRole === 'SCOPED_ADMIN' && (
+              <DefaultWorkspacePanel api={api} templates={templates} glass={glass} />
+            )}
           </>
         )}
       </main>
+
+      {workspaceAdmin && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl p-6" style={glass.cardElevated}>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-white">Default Workspace</h2>
+                <p className="text-sm text-gray-400">{workspaceAdmin.name} — agents cloned to new tenants</p>
+              </div>
+              <button onClick={() => setWorkspaceAdmin(null)} className="text-gray-400 hover:text-white text-xl">×</button>
+            </div>
+            <DefaultWorkspacePanel
+              api={api}
+              templates={templates}
+              glass={glass}
+              adminId={workspaceAdmin.id}
+              onChanged={loadData}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Widget Links Modal */}
       {widgetTenant && (
@@ -1335,7 +1374,7 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
 
 // ── Sub-Admins Tab ────────────────────────────────────────────────
 
-function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin, subAdminForm, setSubAdminForm, subAdminSaving, onCreateSubAdmin, onDeleteSubAdmin, onOpenAssign, onRevokeTenant }: {
+function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin, subAdminForm, setSubAdminForm, subAdminSaving, onCreateSubAdmin, onDeleteSubAdmin, onOpenAssign, onRevokeTenant, onOpenWorkspace }: {
   subAdmins: SubAdmin[]
   tenants: Tenant[]
   showNewSubAdmin: boolean
@@ -1347,6 +1386,7 @@ function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin,
   onDeleteSubAdmin: (id: string) => void
   onOpenAssign: (admin: SubAdmin) => void
   onRevokeTenant: (adminUserId: string, tenantId: string) => void
+  onOpenWorkspace: (admin: SubAdmin) => void
 }) {
   return (
     <div className="space-y-6">
@@ -1390,6 +1430,12 @@ function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin,
                   <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${admin.isActive ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'}`}>
                     {admin.isActive ? 'Active' : 'Suspended'}
                   </span>
+                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-900/30 text-indigo-300">
+                    {admin.sharedDefaultCount ?? 0} default agent{(admin.sharedDefaultCount ?? 0) === 1 ? '' : 's'}
+                  </span>
+                  <button onClick={() => onOpenWorkspace(admin)} className="text-lime-400 hover:text-lime-300 text-sm px-3 py-1.5 rounded-lg transition-colors" style={{ background: 'rgba(163,230,53,0.10)' }}>
+                    Default Agents
+                  </button>
                   <button onClick={() => onOpenAssign(admin)} className="text-indigo-400 hover:text-indigo-300 text-sm px-3 py-1.5 rounded-lg transition-colors" style={{ background: 'rgba(99,102,241,0.10)' }}>
                     Assign Tenant
                   </button>
@@ -1495,6 +1541,259 @@ function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin,
                 {subAdminSaving ? 'Creating...' : 'Create'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Default Workspace (scoped admin template agents) ──────────────
+
+function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
+  api: any
+  templates: Template[]
+  glass: any
+  adminId?: string
+  onChanged?: () => void
+}) {
+  const [agents, setAgents] = useState<TemplateWorkspaceAgent[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
+  const [showInstall, setShowInstall] = useState(false)
+  const [form, setForm] = useState({ name: '', role: '', industry: 'OTHER', prompt: '' })
+
+  const qs = adminId ? `?adminId=${adminId}` : ''
+  const adminBody = adminId ? { adminId } : {}
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const { data } = await api.get(`/super-admin/template-workspace/agents${qs}`)
+      setAgents(data.agents || [])
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to load default workspace')
+    } finally {
+      setLoading(false)
+    }
+  }, [api, qs])
+
+  useEffect(() => { load() }, [load])
+
+  async function toggleShare(agent: TemplateWorkspaceAgent) {
+    try {
+      await api.patch(`/super-admin/template-workspace/agents/${agent.id}`, {
+        ...adminBody,
+        isSharedDefault: !agent.isSharedDefault,
+      })
+      await load()
+      onChanged?.()
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to update agent')
+    }
+  }
+
+  async function removeAgent(id: string) {
+    if (!confirm('Remove this agent from the default workspace?')) return
+    try {
+      await api.delete(`/super-admin/template-workspace/agents/${id}${qs}`)
+      await load()
+      onChanged?.()
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to delete agent')
+    }
+  }
+
+  async function createAgent() {
+    if (!form.name || !form.role || !form.prompt) {
+      alert('Name, role, and prompt are required')
+      return
+    }
+    setSaving(true)
+    try {
+      await api.post('/super-admin/template-workspace/agents', {
+        ...adminBody,
+        ...form,
+        isSharedDefault: true,
+      })
+      setShowCreate(false)
+      setForm({ name: '', role: '', industry: 'OTHER', prompt: '' })
+      await load()
+      onChanged?.()
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to create agent')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function installTemplate(templateId: string) {
+    setSaving(true)
+    try {
+      await api.post('/super-admin/template-workspace/agents/install-template', {
+        ...adminBody,
+        templateId,
+        isSharedDefault: true,
+      })
+      setShowInstall(false)
+      await load()
+      onChanged?.()
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to install template')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const sharedCount = agents.filter(a => a.isSharedDefault && a.status === 'ACTIVE').length
+
+  return (
+    <div className="space-y-4">
+      {!adminId && (
+        <div>
+          <h1 className="text-2xl font-bold text-white">Default Workspace</h1>
+          <p className="text-gray-400 mt-1">
+            Agents marked as shared are automatically added when you create a new tenant.
+          </p>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 justify-between">
+        <p className="text-sm text-gray-400">
+          {sharedCount} of {agents.length} agent{agents.length === 1 ? '' : 's'} will be cloned to new tenants
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowInstall(true)}
+            className="px-3 py-1.5 rounded-lg text-sm text-indigo-300"
+            style={{ background: 'rgba(99,102,241,0.12)' }}
+          >
+            + From Marketplace
+          </button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-3 py-1.5 rounded-lg text-sm text-white"
+            style={{ background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)' }}
+          >
+            + Custom Agent
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <p className="text-gray-500 text-sm py-8 text-center">Loading…</p>
+      ) : agents.length === 0 ? (
+        <div className="rounded-xl p-10 text-center" style={glass.card}>
+          <p className="text-gray-300 font-medium">No default agents yet</p>
+          <p className="text-gray-500 text-sm mt-1">Add agents here — only shared ones are copied to new tenants.</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {agents.map(agent => (
+            <div key={agent.id} className="rounded-xl p-4 flex items-start justify-between gap-4" style={glass.card}>
+              <div className="min-w-0">
+                <p className="font-semibold text-white truncate">{agent.name}</p>
+                <p className="text-sm text-gray-400">{agent.role}</p>
+                <p className="text-xs text-gray-500 mt-1 line-clamp-2">{agent.prompt}</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={!!agent.isSharedDefault}
+                    onChange={() => toggleShare(agent)}
+                    className="rounded border-gray-600"
+                  />
+                  Share to new tenants
+                </label>
+                <button onClick={() => removeAgent(agent.id)} className="text-red-400 text-xs px-2 py-1 rounded-lg" style={{ background: 'rgba(239,68,68,0.10)' }}>
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showCreate && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+          <div className="w-full max-w-md rounded-2xl p-6 space-y-3" style={glass.cardElevated}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">Custom Default Agent</h3>
+              <button onClick={() => setShowCreate(false)} className="text-gray-400 hover:text-white text-xl">×</button>
+            </div>
+            <input
+              value={form.name}
+              onChange={e => setForm({ ...form, name: e.target.value })}
+              placeholder="Agent name"
+              className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none"
+              style={glass.input}
+            />
+            <input
+              value={form.role}
+              onChange={e => setForm({ ...form, role: e.target.value })}
+              placeholder="Role (e.g. Receptionist)"
+              className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none"
+              style={glass.input}
+            />
+            <select
+              value={form.industry}
+              onChange={e => setForm({ ...form, industry: e.target.value })}
+              className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none"
+              style={glass.input}
+            >
+              {INDUSTRIES.map(i => (
+                <option key={i.value} value={i.value} className="bg-gray-900">{i.label}</option>
+              ))}
+            </select>
+            <textarea
+              value={form.prompt}
+              onChange={e => setForm({ ...form, prompt: e.target.value })}
+              placeholder="System prompt"
+              rows={4}
+              className="w-full rounded-lg px-3 py-2 text-sm text-white outline-none"
+              style={glass.input}
+            />
+            <button
+              onClick={createAgent}
+              disabled={saving}
+              className="w-full py-2 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+              style={{ background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)' }}
+            >
+              {saving ? 'Saving…' : 'Create & Share'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showInstall && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+          <div className="w-full max-w-lg max-h-[80vh] overflow-y-auto rounded-2xl p-6 space-y-3" style={glass.cardElevated}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">Install from Marketplace</h3>
+              <button onClick={() => setShowInstall(false)} className="text-gray-400 hover:text-white text-xl">×</button>
+            </div>
+            {templates.length === 0 ? (
+              <p className="text-gray-500 text-sm">No marketplace templates available.</p>
+            ) : (
+              templates.map(t => (
+                <div key={t.id} className="flex items-center justify-between gap-3 rounded-lg p-3" style={glass.card}>
+                  <div className="min-w-0">
+                    <p className="text-white font-medium truncate">{t.name}</p>
+                    <p className="text-xs text-gray-400">{t.role}</p>
+                  </div>
+                  <button
+                    disabled={saving}
+                    onClick={() => installTemplate(t.id)}
+                    className="text-sm px-3 py-1.5 rounded-lg text-indigo-300 disabled:opacity-50"
+                    style={{ background: 'rgba(99,102,241,0.15)' }}
+                  >
+                    Add
+                  </button>
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}

@@ -19,6 +19,12 @@ import { ImageAnnotationService } from '../inspection/image-annotation.service'
 import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import { RealtimeGateway } from '../../realtime/realtime.gateway'
 import { computeNextOccurrence, DEFAULT_US_TIMEZONE } from '../../common/utils/schedule-time.util'
+import {
+  makeConversationDocument,
+  normalizeDocuments,
+  resolveDocumentScope,
+  formatScopedDocumentsForPrompt,
+} from './document-scope.util'
 
 // Regex patterns to extract caller identity from first message
 const PHONE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/
@@ -667,13 +673,13 @@ export class ChatService {
 
   async extractAttachmentText(fileBuffer: Buffer, mimeType: string, fileName: string): Promise<string> {
     const text = await this.knowledge.extractTextFromBuffer(fileBuffer, mimeType, fileName)
-    return text?.trim().slice(0, 15000) ?? ''
+    return text?.trim() ?? ''
   }
 
   private async extractAndStoreDocument(conversationId: string, tenantId: string, fileName: string, fileBuffer: Buffer, mimeType: string) {
     try {
       const extractedText = await this.knowledge.extractTextFromBuffer(fileBuffer, mimeType, fileName)
-      const text = extractedText?.trim().slice(0, 15000)
+      const text = extractedText?.trim()
 
       if (!text) {
         // Extraction genuinely completed with nothing to show (e.g. scanned/image-only PDF) —
@@ -697,16 +703,27 @@ export class ChatService {
       if (!conv) return
 
       const meta = (conv.metadata as any) ?? {}
-      const existingDocs: { name: string; text: string }[] = meta.documentContext ?? []
-      const alreadySaved = existingDocs.some(d => d.name === fileName)
-
+      const existingDocs = normalizeDocuments(meta.documentContext)
+      const alreadySaved = existingDocs.find(d => d.name === fileName)
+      const doc = alreadySaved ?? makeConversationDocument(fileName, text)
       if (!alreadySaved) {
-        existingDocs.push({ name: fileName, text })
-        await this.prisma.conversation.update({
-          where: { id: conversationId },
-          data: { metadata: { ...meta, documentContext: existingDocs } },
-        })
+        existingDocs.push(doc)
+      } else {
+        alreadySaved.text = text
       }
+
+      // Background extract completes after upload — pin scope to this file only
+      await this.prisma.conversation.update({
+        where: { id: conversationId },
+        data: {
+          metadata: {
+            ...meta,
+            documentContext: existingDocs,
+            activeDocumentIds: [doc.id],
+            documentScopeMode: 'single',
+          },
+        },
+      })
 
       const readyMessage = `I've finished processing "${fileName}". The document is ready now — send "summarize it" or ask any specific question about it.`
       await this.prisma.message.create({
@@ -716,11 +733,12 @@ export class ChatService {
       this.realtime.emitToTenant(tenantId, 'document-ready', {
         conversationId,
         fileName,
+        documentId: doc.id,
         status: 'ready',
         message: readyMessage,
         preview: text.slice(0, 300),
       })
-      this.logger.log(`[PDF] Local extraction complete for ${fileName} — ${text.length} chars saved`)
+      this.logger.log(`[PDF] Local extraction complete for ${fileName} [${doc.id}] — ${text.length} chars saved`)
     } catch (err: any) {
       this.logger.error(`[PDF] Local extraction failed for ${fileName}: ${err.message}`)
       this.realtime.emitToTenant(tenantId, 'document-ready', {
@@ -788,6 +806,18 @@ export class ChatService {
     const { count } = await this.prisma.message.deleteMany({
       where: { conversationId },
     })
+
+    // Also clear sticky document/image scope so historical PDFs cannot leak into the next analysis
+    const meta = { ...((conv.metadata as any) ?? {}) }
+    delete meta.documentContext
+    delete meta.imageContext
+    delete meta.activeDocumentIds
+    delete meta.documentScopeMode
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { metadata: meta, runningSummary: null as any },
+    }).catch((err: any) => this.logger.warn(`[Clear] Failed to reset document scope: ${err.message}`))
+
     return { cleared: count }
   }
 
@@ -2844,18 +2874,19 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     ])
     const combinedRag = ragContext + memoryContext
 
-    // ── Attachment context ─────────────────────────────────────────
-    // Smart document memory:
-    //   1. On upload → extract text once, save to conversation metadata
-    //   2. On every subsequent message → load saved text from metadata (no re-download)
-    //   3. This makes documents "sticky" for the entire conversation (like ChatGPT)
-    // Smart image memory (NEW):
-    //   1. On upload → save image URL to conversation metadata
-    //   2. On every subsequent message → reload saved images so agent can "see" them again
-    //   3. This makes images "sticky" for the entire conversation (like ChatGPT)
+    // ── Attachment context (scoped multi-document memory) ───────────
+    // Registry keeps all uploads; only ACTIVE docs are injected into the prompt.
+    // Default: latest upload only. Expand with "compare" / "all documents" / filename.
     let attachmentContextBlock = ''
     let visionImages: { url: string; name: string }[] = []
-    const convMeta = (conv.metadata as any) ?? {}
+    const convMeta = { ...((conv.metadata as any) ?? {}) }
+
+    const registryDocs = normalizeDocuments(convMeta.documentContext)
+    const savedImages: { url: string; name: string }[] = Array.isArray(convMeta.imageContext)
+      ? [...convMeta.imageContext]
+      : []
+    const newlyUploadedIds: string[] = []
+    let registryDirty = false
 
     if (attachments && attachments.length > 0) {
       const docTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -2863,67 +2894,49 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         'text/csv', 'text/plain']
       const imageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
-      const savedDocs: { name: string; text: string }[] = convMeta.documentContext ?? []
-      const savedImages: { url: string; name: string }[] = convMeta.imageContext ?? []
-
       for (const att of attachments) {
         if (imageTypes.some(t => att.mimeType.startsWith('image/'))) {
-          // Check if this image is already saved in the conversation metadata
           if (!savedImages.find(img => img.url === att.url)) {
             savedImages.push({ url: att.url, name: att.name })
-            // Persist to conversation metadata so future messages can reload it
-            await this.prisma.conversation.update({
-              where: { id: conversationId },
-              data: { metadata: { ...convMeta, imageContext: savedImages } },
-            })
+            registryDirty = true
           }
           visionImages.push({ url: att.url, name: att.name })
         } else if (docTypes.includes(att.mimeType)) {
-          // ── Check if document is queued for async background extraction ──
           if ((att as any).extractedText === '__processing__') {
-            // Document is being processed in the background queue — inject a processing notice
-            // so the agent responds naturally with "I'm analyzing your document..."
             attachmentContextBlock += `\n\n--- DOCUMENT PROCESSING: ${att.name} ---\nThis document has been received and is currently being extracted in the background. Acknowledge receipt warmly and let the user know you will analyze it momentarily.\n--- END PROCESSING NOTICE ---`
             continue
           }
 
-          // ── Extraction completed but found no text (e.g. scanned/image-only PDF) ──
-          // Distinct from "processing" — nothing further will arrive for this file, so the
-          // agent must say so honestly instead of asking the user to upload it again.
           if ((att as any).extractedText === '__empty__') {
             attachmentContextBlock += `\n\n--- DOCUMENT UNREADABLE: ${att.name} ---\nThis file was received and uploaded successfully, but no text could be extracted from it — it is very likely a scanned image or photo-based PDF with no embedded text layer (OCR is not currently supported). Tell the user this directly and clearly — do NOT ask them to upload the file again or claim you never received it, since you did. Ask them to describe the key details in chat, or upload a text-based/exported version if they need it analyzed or compared against another document.\n--- END NOTICE ---`
             continue
           }
 
           try {
-            // Check if we already extracted this document in a previous message
-            const existing = savedDocs.find(d => d.name === att.name)
+            const existing = registryDocs.find(d => d.name === att.name)
             let text: string
-            if (existing) {
-              // Reuse previously saved extracted text — no re-fetch needed
+            if (existing && !(att as any).extractedText) {
               text = existing.text
             } else if ((att as any).extractedText) {
-              // Use text pre-extracted in the controller (from the in-memory buffer)
               text = (att as any).extractedText
+            } else if (!att.url.startsWith('local://') && !att.url.startsWith('processing://')) {
+              const fileBuffer = await fetch(att.url).then((r) => r.arrayBuffer()).then((b) => Buffer.from(b))
+              text = await this.knowledge.extractTextFromBuffer(fileBuffer, att.mimeType, att.name)
             } else {
-              // Fallback: fetch from URL and extract (only if URL is a real remote URL)
-              if (!att.url.startsWith('local://') && !att.url.startsWith('processing://')) {
-                const fileBuffer = await fetch(att.url).then((r) => r.arrayBuffer()).then((b) => Buffer.from(b))
-                text = await this.knowledge.extractTextFromBuffer(fileBuffer, att.mimeType, att.name)
-              } else {
-                text = ''
-              }
+              text = ''
             }
+
             if (text?.trim()) {
-              // Save to conversation metadata so future messages don't need to re-fetch
-              if (!existing) {
-                savedDocs.push({ name: att.name, text: text.slice(0, 15000) })
-                await this.prisma.conversation.update({
-                  where: { id: conversationId },
-                  data: { metadata: { ...convMeta, documentContext: savedDocs } },
-                })
+              if (existing) {
+                existing.text = text
+                newlyUploadedIds.push(existing.id)
+                registryDirty = true
+              } else {
+                const doc = makeConversationDocument(att.name, text)
+                registryDocs.push(doc)
+                newlyUploadedIds.push(doc.id)
+                registryDirty = true
               }
-              attachmentContextBlock += `\n\n--- ATTACHED DOCUMENT: ${att.name} ---\n${text.slice(0, 15000)}\n--- END DOCUMENT ---`
             }
           } catch (err: any) {
             this.logger.warn(`Failed to extract text from attachment ${att.name}: ${err.message}`)
@@ -2932,24 +2945,44 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       }
     }
 
-    // ── Load saved documents and images from conversation metadata ────
-    // No new attachments this turn? Still load previously uploaded docs/images
-    if (convMeta.documentContext?.length > 0) {
-      for (const doc of convMeta.documentContext as { name: string; text: string }[]) {
-        if (doc.text?.trim()) {
-          attachmentContextBlock += `\n\n--- ATTACHED DOCUMENT: ${doc.name} ---\n${doc.text}\n--- END DOCUMENT ---`
-        }
-      }
+    // Resolve explicit scope: latest-only by default; compare/all/filename expand it
+    const scope = resolveDocumentScope({
+      userMessage: content,
+      documents: registryDocs,
+      activeDocumentIds: convMeta.activeDocumentIds,
+      documentScopeMode: convMeta.documentScopeMode,
+      newlyUploadedIds,
+    })
+
+    if (registryDocs.length || scope.activeDocumentIds.length || registryDirty || savedImages.length) {
+      convMeta.documentContext = registryDocs
+      convMeta.activeDocumentIds = scope.activeDocumentIds
+      convMeta.documentScopeMode = scope.mode
+      convMeta.imageContext = savedImages
+      await this.prisma.conversation.update({
+        where: { id: conversationId },
+        data: { metadata: convMeta },
+      }).catch((err: any) => this.logger.warn(`[DocScope] Failed to persist scope: ${err.message}`))
     }
-    if (convMeta.imageContext?.length > 0) {
-      // Reload previously uploaded images so agent can "see" them again
-      for (const img of convMeta.imageContext as { url: string; name: string }[]) {
-        // Only add if not already in visionImages (avoid duplicates)
+
+    if (scope.registrySummary) {
+      attachmentContextBlock += `\n\n--- DOCUMENT SCOPE ---\n${scope.registrySummary}\n--- END DOCUMENT SCOPE ---`
+    }
+    attachmentContextBlock += formatScopedDocumentsForPrompt(scope.scopedDocuments)
+
+    // Sticky images (vision) — still reload prior images; text docs are scope-filtered above
+    if (savedImages.length > 0) {
+      for (const img of savedImages) {
         if (!visionImages.find(v => v.url === img.url)) {
           visionImages.push(img)
         }
       }
     }
+
+    this.logger.log(
+      `[DocScope] mode=${scope.mode} active=${scope.activeDocumentIds.join(',') || 'none'} ` +
+      `registry=${registryDocs.length} injectedChars=${scope.scopedDocuments.reduce((n, d) => n + d.text.length, 0)}`,
+    )
 
     const systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag + attachmentContextBlock, false, streamTicketsBlock, streamTeamRoster)
 
@@ -3233,13 +3266,20 @@ SOCIAL MEDIA IMAGES — CRITICAL (when you have post_to_social):
 ❌ NEVER give Canva / Lightroom / Unsplash tutorials instead of calling the tool
 
 ATTACHED DOCUMENTS — CRITICAL:
-When a user uploads a file (PDF, Word, Excel, CSV), its full extracted text is injected into this conversation under the marker "--- ATTACHED DOCUMENT: filename ---".
-✅ You CAN and MUST read, analyze, and summarize attached documents
-✅ Treat the document content as if you are reading the actual file
-✅ Extract specific data, numbers, dates, and findings from the document
-✅ Answer questions based on the document content directly
-❌ NEVER say "I cannot read files" or "I don't have access to the document" — the content is right here in your context
+When a user uploads a file (PDF, Word, Excel, CSV), extracted text is stored in a document registry and ONLY the ACTIVE scoped document(s) are injected under "--- ATTACHED DOCUMENT [doc_id]: filename ---".
+A "--- DOCUMENT SCOPE ---" block lists which files are ACTIVE vs stored-but-out-of-scope.
+✅ You CAN and MUST read, analyze, and summarize ACTIVE attached documents
+✅ Treat ACTIVE document content as if you are reading the actual file
+✅ Extract specific data, numbers, dates, and findings from ACTIVE documents only
+✅ Cite facts with the source filename, e.g. [USAA_REPORT.pdf]
+✅ Answer follow-ups from the ACTIVE document without asking for re-upload
+✅ If the user says "compare", "versus", or names multiple files — use all ACTIVE docs in scope
+✅ If the user says "all documents" — the scope expands to every uploaded file
+❌ NEVER pull claim numbers, RCV, insured names, or line items from out-of-scope / historical documents
+❌ NEVER blend facts across documents unless DOCUMENT SCOPE MODE is multi or all
+❌ NEVER say "I cannot read files" or "I don't have access to the document" when an ACTIVE document marker is present
 ❌ NEVER ask the user to paste the content manually if a document marker is present
+✅ If multiple documents are stored but none clearly match the question, ask which file to use
 ✅ If you see a "--- DOCUMENT UNREADABLE: filename ---" notice, the file WAS received but had no extractable text (usually a scanned image/photo-based PDF) — tell the user this plainly and ask them to describe it or upload a text-based version. NEVER claim you never received the file, and NEVER just ask them to "upload it" again as if nothing arrived.
 
 ATTACHED IMAGES — CRITICAL:
@@ -3839,7 +3879,7 @@ TAG EVERY EXTRACTED VALUE with its source status:
 - UNKNOWN: not available in any document
 NEVER invent extracted values.
 
-DOCUMENT CONFLICTS: If two documents give different values for the same field, the carrier estimate controls financial data. Report conflicts under Section 5.
+DOCUMENT CONFLICTS: If two ACTIVE documents give different values for the same field, the carrier estimate controls financial data. Report conflicts under Section 5. Never resolve conflicts by borrowing fields from out-of-scope historical documents.
 
 METAL ROOFING DETECTION:
 If the estimate contains metal roofing line items (ribbed metal, standing seam, corrugated metal, metal panels, MTL codes):
@@ -4197,9 +4237,11 @@ Use clean markdown only. No emojis.
 
 ## 2. Approved Scope
 List EVERY SINGLE line item from the carrier estimate — no abbreviations, no grouping, no "etc.", no "and others", no "additional items".
-Every row in the carrier estimate must appear as its own row in this table.
+Every row in the carrier estimate must appear as its own row in this table — including elevations, gutters, screens, fascia, debris, labor minimums, and other structures when present.
 The running sum of all RCV amounts in this table MUST equal the Carrier Approved Total.
 NEVER write phrases like "Additional items for vents, drip edge..." — that is a placeholder and is BANNED.
+Fill the Xactimate Code column with the best-known code for each line (RFG TEAR, RFG IWS, RFG FELT, RFG STRT, RFG SHING, RFG DRIP, RFG PIPE, RFG VENT, RFG STEP, GTTR, etc.). NEVER leave codes as N/A.
+Use clean readable text only — never null characters or corrupted words like "Tear o".
 If the document is physically cut off and you cannot see all line items: write ⚠️ "Estimate appears truncated — only X of Y line items visible. Running total: $X.XX. Full scope cannot be verified." Then continue with what you have.
 
 | # | Line Item | Xactimate Code | Qty | Unit | RCV Amount |
@@ -4213,6 +4255,14 @@ If only partial scope provided: "Approved Roof Scope Total: $X.XX — full claim
 
 ## 3. Missing Items
 [Run Rule A first. Only list items genuinely absent from Section 2.]
+CRITICAL ANTI-BUG RULES:
+- NEVER list an item as missing if it already appears anywhere in Section 2 (Approved Scope) — including Ice & Water, starter strip, drip edge, felt, vents, flashing, permits/bid fees already paid.
+- If starter is present but rake starter option was "No", you may flag "Rake starter gap" ONLY — not "Starter Strip missing".
+- If permit/bid fee already exists, do NOT list "Permit Fee" as missing unless you are requesting an additional documented AHJ fee with a specific dollar amount.
+- Every missing row MUST include a real Xactimate-style code (e.g. RFG STRT, RFG RGCAP, O&P, JOB PERMIT). NEVER write N/A or leave the code blank.
+- Every missing row MUST include a concrete qty from Hover/EagleView/carrier measurements when available (e.g. "20.87 SQ", "213.14 LF"). Only write "Field Verification Required" when no measurement exists — and say so honestly in chat before generating the PDF.
+- If you need a moment to map line items to Xactimate codes, tell the user you are verifying codes — accuracy beats speed. Do NOT generate a PDF with N/A codes.
+
 MANDATORY TABLE FORMAT — every missing item gets its own row. IRC/code citation and Confidence Basis are REQUIRED for every row.
 
 CONFIDENCE RULES — always explain why, not just the level:
@@ -4247,6 +4297,9 @@ If nothing is missing: "No missing items identified — approved scope appears c
 
 ## 4. Underpaid Items
 [Apply Rules B and C. Only items where carrier RCV is genuinely wrong — not depreciation gaps.]
+CRITICAL: If there is no positive dollar gap, write exactly: "No underpaid items identified."
+Do NOT invent placeholder rows with N/A codes, $0.00 gaps, or empty "Roofing Materials" / "Step Flashing" stubs.
+If you mention an item narratively but cannot compute a real gap, leave it out of this table (put evidence needs in Section 5 instead).
 
 | Item | Code | Carrier Qty | Carrier RCV $ | Correct Qty | Correct RCV $ | Gap $ | Reason / IRC Basis |
 |------|------|-------------|--------------|-------------|--------------|-------|-------------------|
@@ -4598,8 +4651,10 @@ NEVER ask the user to manually re-type carrier name, claim number, policy number
 generate_document call requirements:
 - type: "supplement"
 - title: "Supplement Request - [insured name or claim number]"
-- prompt must include ALL of: carrier name, carrier address, adjuster name/title/phone/email, claim number, policy number, insured name, property address, date of loss, cause of loss, deductible, carrier estimate date, full approved scope with line items and amounts, every missing item with Xactimate code and pricing, underpaid items table, documentation needed, recommended line items with qty/unit price/height factor/O&P/RCV, contractor action plan, supplement total, revised RCV, revised ACV, net additional payment due, confidence level
-- Every dollar amount must be a calculated number — no placeholders
+- prompt must include ALL of: carrier name, carrier address, adjuster name/title/phone/email, claim number, policy number, insured name, property address, date of loss, cause of loss, deductible (never N/A if present on the estimate), carrier estimate date, FULL approved scope with EVERY line item + Xactimate codes + qty + unit + amounts (all trades), every genuinely missing item with real Xactimate code + concrete qty + pricing, underpaid items ONLY if positive dollar gaps exist (otherwise omit / say none), documentation needed, recommended line items with qty/unit price/height factor/O&P/RCV, contractor action plan, supplement total, revised RCV, revised ACV, net additional payment due, confidence level
+- Every dollar amount must be a calculated number — no placeholders, no N/A codes, no $0.00 gap stub rows
+- Before calling generate_document: if any Xactimate code or qty is still unknown, tell the user you are verifying codes/quantities, finish the mapping, THEN generate. Never ship a buggy PDF with "Tear o", blank codes, or false missing items already in the approved scope
+- Deductible must match the carrier estimate when present
 
 - Offer adjuster dispute letter if items are clearly underpaid
 - Ask if re-inspection should be scheduled

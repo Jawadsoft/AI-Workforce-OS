@@ -226,7 +226,7 @@ SUPPLEMENT EXTRACTION RULES — READ CAREFULLY:
 - "adjusterPhone" — phone number associated with the adjuster or claims office.
 - "adjusterEmail" — email address associated with the adjuster or claims office.
 - "carrierEstimateDate" — date of the carrier's original estimate/loss report.
-- "deductible" — policy deductible dollar amount. Look for "DEDUCTIBLE:", "Deductible:", "Less Deductible", or "$X,XXX deductible". Extract as a number.
+- "deductible" — policy deductible dollar amount. Look for "DEDUCTIBLE:", "Deductible:", "Less Deductible", or "$X,XXX deductible". Extract as a number. NEVER output the string "N/A" when a number exists.
 - "policyNumber" — may appear as "Policy Number:", "Policy #:", or in parentheses after the carrier name.
 - "dateOfLoss" — may appear as "Date of Loss:", "DOL:", or a date following "loss on". Extract exactly as written.
 - "causeOfLoss" — may appear as "Cause of Loss:", "Peril:", "Loss Type:", or words like "wind", "hail", "storm".
@@ -236,11 +236,11 @@ SUPPLEMENT EXTRACTION RULES — READ CAREFULLY:
 - "opIncluded" — look for "O&P Included: Yes/No" or "Overhead & Profit". Default to "No" if not found.
 - "depreciationHeld" — look for "Depreciation Held", "Less Depreciation". Extract as a number.
 - "acvPaid" — look for "ACV Paid", "ACV Amount". Extract as a number.
-- "approvedScope" — extract EVERY line item from Section 2 (Approved Scope) with description, xactimateCode, qty (as string), unit, and amount. Include ALL items listed.
-- "missingItems" — extract ALL items from Section 3 (Missing Items). For each: description, xactimateCode, reason (IRC/manufacturer/condition), estimatedQty, confidence (High/Medium/Low).
-- "underpaidItems" — extract ALL items from Section 4 (Underpaid Items). For each: include gap = recommendedAmount - approvedAmount.
+- "approvedScope" — extract EVERY line item from Section 2 (Approved Scope) across ALL trades with description, xactimateCode, qty (as string), unit, and amount. Repair corrupted text (e.g. "Tear o" → "Tear off"). NEVER use "N/A" for xactimateCode — infer a standard code (RFG TEAR, RFG IWS, RFG STRT, RFG DRIP, etc.) when the source omitted it.
+- "missingItems" — extract ONLY items genuinely absent from approved scope. Skip anything already listed in approvedScope (Ice & Water, starter, drip edge, etc.). Each row needs real xactimateCode + estimatedQty (concrete measurement preferred). Never use N/A placeholders.
+- "underpaidItems" — extract ONLY rows with a positive dollar gap. If the analysis says "No underpaid items" or gaps are $0.00 / N/A, return [].
 - "documentationNeeded" — extract ALL items from Section 5 (Documentation Needed) as an array of strings.
-- "recommendedLineItems" — extract ALL items from Section 6 (Recommended Additional Line Items). Each MUST include: xactimateCode, description, qty (as string), unit, unitPrice, heightFactor, opApplied, estimatedValue (final RCV dollar amount), justification.
+- "recommendedLineItems" — extract ALL items from Section 6 (Recommended Additional Line Items). Each MUST include: xactimateCode, description, qty (as string), unit, unitPrice, heightFactor, opApplied, estimatedValue (final RCV dollar amount), justification. Never use N/A codes.
 - NEVER set estimatedValue to 0. If unit price and qty are known: estimatedValue = qty × unitPrice × heightFactor × (1.20 if O&P applied).
 - "actionPlan" — extract ALL numbered steps from Section 7 (Contractor Action Plan) as an array of strings.
 - "supplementTotal" — look for "TOTAL SUPPLEMENT REQUEST" dollar amount. Must equal sum of all recommendedLineItems estimatedValue values.
@@ -252,7 +252,8 @@ SUPPLEMENT EXTRACTION RULES — READ CAREFULLY:
 - "opportunityScore" — extract the INTEGER from the score line e.g. "34/100" → 34. Default 0 if not present.
 - "opportunityScoreLabel" — extract the label e.g. "Minor Opportunity", "Solid Opportunity", "Strong Opportunity", "Major Re-Write", "Bare Bones".
 - "opportunityScoreBreakdown" — extract the full score breakdown explanation line.
-- Never leave a field as empty string or 0 if the information is present anywhere in the text.` : ''
+- Never leave a field as empty string or 0 if the information is present anywhere in the text.
+- Clean all description strings: no null bytes, no "Tear o" corruption.` : ''
 
       const systemPrompt = `You are a document data extraction assistant for ${defaultCompany}.
 Extract structured data from the provided text and return ONLY valid JSON matching this exact schema:

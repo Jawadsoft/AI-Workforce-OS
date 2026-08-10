@@ -3,6 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
 import { IndustryKnowledgeService } from './industry-knowledge.service'
 import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
+import { cleanExtractedText } from '../../common/utils/text-sanitize.util'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
@@ -165,32 +166,38 @@ export class KnowledgeService {
   }
 
   private async extractText(buffer: Buffer, ext: string): Promise<string> {
+    let text = ''
     switch (ext) {
       case '.txt':
       case '.md':
-        return buffer.toString('utf-8')
+        text = buffer.toString('utf-8')
+        break
 
       case '.csv': {
-        const text = buffer.toString('utf-8')
+        const csv = buffer.toString('utf-8')
         // Convert CSV to readable text
-        const lines = text.split('\n').filter(l => l.trim())
+        const lines = csv.split('\n').filter(l => l.trim())
         const headers = lines[0]?.split(',').map(h => h.trim().replace(/"/g, '')) ?? []
         const rows = lines.slice(1).map(line => {
           const vals = line.split(',').map(v => v.trim().replace(/"/g, ''))
           return headers.map((h, i) => `${h}: ${vals[i] ?? ''}`).join(', ')
         })
-        return [headers.join(' | '), ...rows].join('\n')
+        text = [headers.join(' | '), ...rows].join('\n')
+        break
       }
 
       case '.pdf':
-        return this.extractPDF(buffer)
+        text = await this.extractPDF(buffer)
+        break
 
       case '.docx':
-        return this.extractDOCX(buffer)
+        text = await this.extractDOCX(buffer)
+        break
 
       default:
-        return buffer.toString('utf-8')
+        text = buffer.toString('utf-8')
     }
+    return cleanExtractedText(text)
   }
 
   private async extractPDF(buffer: Buffer): Promise<string> {

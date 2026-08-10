@@ -1,3 +1,4 @@
+import { cleanExtractedText, filterFalseMissingItems, inferXactimateCode, isPlaceholderValue } from '../../common/utils/text-sanitize.util'
 import * as crypto from 'crypto'
 
 // ── Brand kit ─────────────────────────────────────────────────────
@@ -143,7 +144,7 @@ export function detectCurrencyFromText(text?: string | null): string | null {
 }
 
 export function escapeHtml(s: any): string {
-  return String(s ?? '')
+  return cleanExtractedText(String(s ?? ''))
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -213,7 +214,74 @@ export function normalizeDocData(type: string, data: Record<string, any>): Recor
   }
 
   if (type === 'supplement') {
+    const cleanStr = (v: any) => cleanExtractedText(String(v ?? ''))
+
+    // Sanitize all approved-scope rows + fill missing Xactimate codes when possible
+    out.approvedScope = asArray(out.approvedScope)
+      .map((item: any) => {
+        const description = cleanStr(item.description)
+        if (!description) return null
+        let code = cleanStr(item.xactimateCode)
+        if (isPlaceholderValue(code)) code = inferXactimateCode(description)
+        return {
+          ...item,
+          description,
+          xactimateCode: code || undefined,
+          qty: isPlaceholderValue(item.qty) ? undefined : cleanStr(item.qty),
+          unit: isPlaceholderValue(item.unit) ? undefined : cleanStr(item.unit),
+          amount: Number(item.amount ?? 0) || 0,
+        }
+      })
+      .filter(Boolean)
+
+    // Drop false "missing" items already present in approved scope
+    out.missingItems = filterFalseMissingItems(asArray(out.missingItems), out.approvedScope)
+      .map((item: any) => {
+        const description = cleanStr(item.description)
+        if (!description) return null
+        let code = cleanStr(item.xactimateCode)
+        if (isPlaceholderValue(code)) code = inferXactimateCode(description)
+        const estimatedQty = isPlaceholderValue(item.estimatedQty) ? undefined : cleanStr(item.estimatedQty)
+        return {
+          ...item,
+          description,
+          xactimateCode: code || undefined,
+          reason: cleanStr(item.reason),
+          estimatedQty,
+          confidence: cleanStr(item.confidence) || 'Medium',
+        }
+      })
+      .filter(Boolean)
+
+    // Keep only underpaid rows with a real positive dollar gap — no empty N/A tables
+    out.underpaidItems = asArray(out.underpaidItems)
+      .map((item: any) => {
+        const description = cleanStr(item.description)
+        if (!description || isPlaceholderValue(description)) return null
+        const approvedAmount = Number(item.approvedAmount ?? 0) || 0
+        const recommendedAmount = Number(item.recommendedAmount ?? 0) || 0
+        const gap = Number(item.gap ?? recommendedAmount - approvedAmount) || 0
+        if (gap <= 0) return null
+        let code = cleanStr(item.xactimateCode)
+        if (isPlaceholderValue(code)) code = inferXactimateCode(description)
+        return {
+          ...item,
+          description,
+          xactimateCode: code || undefined,
+          approvedQty: isPlaceholderValue(item.approvedQty) ? undefined : cleanStr(item.approvedQty),
+          recommendedQty: isPlaceholderValue(item.recommendedQty) ? undefined : cleanStr(item.recommendedQty),
+          approvedAmount,
+          recommendedAmount,
+          gap: Math.round(gap * 100) / 100,
+          reason: cleanStr(item.reason),
+        }
+      })
+      .filter(Boolean)
+
     const items = asArray(out.recommendedLineItems).map((item: any) => {
+      const description = cleanStr(item.description)
+      let code = cleanStr(item.xactimateCode)
+      if (isPlaceholderValue(code)) code = inferXactimateCode(description)
       const qty = parseFloat(String(item.qty ?? '0').replace(/[^0-9.]/g, '')) || 0
       const unitPrice = Number(item.unitPrice ?? 0) || 0
       const hfMatch = String(item.heightFactor ?? '1').match(/([\d.]+)/)
@@ -223,11 +291,21 @@ export function normalizeDocData(type: string, data: Record<string, any>): Recor
       if (!estimatedValue && qty && unitPrice) {
         estimatedValue = qty * unitPrice * heightFactor * opMult
       }
+      // O&P lump-sum lines often pass estimatedValue without unitPrice
+      if (!estimatedValue && code === 'O&P' && Number(item.estimatedValue)) {
+        estimatedValue = Number(item.estimatedValue)
+      }
       return {
         ...item,
+        description,
+        xactimateCode: code || undefined,
+        qty: isPlaceholderValue(item.qty) ? undefined : cleanStr(item.qty),
+        unit: isPlaceholderValue(item.unit) ? undefined : cleanStr(item.unit),
+        justification: cleanStr(item.justification),
         estimatedValue: Math.round(estimatedValue * 100) / 100,
       }
-    })
+    }).filter((item: any) => item.description && (item.estimatedValue > 0 || item.xactimateCode === 'O&P'))
+
     out.recommendedLineItems = items
     const supplementTotal = items.reduce((s: number, i: any) => s + (Number(i.estimatedValue) || 0), 0)
     out.supplementTotal = Math.round(supplementTotal * 100) / 100
@@ -238,6 +316,20 @@ export function normalizeDocData(type: string, data: Record<string, any>): Recor
     const acvPaid = Number(out.acvPaid ?? 0) || 0
     const deductible = Number(out.deductible ?? 0) || 0
     out.netAdditionalPaymentDue = Math.round((out.revisedAcv - acvPaid - deductible) * 100) / 100
+
+    // Clean scalar string fields used on cover page
+    for (const key of [
+      'carrier', 'claimNumber', 'policyNumber', 'customerName', 'propertyAddress', 'address',
+      'dateOfLoss', 'causeOfLoss', 'adjuster', 'adjusterTitle', 'claimSummary', 'storiesHeightFactor',
+      'preparedBy', 'opIncluded', 'opApplicable', 'confidenceLevel', 'reinspectionRecommended',
+      'opportunityScoreLabel', 'opportunityScoreBreakdown',
+    ]) {
+      if (out[key] !== undefined && out[key] !== null) out[key] = cleanStr(out[key])
+    }
+    if (isPlaceholderValue(out.deductible) || out.deductible === 'N/A') {
+      // keep numeric 0 only if truly unknown; prefer leaving number if already parsed
+      if (typeof out.deductible === 'string') out.deductible = 0
+    }
   }
 
   for (const key of [
@@ -590,7 +682,7 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
             <div class="supp-item-num" style="font-size:13px;font-weight:700;margin-bottom:6px">${idx + 1}. ${escapeHtml(item.description ?? '')} &nbsp;<span style="font-size:10px;font-weight:600;background:${confidenceColor(item.confidence ?? '')};color:#fff;padding:2px 7px;border-radius:10px">${escapeHtml(item.confidence ?? '—')}</span></div>
             <p><span class="supp-field">• Carrier included:</span> Not present in approved scope</p>
             <p><span class="supp-field">• Why required:</span> ${escapeHtml(item.reason ?? 'See code and manufacturer requirements')}</p>
-            ${item.estimatedQty ? `<p><span class="supp-field">• Quantity:</span> ${escapeHtml(item.estimatedQty)} <span style="color:#94a3b8;font-size:10px">(verify with field measurement)</span></p>` : ''}
+            ${item.estimatedQty ? `<p><span class="supp-field">• Quantity:</span> ${escapeHtml(item.estimatedQty)}${/^\d/.test(String(item.estimatedQty).trim()) ? '' : ' <span style="color:#94a3b8;font-size:10px">(verify with field measurement)</span>'}</p>` : ''}
             ${item.xactimateCode ? `<p><span class="supp-field">• Xactimate code:</span> <strong>${escapeHtml(item.xactimateCode)}</strong></p>` : ''}
             <p><span class="supp-field">• Confidence basis:</span> <em style="color:${confidenceColor(item.confidence ?? '')}">${confidenceExplain(item.confidence ?? '')}</em></p>
           </div>`).join('')}
@@ -627,7 +719,7 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
           </tr>
         </table>
       </div>`
-    : ''
+    : `<div class="supp-section"><div class="supp-section-title">UNDERPAID / UNDER-SCOPED ITEMS</div><p>No underpaid items identified with a positive dollar gap — pricing appears consistent with the approved scope, or gaps require field verification before inclusion.</p></div>`
 
   const actionPlanSteps = asArray(data.actionPlan)
   const actionPlanSection = actionPlanSteps.length

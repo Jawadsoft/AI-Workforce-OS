@@ -3,6 +3,11 @@ import { Logger } from '@nestjs/common'
 import { Job } from 'bull'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { RealtimeGateway } from '../../realtime/realtime.gateway'
+import {
+  makeConversationDocument,
+  normalizeDocuments,
+} from '../../modules/chat/document-scope.util'
+import { cleanExtractedText } from '../../common/utils/text-sanitize.util'
 
 export interface PdfExtractionJob {
   conversationId: string
@@ -68,7 +73,7 @@ export class PdfExtractionProcessor {
         return
       }
 
-      const text = extractedText.slice(0, 15000)
+      const text = cleanExtractedText(extractedText)
 
       // Save extracted text to conversation metadata
       const conv = await this.prisma.conversation.findUnique({ where: { id: conversationId } })
@@ -78,18 +83,29 @@ export class PdfExtractionProcessor {
       }
 
       const meta = (conv.metadata as any) ?? {}
-      const existingDocs: { name: string; text: string }[] = meta.documentContext ?? []
+      const existingDocs = normalizeDocuments(meta.documentContext)
       const alreadySaved = existingDocs.find(d => d.name === fileName)
-
+      const doc = alreadySaved ?? makeConversationDocument(fileName, text)
       if (!alreadySaved) {
-        existingDocs.push({ name: fileName, text })
-        await this.prisma.conversation.update({
-          where: { id: conversationId },
-          data: { metadata: { ...meta, documentContext: existingDocs } },
-        })
+        existingDocs.push(doc)
+      } else {
+        alreadySaved.text = text
       }
 
-      this.logger.log(`[PDF] Extraction complete for ${fileName} — ${text.length} chars saved`)
+      // Pin active scope to this newly extracted file so historical PDFs do not mix in
+      await this.prisma.conversation.update({
+        where: { id: conversationId },
+        data: {
+          metadata: {
+            ...meta,
+            documentContext: existingDocs,
+            activeDocumentIds: [doc.id],
+            documentScopeMode: 'single',
+          },
+        },
+      })
+
+      this.logger.log(`[PDF] Extraction complete for ${fileName} [${doc.id}] — ${text.length} chars saved`)
 
       const readyMessage = `I've finished processing "${fileName}". The document is ready now — send "summarize it" or ask any specific question about it.`
       await this.prisma.message.create({
@@ -100,6 +116,7 @@ export class PdfExtractionProcessor {
       this.realtime.emitToTenant(tenantId, 'document-ready', {
         conversationId,
         fileName,
+        documentId: doc.id,
         status: 'ready',
         message: readyMessage,
         preview: text.slice(0, 300),

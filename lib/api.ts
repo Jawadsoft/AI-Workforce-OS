@@ -28,6 +28,14 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+const AUTH_ATTEMPT_PATHS = [
+  '/auth/login',
+  '/auth/register',
+  '/auth/forgot-password',
+  '/auth/reset-password',
+  '/auth/sso-login',
+]
+
 api.interceptors.response.use(
   (response) => {
     if (response.data?.access_token) {
@@ -38,7 +46,10 @@ api.interceptors.response.use(
     return response
   },
   (error) => {
-    if (error.response?.status === 401 && typeof window !== 'undefined') {
+    const url = String(error.config?.url ?? '')
+    const isAuthAttempt = AUTH_ATTEMPT_PATHS.some((path) => url.includes(path))
+
+    if (error.response?.status === 401 && typeof window !== 'undefined' && !isAuthAttempt) {
       localStorage.removeItem('access_token')
       document.cookie = 'access_token=; path=/; max-age=0'
       window.location.href = '/login'

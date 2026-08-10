@@ -25,7 +25,9 @@ export function LoginForm() {
       router.push('/dashboard')
     } catch (err: any) {
       setIsRedirecting(false)
-      setError(err?.response?.data?.message ?? 'Invalid email or password')
+      const apiMessage = err?.response?.data?.message
+      const message = Array.isArray(apiMessage) ? apiMessage[0] : apiMessage
+      setError(message || 'Invalid credentials')
     }
   }
 

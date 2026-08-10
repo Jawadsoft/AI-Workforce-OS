@@ -314,6 +314,15 @@ export class SuperAdminController {
     )
   }
 
+  @Post('template-workspace/push-defaults')
+  @ApiOperation({ summary: 'Push shared default agents to all tenants assigned to this scoped admin' })
+  pushDefaultsToAssignedTenants(@Body() dto: ResetTemplateWorkspaceDto, @Req() req: any) {
+    return this.service.pushDefaultsToAssignedTenants(
+      { id: req.user.id, role: req.user.role },
+      dto.adminId,
+    )
+  }
+
   @Get('template-workspace/agents')
   @ApiOperation({ summary: 'List agents in a scoped admin default workspace' })
   listTemplateWorkspaceAgents(@Req() req: any, @Query('adminId') adminId?: string) {

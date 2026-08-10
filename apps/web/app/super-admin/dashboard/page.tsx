@@ -307,9 +307,29 @@ export default function SuperAdminDashboard() {
     }
   }
 
+  async function pushDefaultsToTenants(admin: SubAdmin) {
+    if (!admin.managedTenantsCount) {
+      alert('No tenants assigned yet. Assign tenants first, then push defaults.')
+      return
+    }
+    if (!confirm(`Push shared default agents to all ${admin.managedTenantsCount} tenant(s) under ${admin.name}? Existing matching agents will be skipped.`)) return
+    try {
+      const { data } = await api.post('/super-admin/template-workspace/push-defaults', {
+        adminId: admin.id,
+      })
+      alert(data.message || 'Defaults pushed')
+      await loadData()
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to push defaults')
+    }
+  }
+
   async function assignTenant(adminUserId: string, tenantId: string) {
     try {
-      await api.post('/super-admin/scoped-admins/assign', { adminUserId, tenantId })
+      const { data } = await api.post('/super-admin/scoped-admins/assign', { adminUserId, tenantId })
+      if (data.clonedAgents > 0) {
+        alert(`Tenant assigned. ${data.clonedAgents} default agent(s) added.`)
+      }
       loadData()
       setAssigningAdmin(null)
     } catch (err: any) {
@@ -575,6 +595,7 @@ export default function SuperAdminDashboard() {
                 onRevokeTenant={revokeTenant}
                 onOpenWorkspace={(admin) => setWorkspaceAdmin(admin)}
                 onResetWorkspace={resetScopedWorkspace}
+                onPushDefaults={pushDefaultsToTenants}
               />
             )}
             {tab === 'Marketplace' && (
@@ -1415,7 +1436,7 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
 
 // ── Sub-Admins Tab ────────────────────────────────────────────────
 
-function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin, subAdminForm, setSubAdminForm, subAdminSaving, onCreateSubAdmin, onDeleteSubAdmin, onOpenAssign, onRevokeTenant, onOpenWorkspace, onResetWorkspace }: {
+function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin, subAdminForm, setSubAdminForm, subAdminSaving, onCreateSubAdmin, onDeleteSubAdmin, onOpenAssign, onRevokeTenant, onOpenWorkspace, onResetWorkspace, onPushDefaults }: {
   subAdmins: SubAdmin[]
   tenants: Tenant[]
   showNewSubAdmin: boolean
@@ -1429,6 +1450,7 @@ function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin,
   onRevokeTenant: (adminUserId: string, tenantId: string) => void
   onOpenWorkspace: (admin: SubAdmin) => void
   onResetWorkspace: (admin: SubAdmin, clearAgents?: boolean) => void
+  onPushDefaults: (admin: SubAdmin) => void
 }) {
   return (
     <div className="space-y-6">
@@ -1502,6 +1524,16 @@ function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin,
                   <button onClick={() => onOpenWorkspace(admin)} className="text-lime-400 hover:text-lime-300 text-sm px-3 py-1.5 rounded-lg transition-colors" style={{ background: 'rgba(163,230,53,0.10)' }}>
                     Default Agents
                   </button>
+                  {admin.templateTenantId && admin.managedTenantsCount > 0 && (
+                    <button
+                      onClick={() => onPushDefaults(admin)}
+                      className="text-cyan-300 hover:text-cyan-200 text-sm px-3 py-1.5 rounded-lg transition-colors"
+                      style={{ background: 'rgba(34,211,238,0.12)' }}
+                      title="Copy shared default agents onto all assigned tenants"
+                    >
+                      Push to Tenants
+                    </button>
+                  )}
                   <button onClick={() => onOpenAssign(admin)} className="text-indigo-400 hover:text-indigo-300 text-sm px-3 py-1.5 rounded-lg transition-colors" style={{ background: 'rgba(99,102,241,0.10)' }}>
                     Assign Tenant
                   </button>
@@ -1735,6 +1767,20 @@ function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
     }
   }
 
+  async function pushToAssignedTenants() {
+    if (!confirm('Push shared default agents to all assigned tenants? Existing matching agents will be skipped.')) return
+    setSaving(true)
+    try {
+      const { data } = await api.post('/super-admin/template-workspace/push-defaults', adminBody)
+      alert(data.message || 'Defaults pushed')
+      onChanged?.()
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to push defaults')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       {!adminId && (
@@ -1742,22 +1788,40 @@ function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
           <div>
             <h1 className="text-2xl font-bold text-white">Default Workspace</h1>
             <p className="text-gray-400 mt-1">
-              Agents marked as shared are automatically added when you create a new tenant.
+              Agents marked as shared are automatically added when you create or receive tenants (SSO / assign).
             </p>
           </div>
-          <button
-            onClick={() => resetOwnWorkspace(agents.length > 0)}
-            disabled={saving}
-            className="px-3 py-1.5 rounded-lg text-sm text-amber-300 disabled:opacity-50"
-            style={{ background: 'rgba(245,158,11,0.12)' }}
-          >
-            {agents.length > 0 ? 'Reset Workspace' : 'Setup / Refresh Workspace'}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={pushToAssignedTenants}
+              disabled={saving}
+              className="px-3 py-1.5 rounded-lg text-sm text-cyan-300 disabled:opacity-50"
+              style={{ background: 'rgba(34,211,238,0.12)' }}
+            >
+              Push to Assigned Tenants
+            </button>
+            <button
+              onClick={() => resetOwnWorkspace(agents.length > 0)}
+              disabled={saving}
+              className="px-3 py-1.5 rounded-lg text-sm text-amber-300 disabled:opacity-50"
+              style={{ background: 'rgba(245,158,11,0.12)' }}
+            >
+              {agents.length > 0 ? 'Reset Workspace' : 'Setup / Refresh Workspace'}
+            </button>
+          </div>
         </div>
       )}
 
       {adminId && (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={pushToAssignedTenants}
+            disabled={saving}
+            className="px-3 py-1.5 rounded-lg text-sm text-cyan-300 disabled:opacity-50"
+            style={{ background: 'rgba(34,211,238,0.12)' }}
+          >
+            Push to Assigned Tenants
+          </button>
           <button
             onClick={() => resetOwnWorkspace(agents.length > 0)}
             disabled={saving}

@@ -5,6 +5,7 @@ import * as crypto from 'crypto'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { EmailService } from '../email/email.service'
 import { IntegrationService } from '../integrations/integration.service'
+import { SuperAdminService } from '../super-admin/super-admin.service'
 
 @Injectable()
 export class AuthService {
@@ -14,6 +15,8 @@ export class AuthService {
     private readonly email: EmailService,
     @Inject(forwardRef(() => IntegrationService))
     private readonly integration: IntegrationService,
+    @Inject(forwardRef(() => SuperAdminService))
+    private readonly superAdmin: SuperAdminService,
   ) {}
 
   async register(data: { email: string; password: string; name: string; companyName: string }) {
@@ -173,6 +176,9 @@ export class AuthService {
       where: { id: ssoToken.id },
       data: { used: true }
     })
+
+    // If this tenant is under a scoped admin, ensure shared default agents exist
+    await this.superAdmin.ensureScopedDefaultsForTenant(user.tenantId).catch(() => 0)
 
     // Return JWT
     return this.signToken(user.id, user.tenantId, user.role)

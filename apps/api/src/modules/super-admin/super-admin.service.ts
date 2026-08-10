@@ -449,7 +449,95 @@ export class SuperAdminService {
       data: { adminUserId, tenantId, assignedBy },
     })
 
-    return { success: true, message: 'Tenant assigned to scoped admin' }
+    const clonedAgents = await this.ensureScopedDefaultsForTenant(tenantId)
+
+    return {
+      success: true,
+      message: 'Tenant assigned to scoped admin',
+      clonedAgents,
+    }
+  }
+
+  /**
+   * Push shared default agents from a scoped admin's template workspace
+   * onto all currently assigned child tenants (idempotent).
+   */
+  async pushDefaultsToAssignedTenants(
+    requester: { id: string; role: string },
+    adminId?: string,
+  ) {
+    const targetAdminId =
+      requester.role === 'SCOPED_ADMIN' ? requester.id : adminId
+
+    if (!targetAdminId) {
+      throw new BadRequestException('adminId is required')
+    }
+
+    if (requester.role === 'SCOPED_ADMIN' && adminId && adminId !== requester.id) {
+      throw new BadRequestException('Scoped admins can only push their own defaults')
+    }
+
+    if (requester.role === 'SUPER_ADMIN') {
+      const admin = await this.prisma.user.findUnique({ where: { id: targetAdminId } })
+      if (!admin || admin.role !== 'SCOPED_ADMIN') {
+        throw new NotFoundException('Scoped admin not found')
+      }
+      if (admin.createdByAdminId !== requester.id) {
+        throw new BadRequestException('You can only manage scoped admins you created')
+      }
+    }
+
+    const templateTenantId = await this.ensureTemplateWorkspace(targetAdminId)
+    const assignments = await this.prisma.superAdminTenantAccess.findMany({
+      where: { adminUserId: targetAdminId },
+      include: { tenant: { select: { id: true, name: true, industry: true } } },
+    })
+
+    const results: { tenantId: string; tenantName: string; clonedAgents: number }[] = []
+    for (const row of assignments) {
+      const clonedAgents = await this.cloneSharedDefaultAgents(
+        templateTenantId,
+        row.tenantId,
+        row.tenant.industry ?? undefined,
+      )
+      results.push({
+        tenantId: row.tenantId,
+        tenantName: row.tenant.name,
+        clonedAgents,
+      })
+    }
+
+    const totalCloned = results.reduce((sum, r) => sum + r.clonedAgents, 0)
+    return {
+      success: true,
+      tenantsUpdated: results.length,
+      totalCloned,
+      results,
+      message: `Pushed defaults to ${results.length} tenant(s); ${totalCloned} agent(s) created`,
+    }
+  }
+
+  /**
+   * If this tenant is managed by a scoped admin, ensure shared default agents exist.
+   * Safe to call on every SSO login (skips agents that already exist).
+   */
+  async ensureScopedDefaultsForTenant(tenantId: string): Promise<number> {
+    const assignment = await this.prisma.superAdminTenantAccess.findFirst({
+      where: { tenantId },
+      include: { admin: { select: { id: true, role: true } } },
+    })
+    if (!assignment || assignment.admin.role !== 'SCOPED_ADMIN') return 0
+
+    const templateTenantId = await this.ensureTemplateWorkspace(assignment.adminUserId)
+    const target = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { industry: true },
+    })
+    return this.cloneSharedDefaultAgents(
+      templateTenantId,
+      tenantId,
+      target?.industry ?? undefined,
+    )
   }
 
   async revokeTenant(adminUserId: string, tenantId: string) {
@@ -799,11 +887,11 @@ export class SuperAdminService {
     return { success: true }
   }
 
-  /** Clone shared-default agents from scoped admin template into a new child tenant. */
+  /** Clone shared-default agents into a child tenant (skips duplicates by templateId or name+role). */
   private async cloneSharedDefaultAgents(
     sourceTenantId: string,
     targetTenantId: string,
-    industry?: string,
+    industry?: string | null,
   ) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: sourceTenantId } })
     const settings = (tenant?.settings as Record<string, unknown>) || {}
@@ -815,12 +903,31 @@ export class SuperAdminService {
 
     if (agents.length === 0) return 0
 
+    const existing = await this.prisma.agent.findMany({
+      where: { tenantId: targetTenantId },
+      select: { name: true, role: true, templateId: true },
+    })
+    const existingKeys = new Set(
+      existing.map((a) =>
+        a.templateId ? `t:${a.templateId}` : `n:${a.name.toLowerCase()}|${a.role.toLowerCase()}`,
+      ),
+    )
+
     const targetIndustry = (industry && Object.values(Industry).includes(industry as Industry)
       ? industry
       : null) as Industry | null
 
+    const toCreate = agents.filter((a) => {
+      const key = a.templateId
+        ? `t:${a.templateId}`
+        : `n:${a.name.toLowerCase()}|${a.role.toLowerCase()}`
+      return !existingKeys.has(key)
+    })
+
+    if (toCreate.length === 0) return 0
+
     await this.prisma.agent.createMany({
-      data: agents.map((a) => ({
+      data: toCreate.map((a) => ({
         tenantId: targetTenantId,
         name: a.name,
         role: a.role,
@@ -836,7 +943,7 @@ export class SuperAdminService {
       })),
     })
 
-    return agents.length
+    return toCreate.length
   }
 
   /** Helper: check if a tenant ID is in the allowed list for a scoped admin (null allowedTenantIds = root, all allowed) */

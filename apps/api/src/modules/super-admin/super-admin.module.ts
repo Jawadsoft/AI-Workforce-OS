@@ -12,5 +12,6 @@ import { HelpModule } from '../help/help.module'
   imports: [PrismaModule, FeatureFlagsModule, AIModule, KnowledgeModule, HelpModule],
   providers: [SuperAdminService, SuperAdminGuard],
   controllers: [SuperAdminController, SuperAdminBootstrapController],
+  exports: [SuperAdminService],
 })
 export class SuperAdminModule {}

@@ -39,14 +39,14 @@ export class TwilioService {
   constructor(private prisma: PrismaService) {}
 
   /** True Account SID (ACxxxx). Rejects API keys (SK), placeholders, empty. */
-  private isValidAccountSid(sid: string | undefined | null): sid is string {
+  private isValidAccountSid(sid: string | undefined | null): boolean {
     if (!sid || typeof sid !== 'string') return false
     const s = sid.trim()
     if (!s || s.includes('*') || s.toLowerCase().includes('configured')) return false
     return /^AC[0-9a-f]{32}$/i.test(s)
   }
 
-  private isUsableSecret(value: string | undefined | null): value is string {
+  private isUsableSecret(value: string | undefined | null): boolean {
     if (!value || typeof value !== 'string') return false
     const v = value.trim()
     return Boolean(v) && !v.includes('*') && !v.toLowerCase().includes('configured')
@@ -60,8 +60,8 @@ export class TwilioService {
     })
     const settings = (tenant?.settings as Record<string, string>) || {}
 
-    const tenantSid = settings.twilioAccountSid?.trim()
-    const tenantToken = settings.twilioAuthToken?.trim()
+    const tenantSid = (settings.twilioAccountSid || '').trim()
+    const tenantToken = (settings.twilioAuthToken || '').trim()
 
     if (tenantSid && !this.isValidAccountSid(tenantSid)) {
       this.logger.warn(
@@ -89,8 +89,8 @@ export class TwilioService {
     }
 
     return {
-      accountSid: tenantSid.trim(),
-      authToken: tenantToken.trim(),
+      accountSid: tenantSid,
+      authToken: tenantToken,
       fromPhone: (settings.twilioPhoneNumber || '').trim(),
       whatsappNumber: (settings.twilioWhatsAppNumber || '').trim(),
     }

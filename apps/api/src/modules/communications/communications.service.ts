@@ -2,20 +2,45 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { AIService } from '../../ai/ai.service'
 import { BrainService } from '../brain/brain.service'
+import { ChatService } from '../chat/chat.service'
 import { CrmContextService } from '../crm/crm-context.service'
 import { TwilioService } from './twilio.service'
 
 @Injectable()
 export class CommunicationsService {
   private readonly logger = new Logger(CommunicationsService.name)
+  /** In-process Twilio webhook dedupe (MessageSid → expiry ms). */
+  private readonly recentWebhookSids = new Map<string, number>()
 
   constructor(
     private prisma: PrismaService,
     private ai: AIService,
     private brain: BrainService,
+    private chat: ChatService,
     private crmContext: CrmContextService,
     private twilio: TwilioService,
   ) {}
+
+  /** True if this Twilio MessageSid was already handled (retry / double delivery). */
+  private async isDuplicateWebhook(tenantId: string, twilioSid: string): Promise<boolean> {
+    if (!twilioSid) return false
+    const now = Date.now()
+    for (const [sid, exp] of this.recentWebhookSids) {
+      if (exp < now) this.recentWebhookSids.delete(sid)
+    }
+    if (this.recentWebhookSids.has(twilioSid)) return true
+
+    const existing = await this.prisma.communicationLog.findFirst({
+      where: { tenantId, twilioSid },
+      select: { id: true },
+    })
+    return Boolean(existing)
+  }
+
+  private markWebhookHandled(twilioSid: string) {
+    if (!twilioSid) return
+    this.recentWebhookSids.set(twilioSid, Date.now() + 10 * 60 * 1000)
+  }
 
   // ──────────────────────────────────────────────
   // INBOUND: SMS / WhatsApp → AI agent reply
@@ -151,6 +176,14 @@ export class CommunicationsService {
 
     const from = this.normalizePhone(params.from)
     const to = this.normalizePhone(params.to)
+    const channel = params.channel
+    const twilioSid = params.twilioSid
+
+    if (await this.isDuplicateWebhook(tenantId, twilioSid)) {
+      this.logger.warn(`Duplicate ${channel} webhook ignored sid=${twilioSid}`)
+      return { reply: '', sentViaApi: true }
+    }
+
     const body =
       params.channel === 'WHATSAPP'
         ? await this.resolveInboundBody({
@@ -160,8 +193,6 @@ export class CommunicationsService {
             mediaContentTypes: params.mediaContentTypes,
           })
         : (params.body || '').trim() || '[empty message]'
-    const channel = params.channel
-    const twilioSid = params.twilioSid
 
     const agent = await this.pickChannelAgent(tenantId, channel)
 
@@ -174,6 +205,7 @@ export class CommunicationsService {
       twilioSid,
       agentId: agent?.id,
     })
+    this.markWebhookHandled(twilioSid)
 
     if (!agent) {
       this.logger.warn(`No ACTIVE agent for tenant=${tenantId} channel=${channel}`)
@@ -183,62 +215,20 @@ export class CommunicationsService {
       }
     }
 
-    const conversation = await this.getOrCreatePhoneConversation(tenantId, from, channel, agent.id)
-
-    await this.prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        role: 'USER',
-        content: body,
-      },
-    })
-
-    const mergedSettings = { ...(tenant.settings as Record<string, unknown> || {}) }
-    const brainCtx = this.brain.buildAgentContext(mergedSettings)
-
-    let crmBlock = ''
-    try {
-      const crmCtx = await this.crmContext.fetchContext(tenantId, { phone: from })
-      if (crmCtx) crmBlock = '\n\n' + this.crmContext.formatForPrompt(crmCtx)
-    } catch (_) {}
-
-    const agentPrompt = agent.prompt || ''
-    const channelHint = channel === 'SMS'
-      ? 'You are communicating via SMS. Keep replies concise (under 160 characters).'
-      : 'You are communicating via WhatsApp. Keep replies short and helpful (2–4 sentences). The customer may send voice notes; treat transcribed text as their message.'
-    const systemPrompt = `${agentPrompt}\n\n${brainCtx}${crmBlock}\n\n${channelHint}`
-
-    const history = await this.prisma.message.findMany({
-      where: { conversationId: conversation.id },
-      orderBy: { createdAt: 'asc' },
-      take: 20,
-    })
-    const historyForAI = history.map((m) => ({
-      role: (m.role === 'USER' ? 'user' : 'assistant') as 'user' | 'assistant',
-      content: m.content,
-    }))
+    // Identify sender (CRM facts) + isolate thread per phone, then run full agent turn
+    const conversation = await this.getOrCreatePhoneConversation(tenantId, from, channel, agent.id, agent.role)
 
     let aiReply =
       'Thank you for your message. We have received it and will follow up shortly.'
     try {
-      aiReply = await this.ai.chat(systemPrompt, historyForAI)
+      const result = await this.chat.sendMessage(tenantId, conversation.id, body)
+      aiReply = result?.aiMessage?.content?.trim() || aiReply
+      this.logger.log(
+        `Agentic ${channel} reply via ${agent.name} for ${from} (conv=${conversation.id.slice(-6)})`,
+      )
     } catch (err) {
-      this.logger.warn(`AI chat failed for inbound ${channel}: ${err}`)
+      this.logger.warn(`Agentic ${channel} turn failed: ${err}`)
     }
-
-    await this.prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        role: 'ASSISTANT',
-        content: aiReply,
-        agentId: agent.id,
-      },
-    })
-
-    await this.prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { updatedAt: new Date() },
-    })
 
     // Prefer REST send so we log OUTBOUND; return empty TwiML to Twilio to avoid a second reply.
     try {
@@ -456,15 +446,68 @@ export class CommunicationsService {
     return this.prisma.agent.findFirst({ where: { tenantId, status: 'ACTIVE' } })
   }
 
-  private async getOrCreatePhoneConversation(tenantId: string, phone: string, channel: 'SMS' | 'WHATSAPP', agentId: string) {
+  private async getOrCreatePhoneConversation(
+    tenantId: string,
+    phone: string,
+    channel: 'SMS' | 'WHATSAPP',
+    agentId: string,
+    agentRole?: string,
+  ) {
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
     const existing = await this.prisma.conversation.findFirst({
       where: { tenantId, agentId, callerPhone: phone, channel, createdAt: { gte: cutoff }, status: { not: 'ENDED' } },
       orderBy: { createdAt: 'desc' },
     })
-    if (existing) return existing
+
+    let senderRole: string = 'unknown'
+    let displayName = phone
+    let crmId: string | undefined
+    let callerEmail: string | undefined
+    try {
+      const crmCtx = await this.crmContext.fetchContext(tenantId, {
+        phone,
+        agentRole,
+        agentId,
+      })
+      const sender = this.crmContext.classifySender(crmCtx, agentRole)
+      senderRole = sender.role
+      displayName = sender.displayName !== 'Unknown sender' ? sender.displayName : phone
+      crmId = sender.crmId
+      callerEmail = sender.email
+    } catch (_) {}
+
+    const title = `${channel} · ${displayName} · ${senderRole}`
+    const metadata = {
+      callerPhone: phone,
+      senderRole,
+      displayName,
+      ...(crmId ? { crmId } : {}),
+      ...(callerEmail ? { callerEmail } : {}),
+    }
+
+    if (existing) {
+      await this.prisma.conversation.update({
+        where: { id: existing.id },
+        data: {
+          title,
+          callerEmail: callerEmail || existing.callerEmail,
+          metadata: { ...(existing.metadata as object || {}), ...metadata },
+        },
+      })
+      return this.prisma.conversation.findUniqueOrThrow({ where: { id: existing.id } })
+    }
+
     return this.prisma.conversation.create({
-      data: { tenantId, agentId, callerPhone: phone, channel, status: 'ACTIVE', title: `${channel} from ${phone}` },
+      data: {
+        tenantId,
+        agentId,
+        callerPhone: phone,
+        callerEmail,
+        channel,
+        status: 'ACTIVE',
+        title,
+        metadata,
+      },
     })
   }
 

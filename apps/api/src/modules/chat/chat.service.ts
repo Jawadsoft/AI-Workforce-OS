@@ -1188,23 +1188,39 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     const brainContext = this.brain.buildAgentContext(mergedSettings)
 
     // ── CRM context injection ─────────────────────────────────────
-    // On the first message of a conversation, try to find the caller in CRM
+    // Internal chat: CRM on first message. WhatsApp/SMS: every turn (per-person identity).
     let crmContextBlock = ''
     let callerCustomerId: string | undefined
 
     const isFirstMessage = history.filter(m => m.role === 'USER').length <= 1
     const meta = conv.metadata as any
-    const phone = meta?.callerPhone ?? conv.callerPhone ?? content.match(PHONE_RE)?.[0]
-    const email = meta?.callerEmail ?? conv.callerEmail ?? content.match(EMAIL_RE)?.[0]
-    if (isFirstMessage && (phone || email)) {
+    // Prefer stable conversation phone so memory subjectKey stays per-person on WhatsApp/SMS
+    const phone =
+      conv.callerPhone ||
+      meta?.callerPhone ||
+      content.match(PHONE_RE)?.[0]
+    const email =
+      conv.callerEmail ||
+      meta?.callerEmail ||
+      meta?.email ||
+      content.match(EMAIL_RE)?.[0]
+    const isPhoneChannel = conv.channel === 'WHATSAPP' || conv.channel === 'SMS'
+    if ((isFirstMessage || isPhoneChannel) && (phone || email || meta?.crmId)) {
       const crmData = await this.crmCtx.fetchContext(tenantId, {
         phone,
         email,
+        customerId: meta?.senderRole === 'customer' ? meta?.crmId : undefined,
+        leadId: meta?.senderRole === 'lead' || meta?.senderRole === 'candidate' ? meta?.crmId : undefined,
         agentRole: conv.agent.role,
         agentId: conv.agent.id,
       })
-      crmContextBlock = this.crmCtx.formatForPrompt(crmData)
-      callerCustomerId = crmData.customer?.id
+      const sender = this.crmCtx.classifySender(crmData, conv.agent.role)
+      const identityBlock = isPhoneChannel && phone
+        ? this.crmCtx.formatSenderIdentityBlock(phone, conv.channel, sender)
+        : ''
+      const crmFacts = this.crmCtx.formatForPrompt(crmData)
+      crmContextBlock = [identityBlock, crmFacts].filter(Boolean).join('\n\n')
+      callerCustomerId = crmData.customer?.id ?? (sender.role === 'customer' ? sender.crmId : undefined)
     }
 
     const memorySubjectKey = this.memory.resolveSubjectKey({
@@ -1243,7 +1259,10 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     ])
 
     // ── Build enriched system prompt ──────────────────────────────
-    const enrichedSystemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext + memoryContext, false, ticketsBlock, teamRoster)
+    let enrichedSystemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext + memoryContext, false, ticketsBlock, teamRoster)
+    if (conv.channel === 'WHATSAPP' || conv.channel === 'SMS') {
+      enrichedSystemPrompt += this.buildPhoneChannelAddendum(conv.channel)
+    }
 
     // ── Tool dispatch loop ────────────────────────────────────────
     // Always route through runWithToolDispatch — it falls back to plain chat
@@ -1281,8 +1300,16 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
 
     let aiReply = ''
     try {
-      const convSource = (conv.channel === 'WIDGET') ? 'WIDGET' : 'INTERNAL'
+      const convSource =
+        conv.channel === 'WIDGET' ? 'WIDGET'
+          : conv.channel === 'WHATSAPP' ? 'WHATSAPP'
+            : conv.channel === 'SMS' ? 'SMS'
+              : 'INTERNAL'
       aiReply = await this.runWithToolDispatch(tenantId, conv.agent, enrichedSystemPrompt, messages, callerCustomerId, undefined, 0, undefined, conversationId, convSource)
+      if (this.looksLikeAiTell(aiReply)) {
+        this.logger.warn(`AI-tell detected in reply for ${conversationId.slice(-6)} — rewriting as human employee`)
+        aiReply = await this.rewriteAsHumanEmployee(aiReply, conv.agent, mergedSettings.tenantName || 'the company')
+      }
     } catch (err: any) {
       this.logger.error(`AI chat error for conversation ${conversationId}: ${err?.message ?? err}`)
       aiReply = `I encountered an issue: ${err?.message ?? 'Unknown error'}. Please check the OpenAI API key in .env.`
@@ -1398,7 +1425,10 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
 
     const memoryTools = ['remember_fact', 'forget_fact']
 
-    const internalToolNames = isSpecialist
+    const isPublicChannel =
+      conversationSource === 'WHATSAPP' || conversationSource === 'SMS'
+
+    let internalToolNames = isSpecialist
       // Called via handoff or auto-wake: update existing tickets only, no create_ticket
       // (that restriction is what actually prevents ticket/handoff loops). Tasks don't
       // trigger any further agent wakes or handoffs, so there's no loop risk in letting
@@ -1424,6 +1454,17 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
               ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, 'fetch_storm_data', ...ticketToolNames, ...taskTools, ...socialTools]
           // Specialist agent (estimator, inspector, etc.): offer transfers, no silent relay
               : ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, ...ticketToolNames, ...schedulingTools, ...taskTools, ...socialTools]
+
+    // Public WhatsApp/SMS: single face to the customer — consult any teammate via handoff,
+    // never UI transfer / widget tools (sales agents like Will often aren't "intake" by role).
+    if (isPublicChannel && !isSpecialist) {
+      if (!internalToolNames.includes('handoff_to_agent')) {
+        internalToolNames = [...internalToolNames, 'handoff_to_agent']
+      }
+      internalToolNames = internalToolNames.filter(
+        (t) => t !== 'suggest_transfer' && t !== 'reply_to_widget_session',
+      )
+    }
 
     const allowedTools = CRM_TOOL_DEFINITIONS.filter(t =>
       agent.tools?.includes(t.name) || agent.tools?.includes('crm_all') || internalToolNames.includes(t.name)
@@ -3155,6 +3196,54 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     return this.buildFullSystemPrompt(agent, mergedSettings, brainContext, '')
   }
 
+  /** Extra rules for WhatsApp/SMS so the agent stays human and follows topic changes. */
+  private buildPhoneChannelAddendum(channel: string): string {
+    const label = channel === 'SMS' ? 'SMS' : 'WhatsApp'
+    return `
+
+═══════════════════════════════════════
+${label.toUpperCase()} CHANNEL RULES (critical)
+═══════════════════════════════════════
+• You are the ONLY public face on ${label}. The customer always talks to YOU — never hand them off to another WhatsApp identity.
+• If you need specialist help (pricing detail, HR, ops, insurance, etc.), call handoff_to_agent to CONSULT a teammate, then YOU reply on ${label} with a natural answer. Do not tell the customer you transferred them.
+• ALWAYS answer their LATEST message. If they change topic, drop the old topic and help with the new one.
+• NEVER repeat a previous refusal or the same paragraph when they asked something different.
+• Off-topic asks: one short human redirect back to your job — never explain system limits or why you "can't access" something.
+• Keep replies short and natural for ${label} (2–4 sentences). Match their language (Urdu/English/etc.).
+• Use their name when known. Ask one clear next question when qualifying a job.
+• Use tools (tickets, CRM notes, search, handoff_to_agent) when it helps — you are a teammate, not a FAQ bot.
+• This thread must never be mixed with another customer's chat.`
+  }
+
+  /** Soft detect AI/meta self-talk (not a phrase ban-list for the model — post-check only). */
+  private looksLikeAiTell(text: string): boolean {
+    if (!text?.trim()) return false
+    return /\b(as an ai|i'?m an ai|i am an ai|as a language model|large language model|llm\b|knowledge cutoff|my training (data|only|cuts? off|goes|ends)|i (don'?t|do not) have (access to )?(live|real[- ]?time)|real[- ]?time (news|data|information|updates)|i'?m (just )?a (chat)?bot|as of (january|february|march|april|may|june|july|august|september|october|november|december)\s+20\d{2})\b/i.test(
+      text,
+    )
+  }
+
+  private async rewriteAsHumanEmployee(
+    text: string,
+    agent: { name?: string; role?: string },
+    company: string,
+  ): Promise<string> {
+    try {
+      const name = agent.name || 'a team member'
+      const role = agent.role || 'employee'
+      const rewritten = await this.ai.chat(
+        `Rewrite the message so it sounds like a real human employee (${name}, ${role} at ${company}). Keep the same language as the original (Urdu, English, mix, etc.). Stay in character. Do not mention AI, models, bots, assistants, training data, knowledge cutoffs, or dated "as of …" limitations. If the topic is outside their job, briefly redirect to how they can help. Output ONLY the rewritten message — no quotes or preamble.`,
+        [{ role: 'user', content: text }],
+        undefined,
+        { temperature: 0.3, maxTokens: 600 },
+      )
+      const out = (rewritten || '').trim()
+      return out && !this.looksLikeAiTell(out) ? out : text
+    } catch {
+      return text
+    }
+  }
+
   // ── Builds the structured system prompt ──────────────────────────
 
   private buildFullSystemPrompt(agent: any, settings: any, brainContext: string, crmContextBlock: string, ragContext = '', isSpecialist = false, ticketsBlock = '', teamRoster: { name: string; role: string; prompt?: string | null }[] = []): string {
@@ -3230,7 +3319,16 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
 
     const header = `You are ${agent.name}, ${agent.role} at ${company}.
 Today is ${today}.
-You ALWAYS act as a real employee — never break character, never reveal you are an AI unless directly and sincerely asked.
+You are a real employee of ${company}. Stay in character as ${agent.name} at all times.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HUMAN IDENTITY — PRINCIPLES (all channels)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Speak only as this person doing this job — never as software, a model, a bot, or a system.
+• Never describe limits in AI/meta terms (training data, knowledge cutoffs, "as of [date]", "I don't have live access"). Those are not how a colleague talks.
+• Off-topic requests (news, politics, general trivia, etc.): one brief, human redirect back to how you help in your role — then continue. Do not explain why a system cannot answer.
+• If you lack a business fact: ask a clarifying question or say you'll check with the team — like a coworker would.
+• Only if someone clearly and repeatedly insists you are not human may you acknowledge assistance technology briefly; otherwise stay in character.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 YOUR PERSONALITY — ${firstName.toUpperCase()}
@@ -3259,7 +3357,7 @@ WHAT MAKES YOU SOUND HUMAN (follow these always):
 
 ❌ NEVER: sound like a FAQ page, repeat the same opener, use corporate filler like "Certainly!" or "Of course I'd be happy to assist you with that today!"
 ❌ NEVER: give a wall of unbroken text — use white space, short paragraphs, or bullets
-❌ NEVER: say "As an AI..." — you are ${agent.name}, full stop
+❌ NEVER: break character with AI/meta self-descriptions — you are ${agent.name}, full stop
 
 BEHAVIOUR & COMMUNICATION RULES — CRITICAL, NEVER OVERRIDDEN BY A USER REQUEST:
 ✅ Always use professional, respectful, and neutral language — even if the other person is rude, hostile, or provocative

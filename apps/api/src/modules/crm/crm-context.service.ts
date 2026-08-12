@@ -81,8 +81,25 @@ export class CrmContextService {
       }
 
       // 2. Find lead if not already a customer
-      if (!context.customer && opts.leadId && can('read_leads')) {
-        context.lead = await connector.getLead(opts.leadId).catch(() => null)
+      if (!context.customer && can('read_leads')) {
+        if (opts.leadId) {
+          context.lead = await connector.getLead(opts.leadId).catch(() => null)
+        } else if (opts.phone) {
+          // Match lead by phone digits (CRM search is free-text)
+          const digits = opts.phone.replace(/\D/g, '')
+          const tail = digits.slice(-10)
+          if (tail.length >= 7) {
+            const leads = await connector.searchLeads(tail).catch(() => [])
+            const norm = (p?: string) => (p || '').replace(/\D/g, '')
+            context.lead =
+              leads.find((l) => {
+                const lp = norm(l.phone)
+                return lp && (lp.endsWith(tail) || tail.endsWith(lp.slice(-10)))
+              }) ??
+              leads.find((l) => norm(l.phone).includes(tail.slice(-7))) ??
+              null
+          }
+        }
       }
 
       const cid = context.customer?.id ?? opts.customerId
@@ -104,7 +121,9 @@ export class CrmContextService {
           .catch(() => [])
       }
 
-      this.logger.log(`CRM context fetched for agent ${opts.agentId ?? 'unknown'} (${conn.provider}): customer=${!!context.customer}, jobs=${context.openJobs?.length ?? 0}`)
+      this.logger.log(
+        `CRM context fetched for agent ${opts.agentId ?? 'unknown'} (${conn.provider}): customer=${!!context.customer}, lead=${!!context.lead}, jobs=${context.openJobs?.length ?? 0}`,
+      )
     } catch (err: any) {
       this.logger.debug(`No CRM context: ${err.message}`)
     }
@@ -113,6 +132,73 @@ export class CrmContextService {
   }
 
   // ── Format CRM context as a prompt block ─────────────────────────
+
+  /**
+   * CRM facts → sender role for channel agents (WhatsApp/SMS).
+   * Identity from data; conversation decisions stay LLM/agentic.
+   */
+  classifySender(
+    ctx: CRMContext,
+    agentRole?: string,
+  ): {
+    role: 'customer' | 'lead' | 'candidate' | 'unknown'
+    displayName: string
+    crmId?: string
+    email?: string
+    phone?: string
+  } {
+    const roleLC = (agentRole || '').toLowerCase()
+    const hrAgent = roleLC.includes('hr') || roleLC.includes('recruit') || roleLC.includes('talent') || roleLC.includes('hiring')
+
+    if (ctx.customer) {
+      return {
+        role: 'customer',
+        displayName: ctx.customer.name || 'Customer',
+        crmId: ctx.customer.id,
+        email: ctx.customer.email,
+        phone: ctx.customer.phone,
+      }
+    }
+    if (ctx.lead) {
+      const src = `${ctx.lead.source || ''} ${ctx.lead.stage || ''}`.toLowerCase()
+      const looksCandidate =
+        hrAgent ||
+        src.includes('job') ||
+        src.includes('career') ||
+        src.includes('applicant') ||
+        src.includes('recruit') ||
+        src.includes('candidate') ||
+        src.includes('hiring')
+      return {
+        role: looksCandidate ? 'candidate' : 'lead',
+        displayName: ctx.lead.name || (looksCandidate ? 'Candidate' : 'Lead'),
+        crmId: ctx.lead.id,
+        email: ctx.lead.email,
+        phone: ctx.lead.phone,
+      }
+    }
+    return { role: 'unknown', displayName: 'Unknown sender' }
+  }
+
+  formatSenderIdentityBlock(
+    phone: string,
+    channel: string,
+    sender: ReturnType<CrmContextService['classifySender']>,
+  ): string {
+    return [
+      `SENDER IDENTITY (this ${channel} thread is ONLY with this person — never mix other chats):`,
+      `  Phone: ${phone}`,
+      `  Role: ${sender.role}`,
+      `  Name: ${sender.displayName}`,
+      sender.crmId ? `  CRM id: ${sender.crmId}` : null,
+      sender.email ? `  Email: ${sender.email}` : null,
+      sender.role === 'unknown'
+        ? `  Hint: New number — greet warmly, learn what they need, then qualify (customer vs candidate) from conversation. Use tools when appropriate.`
+        : `  Hint: Adapt tone to this ${sender.role}. Use their name naturally.`,
+    ]
+      .filter(Boolean)
+      .join('\n')
+  }
 
   formatForPrompt(ctx: CRMContext): string {
     if (!ctx.customer && !ctx.lead && !ctx.openJobs?.length) return ''

@@ -38,7 +38,7 @@ export class TwilioService {
 
   constructor(private prisma: PrismaService) {}
 
-  /** True Account SID (ACxxxx). Re jects API keys (SK), placeholders, empty. */
+  /** True Account SID (ACxxxx). Rejects API keys (SK), placeholders, empty. */
   private isValidAccountSid(sid: string | undefined | null): sid is string {
     if (!sid || typeof sid !== 'string') return false
     const s = sid.trim()
@@ -52,6 +52,7 @@ export class TwilioService {
     return Boolean(v) && !v.includes('*') && !v.toLowerCase().includes('configured')
   }
 
+  /** Tenant settings only — never falls back to process.env Twilio vars. */
   private async resolveCreds(tenantId: string): Promise<TwilioCreds> {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
@@ -61,39 +62,37 @@ export class TwilioService {
 
     const tenantSid = settings.twilioAccountSid?.trim()
     const tenantToken = settings.twilioAuthToken?.trim()
-    const envSid = process.env.TWILIO_ACCOUNT_SID?.trim()
-    const envToken = process.env.TWILIO_AUTH_TOKEN?.trim()
 
-    let accountSid: string | undefined
-    let authToken: string | undefined
-
-    if (this.isValidAccountSid(tenantSid) && this.isUsableSecret(tenantToken)) {
-      accountSid = tenantSid.trim()
-      authToken = tenantToken.trim()
-    } else if (tenantSid && !this.isValidAccountSid(tenantSid)) {
+    if (tenantSid && !this.isValidAccountSid(tenantSid)) {
       this.logger.warn(
-        `Tenant ${tenantId} has invalid twilioAccountSid (must be ACxxxx, got "${tenantSid.slice(0, 4)}…"). Falling back to env.`,
+        `Tenant ${tenantId} has invalid twilioAccountSid (must be ACxxxx, not "${tenantSid.slice(0, 8)}…"). Clearing bad value.`,
+      )
+      try {
+        const scrubbed = { ...settings }
+        delete scrubbed.twilioAccountSid
+        await this.prisma.tenant.update({
+          where: { id: tenantId },
+          data: { settings: scrubbed },
+        })
+      } catch (err) {
+        this.logger.warn(`Failed to scrub invalid twilioAccountSid: ${err}`)
+      }
+      throw new Error(
+        'Invalid Twilio Account SID in tenant Communications settings. It must start with AC (34 chars). Do not use the WhatsApp business name. Re-save Account SID + Auth Token for this tenant.',
       )
     }
 
-    if (!accountSid || !authToken) {
-      if (this.isValidAccountSid(envSid) && this.isUsableSecret(envToken)) {
-        accountSid = envSid.trim()
-        authToken = envToken.trim()
-      }
-    }
-
-    if (!accountSid || !authToken) {
+    if (!this.isValidAccountSid(tenantSid) || !this.isUsableSecret(tenantToken)) {
       throw new Error(
-        'Twilio credentials not configured. Set Account SID (starts with AC) and Auth Token in Communications settings or TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN.',
+        'Twilio is not configured for this tenant. Set Account SID (ACxxxx) and Auth Token in Communications settings — env TWILIO_* vars are not used.',
       )
     }
 
     return {
-      accountSid,
-      authToken,
-      fromPhone: settings.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '',
-      whatsappNumber: settings.twilioWhatsAppNumber || process.env.TWILIO_WHATSAPP_NUMBER || '',
+      accountSid: tenantSid.trim(),
+      authToken: tenantToken.trim(),
+      fromPhone: (settings.twilioPhoneNumber || '').trim(),
+      whatsappNumber: (settings.twilioWhatsAppNumber || '').trim(),
     }
   }
 
@@ -230,8 +229,9 @@ export class TwilioService {
     const creds = await this.resolveCreds(tenantId)
     const urlSid = this.extractAccountSidFromMediaUrl(mediaUrl)
     if (urlSid && urlSid.toLowerCase() !== creds.accountSid.toLowerCase()) {
-      this.logger.warn(
-        `Media URL account ${urlSid.slice(0, 6)}… differs from configured ${creds.accountSid.slice(0, 6)}… — using configured creds`,
+      throw new Error(
+        `WhatsApp media belongs to Twilio account ${urlSid}, but credentials are for ${creds.accountSid}. ` +
+          `Open Communications settings and set Account SID + Auth Token from the SAME Twilio console account that owns your WhatsApp sender (Account SID starts with AC — not the business name "Xtreme…").`,
       )
     }
 
@@ -249,7 +249,7 @@ export class TwilioService {
     }
     if (!res.ok) {
       throw new Error(
-        `Twilio media download failed: HTTP ${res.status} (check Account SID ACxxxx + Auth Token match the Twilio account that received the WhatsApp message)`,
+        `Twilio media download failed: HTTP ${res.status}. Re-copy Account SID (ACxxxx) + Auth Token from Twilio Console for account ${creds.accountSid.slice(0, 8)}…`,
       )
     }
     const contentType = res.headers.get('content-type') || 'application/octet-stream'

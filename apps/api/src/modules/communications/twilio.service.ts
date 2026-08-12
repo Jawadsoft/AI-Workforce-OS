@@ -38,7 +38,7 @@ export class TwilioService {
 
   constructor(private prisma: PrismaService) {}
 
-  /** True Account SID (ACxxxx). Rejects API keys (SK), placeholders, empty. */
+  /** True Account SID (ACxxxx). Re jects API keys (SK), placeholders, empty. */
   private isValidAccountSid(sid: string | undefined | null): sid is string {
     if (!sid || typeof sid !== 'string') return false
     const s = sid.trim()

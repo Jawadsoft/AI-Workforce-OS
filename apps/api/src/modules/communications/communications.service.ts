@@ -403,8 +403,29 @@ export class CommunicationsService {
   async saveSettings(tenantId: string, dto: Record<string, string | undefined>) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } })
     const existing = (tenant?.settings as Record<string, string>) || {}
-    const merged = { ...existing, ...Object.fromEntries(Object.entries(dto).filter(([, v]) => v !== undefined)) }
-    await this.prisma.tenant.update({ where: { id: tenantId }, data: { settings: merged } })
+
+    const next = { ...existing }
+    for (const [key, value] of Object.entries(dto)) {
+      if (value === undefined) continue
+      const v = typeof value === 'string' ? value.trim() : value
+      // Never persist masked placeholders from the GET settings response
+      if (typeof v === 'string' && (v.includes('***') || v.toLowerCase() === 'configured')) continue
+      // Don't wipe secrets with empty string on partial saves
+      if (
+        (key === 'twilioAccountSid' || key === 'twilioAuthToken') &&
+        (!v || (typeof v === 'string' && !v.length))
+      ) {
+        continue
+      }
+      if (key === 'twilioAccountSid' && typeof v === 'string' && v && !/^AC[0-9a-f]{32}$/i.test(v)) {
+        throw new BadRequestException(
+          'Twilio Account SID must start with AC (32 hex chars). Do not use API Key SID (SK…) or Auth Token here.',
+        )
+      }
+      next[key] = v as string
+    }
+
+    await this.prisma.tenant.update({ where: { id: tenantId }, data: { settings: next } })
     return { success: true }
   }
 

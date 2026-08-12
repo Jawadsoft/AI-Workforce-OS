@@ -10,6 +10,7 @@ import { EmailClassifier, EmailType } from './email-classifier'
 import { ChatService } from '../chat/chat.service'
 import { EmailService } from '../email/email.service'
 import { encrypt, decrypt } from './crypto.util'
+import { AutonomyService } from '../../common/autonomy/autonomy.service'
 
 export interface EmailScanItem {
   from: string
@@ -75,6 +76,7 @@ export class IntegrationsService {
     private readonly ai: AIService,
     private readonly chat: ChatService,
     private readonly email: EmailService,
+    private readonly autonomy: AutonomyService,
   ) {}
 
   // ─────────────────────────────────────────────
@@ -671,6 +673,11 @@ export class IntegrationsService {
         return 'archived'
 
       case 'auto_reply': {
+        if (!(await this.autonomy.canContactCustomer(tenantId))) {
+          await this.notifyAgentOfEmail(tenantId, email, classification,
+            '⚠️ Auto-reply skipped — AI workforce autonomy is paused or internal-only.')
+          return 'notified'
+        }
         if (!mailer) {
           await this.notifyAgentOfEmail(tenantId, email, classification,
             '⚠️ Auto-reply skipped — SMTP not configured for this account.')

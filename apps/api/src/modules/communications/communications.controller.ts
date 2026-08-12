@@ -52,9 +52,13 @@ export class CommunicationsController {
     try {
       const body = (req.body || {}) as Record<string, string>
       const mediaUrls: string[] = []
+      const mediaContentTypes: string[] = []
       const numMedia = parseInt(body.NumMedia || '0', 10)
       for (let i = 0; i < numMedia; i++) {
-        if (body[`MediaUrl${i}`]) mediaUrls.push(body[`MediaUrl${i}`])
+        if (body[`MediaUrl${i}`]) {
+          mediaUrls.push(body[`MediaUrl${i}`])
+          mediaContentTypes.push(body[`MediaContentType${i}`] || '')
+        }
       }
 
       const result = await this.comms.handleInboundWhatsApp({
@@ -64,6 +68,7 @@ export class CommunicationsController {
         body: body.Body || body.ButtonText || body.ButtonPayload || '',
         twilioSid: body.MessageSid || '',
         mediaUrls,
+        mediaContentTypes,
       })
       res.send(this.buildMessageTwiml(result.reply, result.sentViaApi))
     } catch (err) {

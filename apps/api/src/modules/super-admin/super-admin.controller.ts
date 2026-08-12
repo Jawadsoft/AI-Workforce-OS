@@ -13,6 +13,7 @@ import { ALL_FEATURES } from '../../common/feature-flags/feature-flags.constants
 import { IndustryKnowledgeService } from '../knowledge/industry-knowledge.service'
 import { KnowledgeService } from '../knowledge/knowledge.service'
 import { HelpService } from '../help/help.service'
+import { isAutonomyMode, AUTONOMY_MODES } from '../../common/autonomy/autonomy.constants'
 
 class CreateTemplateDto {
   @IsString() name: string
@@ -215,6 +216,25 @@ export class SuperAdminController {
   @ApiOperation({ summary: 'Activate a suspended tenant' })
   activateTenant(@Param('id') id: string, @Req() req: any) {
     return this.service.activateTenant(id, req.user?.allowedTenantIds)
+  }
+
+  @Patch('tenants/:id/autonomy')
+  @ApiOperation({ summary: 'Set tenant AI workforce autonomy mode (emergency stop)' })
+  setTenantAutonomy(
+    @Param('id') id: string,
+    @Body() dto: { mode?: string; reason?: string },
+    @Req() req: any,
+  ) {
+    if (!isAutonomyMode(dto.mode)) {
+      throw new BadRequestException(`mode must be one of: ${AUTONOMY_MODES.join(', ')}`)
+    }
+    return this.service.setTenantAutonomy(
+      id,
+      dto.mode,
+      { id: req.user?.id, name: req.user?.name ?? req.user?.email },
+      dto.reason,
+      req.user?.allowedTenantIds,
+    )
   }
 
   @Delete('tenants/:id')

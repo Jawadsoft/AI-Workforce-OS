@@ -1,9 +1,11 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { Brain, Building2, Key, Mail, Bell, Shield, Code2, Plug2, Loader2, Save } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { Brain, Building2, Key, Mail, Bell, Shield, Code2, Plug2, Loader2, Save, PauseCircle, Lock } from 'lucide-react'
 import { BrainPanel } from '@/components/brain/brain-panel'
 import { IntegrationsPanel } from '@/components/integrations/integrations-panel'
+import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
 
@@ -503,6 +505,36 @@ function SecuritySettings() {
     confirmPassword: '',
   })
   const [saving, setSaving] = useState(false)
+  const [autonomy, setAutonomy] = useState<{ mode: string; updatedAt: string | null; updatedByName: string | null } | null>(null)
+  const [autonomySaving, setAutonomySaving] = useState(false)
+  const qc = useQueryClient()
+  const lastRunningMode = useRef<'full' | 'internal'>('full')
+
+  useEffect(() => {
+    api.get('/tenants/autonomy').then(r => {
+      setAutonomy(r.data)
+      if (r.data?.mode === 'internal' || r.data?.mode === 'full') lastRunningMode.current = r.data.mode
+    }).catch(() => {})
+  }, [])
+
+  async function setAutonomyMode(mode: 'off' | 'internal' | 'full') {
+    if (mode === 'off' && !confirm('This stops auto emails, ticket wakes, and pipeline advances for this company. Staff can still use the dashboard. Continue?')) return
+    setAutonomySaving(true)
+    try {
+      const res = await api.patch('/tenants/autonomy', { mode, reason: `Set to ${mode} from Settings` })
+      setAutonomy(res.data)
+      if (mode === 'internal' || mode === 'full') lastRunningMode.current = mode
+      qc.invalidateQueries({ queryKey: ['tenant-autonomy'] })
+      toast.success(mode === 'full' ? 'AI workforce resumed' : mode === 'off' ? 'Emergency stop is on' : 'Internal-only mode enabled')
+    } catch {
+      toast.error('Failed to update autonomy')
+    } finally {
+      setAutonomySaving(false)
+    }
+  }
+
+  const mode = autonomy?.mode ?? 'full'
+  const stopOn = mode === 'off'
 
   const handleChange = async () => {
     if (form.newPassword !== form.confirmPassword) {
@@ -530,7 +562,62 @@ function SecuritySettings() {
   }
 
   return (
-    <div className="space-y-6 max-w-md">
+    <div className="space-y-6 max-w-xl">
+      <div className={`rounded-lg border p-6 space-y-4 ${stopOn ? 'border-red-500/50 bg-red-500/5' : 'border-border'}`}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-semibold flex items-center gap-2"><PauseCircle className="w-4 h-4" /> AI workforce emergency stop</h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Pause autonomous agents for this company only. The dashboard stays available.
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className={`text-xs font-semibold uppercase tracking-wide ${stopOn ? 'text-red-500' : 'text-muted-foreground'}`}>
+                {stopOn ? 'On' : 'Off'}
+              </span>
+              <Switch
+                checked={stopOn}
+                disabled={autonomySaving}
+                onCheckedChange={(checked) => {
+                  if (checked) setAutonomyMode('off')
+                  else setAutonomyMode(lastRunningMode.current)
+                }}
+                className="h-7 w-12 data-[state=checked]:bg-red-500 [&>span]:h-6 [&>span]:w-6 [&>span]:data-[state=checked]:translate-x-5"
+              />
+            </div>
+            <span className="text-[11px] text-muted-foreground">{stopOn ? 'Workforce paused' : 'Workforce running'}</span>
+          </div>
+        </div>
+
+        {!stopOn && (
+          <label className="flex items-center justify-between gap-4 rounded-lg border border-border px-4 py-3">
+            <div>
+              <p className="text-sm font-medium flex items-center gap-2"><Lock className="w-4 h-4" /> Internal only</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Tickets and CRM notes can run. No customer emails, SMS, or auto-publish.</p>
+            </div>
+            <Switch
+              checked={mode === 'internal'}
+              disabled={autonomySaving}
+              onCheckedChange={(checked) => setAutonomyMode(checked ? 'internal' : 'full')}
+            />
+          </label>
+        )}
+
+        {stopOn && (
+          <p className="text-sm text-red-500/90">
+            No auto-wake, no pipeline advance, no outbound contact until you turn this off.
+          </p>
+        )}
+
+        {autonomy?.updatedAt && (
+          <p className="text-xs text-muted-foreground">
+            Last changed {new Date(autonomy.updatedAt).toLocaleString()}
+            {autonomy.updatedByName ? ` by ${autonomy.updatedByName}` : ''}
+          </p>
+        )}
+      </div>
+
       <div className="rounded-lg border border-border p-6 space-y-4">
         <h2 className="font-semibold">Change Password</h2>
         {[

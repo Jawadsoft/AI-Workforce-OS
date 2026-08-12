@@ -16,6 +16,7 @@ import {
   wrapHTML,
   type BrandKit,
 } from './document-render.helpers'
+import { applyExtractedFinancials, hydrateKnownAllowancesFromText } from '../../common/utils/text-sanitize.util'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
@@ -193,6 +194,12 @@ export class DocumentsService {
   "opIncluded": "string — 'Yes' or 'No' — was O&P included in the carrier estimate",
   "depreciationHeld": number — depreciation amount held by carrier,
   "acvPaid": number — ACV amount already paid,
+  "priorPayments": number — prior payments already issued by carrier,
+  "recoverableDepreciation": number — recoverable depreciation from the carrier summary,
+  "netClaimRemaining": number — net claim remaining after deductible and prior payments,
+  "trades": ["string — each trade/category from the recap e.g. Roofing, Painting, Gutters"],
+  "opRationale": "string — why O&P may apply, listing trades. Never say O&P is automatically required.",
+  "underScopedItems": [{ "description": "string", "xactimateCode": "string", "approvedAmount": number, "recommendedAmount": number, "gap": number, "reason": "string" }],
   "contractorEmail": "string — contractor contact email for the closing paragraph",
   "claimSummary": "string — 1-2 sentence summary of the claim. Write from the available details if not explicitly stated.",
   "approvedScope": [{ "description": "string", "xactimateCode": "string", "qty": "string", "unit": "string", "amount": number }],
@@ -226,7 +233,13 @@ SUPPLEMENT EXTRACTION RULES — READ CAREFULLY:
 - "adjusterPhone" — phone number associated with the adjuster or claims office.
 - "adjusterEmail" — email address associated with the adjuster or claims office.
 - "carrierEstimateDate" — date of the carrier's original estimate/loss report.
-- "deductible" — policy deductible dollar amount. Look for "DEDUCTIBLE:", "Deductible:", "Less Deductible", or "$X,XXX deductible". Extract as a number. NEVER output the string "N/A" when a number exists.
+- "deductible" — policy deductible dollar amount. Look for "DEDUCTIBLE:", "Deductible:", "Less Deductible", "Dwelling $X,XXX.00" in coverage table. Extract as a NUMBER. NEVER output "N/A" when a number exists (e.g. $3,290.00).
+- "priorPayments" — look for "Less Prior Payment(s)", "Prior Payment". Extract as a number.
+- "recoverableDepreciation" — look for "Total Recoverable Depreciation" or "Net Claim Remaining if Depreciation is Recovered" companion lines. Extract recoverable depreciation amount.
+- "netClaimRemaining" — look for "Net Claim Remaining". Extract as a number.
+- "trades" — list every recap category (Roofing, Painting, Siding, Gutters, Windows, Doors, Fireplace, Stucco, Debris, etc.).
+- "opRationale" — if O&P is requested, list those trades and say it is a potential opportunity requiring GC documentation — NEVER "Xactimate guidelines require".
+- "underScopedItems" — items already in the carrier estimate that may be under-allowed (e.g. permit $75 already paid). Never also list these as missingItems.
 - "policyNumber" — may appear as "Policy Number:", "Policy #:", or in parentheses after the carrier name.
 - "dateOfLoss" — may appear as "Date of Loss:", "DOL:", or a date following "loss on". Extract exactly as written.
 - "causeOfLoss" — may appear as "Cause of Loss:", "Peril:", "Loss Type:", or words like "wind", "hail", "storm".
@@ -299,6 +312,13 @@ GENERAL RULES:
     // Always ensure preparedBy is set for supplement documents
     if (input.type === 'supplement' && !docData.preparedBy) {
       docData.preparedBy = agentLabel
+    }
+
+    // Fill deductible / prior payments / etc. from the prompt when JSON omitted them
+    if (input.type === 'supplement') {
+      const source = `${input.prompt}\n${JSON.stringify(docData)}`
+      docData = applyExtractedFinancials(docData, source)
+      docData = hydrateKnownAllowancesFromText(docData, source)
     }
 
     // Recompute totals / coerce arrays — never trust AI math alone

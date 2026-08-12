@@ -154,4 +154,40 @@ export class TwilioService {
       },
     })
   }
+
+  /** Download Twilio-hosted media (WhatsApp voice notes, images, etc.). Requires Basic auth. */
+  async downloadMedia(
+    tenantId: string,
+    mediaUrl: string,
+  ): Promise<{ buffer: Buffer; contentType: string }> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { settings: true },
+    })
+    const settings = (tenant?.settings as Record<string, string>) || {}
+    const accountSid = settings.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID
+    const authToken = settings.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN
+    if (!accountSid || !authToken) {
+      throw new Error('Twilio credentials not configured for this tenant')
+    }
+
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+    // Twilio media URLs redirect to a signed CDN; auth only on the first hop.
+    const first = await fetch(mediaUrl, {
+      headers: { Authorization: `Basic ${auth}` },
+      redirect: 'manual',
+    })
+    let res = first
+    if (first.status >= 300 && first.status < 400) {
+      const location = first.headers.get('location')
+      if (!location) throw new Error(`Twilio media redirect missing Location (${first.status})`)
+      res = await fetch(location, { redirect: 'follow' })
+    }
+    if (!res.ok) {
+      throw new Error(`Twilio media download failed: HTTP ${res.status}`)
+    }
+    const contentType = res.headers.get('content-type') || 'application/octet-stream'
+    const arrayBuf = await res.arrayBuffer()
+    return { buffer: Buffer.from(arrayBuf), contentType }
+  }
 }

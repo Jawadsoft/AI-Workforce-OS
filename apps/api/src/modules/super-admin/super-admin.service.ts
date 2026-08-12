@@ -3,10 +3,15 @@ import { Industry, CRMProvider } from '@prisma/client'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { INDUSTRY_CRM_DEFAULTS } from '../crm/crm.interface'
 import * as bcrypt from 'bcryptjs'
+import { AutonomyService } from '../../common/autonomy/autonomy.service'
+import { AutonomyMode } from '../../common/autonomy/autonomy.constants'
 
 @Injectable()
 export class SuperAdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly autonomy: AutonomyService,
+  ) {}
 
   // ── Platform stats ────────────────────────────────────────────────
 
@@ -46,7 +51,12 @@ export class SuperAdminService {
         const settings = (t.settings as Record<string, unknown>) || {}
         return settings.isScopedAdminTemplate !== true
       })
-      .map(t => ({
+      .map(t => {
+      const settings = (t.settings as Record<string, any>) || {}
+      const autonomyMode = settings.autonomy?.mode === 'off' || settings.autonomy?.mode === 'internal' || settings.autonomy?.mode === 'full'
+        ? settings.autonomy.mode
+        : 'full'
+      return {
       id: t.id,
       name: t.name,
       slug: t.slug,
@@ -54,13 +64,14 @@ export class SuperAdminService {
       isActive: t.isActive,
       isApproved: t.isApproved,
       createdAt: t.createdAt,
+      autonomyMode,
       owner: t.users[0] ?? null,
       stats: {
         agents: t._count.agents,
         conversations: t._count.conversations,
         users: t._count.users,
       },
-    }))
+    }})
   }
 
   async listPendingTenants(allowedTenantIds: string[] | null = null) {
@@ -134,6 +145,17 @@ export class SuperAdminService {
     await this.prisma.tenant.update({ where: { id }, data: { isActive: true } })
     await this.prisma.user.updateMany({ where: { tenantId: id }, data: { isActive: true } })
     return { success: true, message: 'Tenant activated' }
+  }
+
+  async setTenantAutonomy(
+    id: string,
+    mode: AutonomyMode,
+    actor?: { id?: string; name?: string },
+    reason?: string,
+    allowedTenantIds: string[] | null = null,
+  ) {
+    this.checkTenantAccess(id, allowedTenantIds)
+    return this.autonomy.setMode(id, mode, actor, reason)
   }
 
   async deleteTenant(id: string, allowedTenantIds: string[] | null = null) {

@@ -38,10 +38,10 @@ The integration allows StormBuddi tenants with the **"Agentic AI Plan"** to seam
                 ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  StormBuddi calls AI Workforce API to provision tenant       │
-│  • Creates tenant account                                    │
-│  • Creates owner user                                        │
-│  • Sends verification email                                  │
-│  • Returns tenant ID                                         │
+│  • Creates tenant account (or returns existing)              │
+│  • Creates owner user (or returns existing)                  │
+│  • Sends verification email (new users only)                 │
+│  • Returns tenant ID (IDEMPOTENT - safe to retry)            │
 └───────────────┬─────────────────────────────────────────────┘
                 │
                 ▼
@@ -191,6 +191,7 @@ interface ProvisionTenantData {
 
 interface ProvisionResponse {
   success: boolean;
+  alreadyProvisioned?: boolean; // true if user already existed
   tenant: {
     id: string;
     name: string;
@@ -201,7 +202,7 @@ interface ProvisionResponse {
     email: string;
     name: string;
   };
-  verificationUrl: string;
+  verificationUrl?: string; // only present for new users
   message: string;
 }
 
@@ -216,6 +217,9 @@ class AIWorkforceService {
 
   async provisionTenant(data: ProvisionTenantData): Promise<ProvisionResponse> {
     try {
+      // NOTE: This endpoint is IDEMPOTENT
+      // If the user already exists, it will return the existing tenant info
+      // with alreadyProvisioned: true. Safe to retry on network errors.
       const response = await axios.post(
         `${this.apiUrl}/integrations/provision-tenant`,
         data,
@@ -1022,7 +1026,7 @@ Content-Type: application/json
 }
 ```
 
-**Response (201 Created):**
+**Response (201 Created) - New Tenant:**
 ```json
 {
   "success": true,
@@ -1041,9 +1045,29 @@ Content-Type: application/json
 }
 ```
 
+**Response (200 OK) - Existing User (Idempotent):**
+```json
+{
+  "success": true,
+  "alreadyProvisioned": true,
+  "tenant": {
+    "id": "cm1234567890",
+    "name": "ABC Roofing Inc",
+    "slug": "abc-roofing-inc-1234567890"
+  },
+  "user": {
+    "id": "cm0987654321",
+    "email": "jane@abcroofing.com",
+    "name": "Jane Smith"
+  },
+  "message": "User already has an account. Use SSO to log in."
+}
+```
+
+**Note:** This endpoint is **idempotent** - calling it multiple times with the same email will not create duplicate users. If the user already exists, it returns the existing tenant information and you should proceed directly to SSO login.
+
 **Error Responses:**
 - `401 Unauthorized`: Invalid API key
-- `409 Conflict`: User already exists
 - `500 Internal Server Error`: Server error
 
 ---

@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { useAutonomy } from '@/components/shared/autonomy-banner'
 import {
   BarChart3, CheckSquare, MessageSquare, FileText, Users, ThumbsUp,
   Activity, Zap, AlertTriangle, TrendingUp, Clock, ArrowRight,
@@ -107,6 +108,7 @@ export function AnalyticsPage() {
   }
 
   const totals = pipelineData?.totals ?? {}
+  const { data: autonomy } = useAutonomy()
 
   return (
     <div className="space-y-6">
@@ -115,6 +117,21 @@ export function AnalyticsPage() {
           <h1 className="text-2xl font-bold flex items-center gap-2"><BarChart3 className="w-6 h-6" /> Analytics</h1>
           <p className="text-muted-foreground mt-1">AI workforce performance metrics</p>
         </div>
+        <div className="flex items-center gap-3">
+          {autonomy && (
+            <span
+              className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+                autonomy.mode === 'off'
+                  ? 'bg-red-500/15 text-red-400'
+                  : autonomy.mode === 'internal'
+                    ? 'bg-amber-500/15 text-amber-400'
+                    : 'bg-emerald-500/15 text-emerald-400'
+              }`}
+              title="Read-only status. Change in Settings → Security."
+            >
+              Workforce: {autonomy.mode === 'off' ? 'Paused' : autonomy.mode === 'internal' ? 'Internal only' : 'Running'}
+            </span>
+          )}
         <div className="flex gap-1 bg-muted/40 rounded-xl p-1">
           <button onClick={() => setTab('ops')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === 'ops' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
             <Activity className="w-4 h-4" /> Operations
@@ -122,6 +139,7 @@ export function AnalyticsPage() {
           <button onClick={() => setTab('ai')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === 'ai' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
             <Zap className="w-4 h-4" /> AI Workforce
           </button>
+        </div>
         </div>
       </div>
 

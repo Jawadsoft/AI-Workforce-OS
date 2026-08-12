@@ -7,6 +7,7 @@ import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
 import { BrainService } from '../brain/brain.service'
 import { resolveBrandKit } from '../documents/document-render.helpers'
 import { SocialFlyerService, type FlyerCopy } from './social-flyer.service'
+import { AutonomyService } from '../../common/autonomy/autonomy.service'
 import OpenAI from 'openai'
 
 export type PostFormat = 'single_image' | 'carousel' | 'video_script' | 'poll'
@@ -58,6 +59,7 @@ export class SocialService {
     private readonly featureFlags: FeatureFlagsService,
     private readonly brain: BrainService,
     private readonly flyer: SocialFlyerService,
+    private readonly autonomy: AutonomyService,
   ) {}
 
   private getOpenAI(): OpenAI {
@@ -1051,6 +1053,10 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     })
 
     for (const post of due) {
+      if (!(await this.autonomy.canContactCustomer(post.tenantId))) {
+        this.logger.log(`[Social] Skipping auto-publish of ${post.id} — autonomy not full`)
+        continue
+      }
       await this.publishPost(post)
     }
   }

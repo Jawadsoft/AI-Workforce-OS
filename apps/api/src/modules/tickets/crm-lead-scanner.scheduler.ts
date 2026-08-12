@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { ChatService } from '../chat/chat.service'
 import { CrmService } from '../crm/crm.service'
+import { AutonomyService } from '../../common/autonomy/autonomy.service'
 
 /**
  * CRM Lead Scanner — runs every 15 minutes.
@@ -28,6 +29,7 @@ export class CrmLeadScannerScheduler {
     private readonly prisma: PrismaService,
     private readonly chat: ChatService,
     private readonly crm: CrmService,
+    private readonly autonomy: AutonomyService,
   ) {}
 
   @Cron('*/15 * * * *')
@@ -47,6 +49,8 @@ export class CrmLeadScannerScheduler {
   }
 
   private async scanTenant(tenantId: string, settings: any) {
+    if (!(await this.autonomy.canAutoProcess(tenantId))) return
+
     // Grab the operational playbook once — used for stage-0 context + nextAction
     const playbook = settings?.brain?.operationalPlaybook
     const pipelineStages: any[] = playbook?.pipelineStages ?? []

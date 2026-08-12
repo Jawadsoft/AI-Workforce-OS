@@ -18,6 +18,7 @@ import { SocialService } from '../social/social.service'
 import { ImageAnnotationService } from '../inspection/image-annotation.service'
 import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import { RealtimeGateway } from '../../realtime/realtime.gateway'
+import { AutonomyService } from '../../common/autonomy/autonomy.service'
 import { computeNextOccurrence, DEFAULT_US_TIMEZONE } from '../../common/utils/schedule-time.util'
 import {
   makeConversationDocument,
@@ -626,6 +627,7 @@ export class ChatService {
     private readonly imageAnnotation: ImageAnnotationService,
     private readonly cloudinary: CloudinaryService,
     private readonly realtime: RealtimeGateway,
+    private readonly autonomy: AutonomyService,
     @InjectQueue('knowledge-processing') private readonly extractionQueue: Queue,
     @InjectQueue('message-embedding') private readonly embeddingQueue: Queue,
   ) {}
@@ -876,6 +878,10 @@ export class ChatService {
    * Posts briefing as a user message and triggers the agent to respond.
    */
   async wakeAgentWithBriefing(tenantId: string, agentId: string, briefing: string): Promise<void> {
+    if (!(await this.autonomy.canAutoProcess(tenantId))) {
+      this.logger.warn(`[wakeAgentWithBriefing] Skipped — autonomy paused for tenant ${tenantId.slice(-6)}`)
+      return
+    }
     this.logger.log(`[wakeAgentWithBriefing] Waking agent ${agentId}`)
     try {
       const agentRecord = await this.prisma.agent.findUnique({ where: { id: agentId } })
@@ -942,6 +948,10 @@ export class ChatService {
    * Posts land in the agent's primary (user-visible) thread, same as a normal chat turn.
    */
   async wakeAgentWithCapabilities(tenantId: string, agentId: string, briefing: string): Promise<void> {
+    if (!(await this.autonomy.canAutoProcess(tenantId))) {
+      this.logger.warn(`[wakeAgentWithCapabilities] Skipped — autonomy paused for tenant ${tenantId.slice(-6)}`)
+      return
+    }
     this.logger.log(`[wakeAgentWithCapabilities] Waking agent ${agentId}`)
     try {
       const agentRecord = await this.prisma.agent.findUnique({ where: { id: agentId } })
@@ -1019,6 +1029,12 @@ export class ChatService {
     originatingConvId?: string,   // conversation where the ticket was created (e.g. Nora's window)
     _creatorAgentName?: string,
   ): Promise<void> {
+    if (!(await this.autonomy.canAutoProcess(tenantId))) {
+      const mode = await this.autonomy.getMode(tenantId)
+      this.logger.warn(`[autoWake] Skipped — autonomy mode is ${mode} for tenant ${tenantId.slice(-6)}`)
+      return
+    }
+
     this.logger.log(`[autoWake] Starting for agent ${agentId}, ticket ${ticketId.slice(-6)}`)
 
     // Load ticket metadata upfront for context framing in the callback to Nora
@@ -1946,6 +1962,10 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         // ── Smart contact: widget if active, email if idle ─
         if (toolName === 'contact_customer') {
           try {
+            if (!(await this.autonomy.canContactCustomer(tenantId))) {
+              const mode = await this.autonomy.getMode(tenantId)
+              return this.autonomy.blockedOutboundMessage(mode)
+            }
             const tenant = await this.prisma.tenant.findUnique({
               where: { id: tenantId },
               select: { settings: true, name: true },
@@ -2196,6 +2216,10 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         // ── Reply to widget customer ───────────────────────
         if (toolName === 'reply_to_widget_session') {
           try {
+            if (!(await this.autonomy.canContactCustomer(tenantId))) {
+              const mode = await this.autonomy.getMode(tenantId)
+              return this.autonomy.blockedOutboundMessage(mode)
+            }
             const widgetConv = await this.prisma.conversation.findFirst({
               where: { id: params.sessionId, tenantId, channel: 'WIDGET' },
             })
@@ -2546,6 +2570,10 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         // ── Social media tool ──────────────────────────────
         if (toolName === 'post_to_social') {
           try {
+            const socialMode = await this.autonomy.getMode(tenantId)
+            if (socialMode === 'off') {
+              return this.autonomy.blockedAutoProcessMessage(socialMode)
+            }
             emit?.({ step: { label: 'Generating social media posts', status: 'active' } })
             const format = params.format ?? 'single_image'
             const drafts = await this.social.generatePosts({
@@ -3993,12 +4021,12 @@ RULE F — OSHA: NOT A BLANKET PER-SQ CHARGE.
 Only include if documented safety costs exist: harness rental, scaffolding invoice, guardrail, crane, or safety plan.
 Never add a generic per-SQ OSHA charge.
 
-RULE G — PERMIT: MANDATORY LINE ITEM ON EVERY FULL ROOF REPLACEMENT.
-This is NOT optional. A permit line MUST appear in Section 6 unless the carrier already included one in their estimate.
+RULE G — PERMIT: CHECK THE FULL ESTIMATE, INCLUDING BID ITEMS.
+A permit line may appear as "permit", "JOB PERMIT", "building permit", "Taxes, insurance, permits & fees", or "Permit fee for roof repairs".
 
-Step 1: Search Section 2 (approved scope) for any line containing "permit", "JOB PERMIT", or "building permit". 
-Step 2: If found → it is already approved. Do NOT request it again.
-Step 3: If NOT found → you MUST add it to Section 6. No exceptions. No "verify first." Add it now with the regional estimate.
+Step 1: Search the ENTIRE carrier estimate (every trade, miscellaneous, and bid item — not just the first roof-covering lines).
+Step 2: If ANY permit/bid-fee dollar exists → it is already approved. Classify as UNDER-SCOPED, not missing. Do NOT add a second full regional permit (e.g. $325). Opportunity = documented AHJ cost minus the existing allowance.
+Step 3: If truly NOT found anywhere → add a permit line to Section 6 with the regional estimate, labeled as an estimate pending AHJ verification.
 
 Regional estimates (add to Section 6 labeled "~$X est. — verify with local AHJ"):
 - Southwest (TX, AZ, NM, OK, AR, LA): ~$325 est.
@@ -4025,15 +4053,15 @@ Step 1: Count the number of distinct trades in the approved scope:
 - Siding = 1 trade
 - Any additional trade = 1 trade
 Step 2: If 2 or more trades appear AND O&P is genuinely absent:
-→ O&P is a REQUIRED supplement item
-→ Calculate NOW: Carrier Approved Total × 0.20 = O&P amount. Write the actual dollar number.
+→ This is a **Potential O&P Opportunity — Documentation Required**, not an automatic mandate.
+→ List the actual trades from the recap (e.g. Roofing, Painting, Gutters/Fascia, Siding, Windows, Doors).
+→ You MAY price O&P: Carrier Approved Total × 0.20. Write the actual dollar number.
   Example: $9,472.78 × 0.20 = $1,894.56
-→ Add to BOTH Section 3 (Missing Items) AND Section 6 (Recommended Line Items) as a priced row
-→ Section 6 row: Code=O&P | Description="Overhead & Profit (10%/10%)" | Qty=1 | Unit=LS | Unit Price=[carrier total × 0.20] | Height=1.00 | O&P=N/A | RCV=$[calculated amount]
-→ Label: "Xactimate O&P guidelines — multi-trade coordination required (roofing + gutters + [other trades])"
-⚠️ CRITICAL: O&P MUST appear in Section 6 as a line item with a real dollar amount. Listing it only in Section 3 without pricing it in Section 6 is INCOMPLETE. The adjuster cannot act on an unpriced item.
-IMPORTANT: Roofing + any flashing work = 2 trades. That qualifies for O&P.
-Never write "O&P Applicable: No" when the carrier estimate has flashing, gutters, siding, or any trade beyond basic field shingles.
+→ Add to Section 6 as a priced potential item. Section 3 may note it as potential missing O&P, with the trade list.
+→ Section 6 row: Code=O&P | Description="Overhead & Profit (10%/10%) — potential, documentation required" | Qty=1 | Unit=LS | Unit Price=[carrier total × 0.20] | Height=1.00 | O&P=N/A | RCV=$[calculated amount]
+→ Label: "Potential O&P — GC coordination may be reasonably necessary for: [list trades]. Documentation required. Do not state that Xactimate guidelines automatically require O&P."
+⚠️ If priced, O&P must have a real dollar amount in Section 6. Listing it only in Section 3 without pricing is incomplete.
+Never write "O&P Applicable: No" when the carrier estimate has flashing, gutters, siding, or any trade beyond basic field shingles — say "Potential — documentation required" instead.
 
 RULE I — MANDATORY ITEMS: ALWAYS CHECK THESE 4 BEFORE CLOSING SECTION 3.
 These items are required on virtually every shingle roof replacement. If ANY of these are absent from the approved scope, they are MISSING — flag them:
@@ -4234,6 +4262,10 @@ Use clean markdown only. No emojis.
 * **Claim Status:** [CONFIRMED or UNKNOWN]
 * **Insured Name:** [CONFIRMED or UNKNOWN]
 * **Stories / Height Factor:** [Check Section 2 for Height Allowance line items. If present → "X-story — height allowance confirmed by carrier." If absent → "1-story assumed — no height allowance items found in estimate."]
+* **Deductible:** [CONFIRMED dollar amount from coverage table / "Less Deductible" — NEVER write N/A if a number exists]
+* **Prior Payments:** [CONFIRMED from "Less Prior Payment(s)" or UNKNOWN]
+* **Net Claim Remaining:** [CONFIRMED from carrier summary or UNKNOWN]
+* **Recoverable Depreciation:** [CONFIRMED or UNKNOWN]
 
 ## 2. Approved Scope
 List EVERY SINGLE line item from the carrier estimate — no abbreviations, no grouping, no "etc.", no "and others", no "additional items".
@@ -4250,15 +4282,20 @@ If the document is physically cut off and you cannot see all line items: write �
 **Carrier Approved Total: $X.XX** (CONFIRMED — grand total across ALL trades; NOT a single-trade subtotal)
 If only partial scope provided: "Approved Roof Scope Total: $X.XX — full claim RCV may differ."
 **O&P Included:** Yes / No [CONFIRMED or UNKNOWN]
+**Trades in estimate:** [list recap categories — Roofing, Painting, Gutters/Fascia, Siding, Windows, Doors, etc.]
 **Depreciation Held:** $X.XX [CONFIRMED or UNKNOWN]
 **ACV Paid:** $X.XX [CONFIRMED or UNKNOWN]
+**Deductible:** $X.XX [CONFIRMED — from Dwelling deductible / Less Deductible]
+**Prior Payments:** $X.XX [CONFIRMED or UNKNOWN]
+**Net Claim Remaining:** $X.XX [CONFIRMED or UNKNOWN]
 
 ## 3. Missing Items
 [Run Rule A first. Only list items genuinely absent from Section 2.]
 CRITICAL ANTI-BUG RULES:
 - NEVER list an item as missing if it already appears anywhere in Section 2 (Approved Scope) — including Ice & Water, starter strip, drip edge, felt, vents, flashing, permits/bid fees already paid.
 - If starter is present but rake starter option was "No", you may flag "Rake starter gap" ONLY — not "Starter Strip missing".
-- If permit/bid fee already exists, do NOT list "Permit Fee" as missing unless you are requesting an additional documented AHJ fee with a specific dollar amount.
+- If permit/bid fee already exists ("Taxes, insurance, permits & fees", "Permit fee for roof repairs", any permit dollar amount), do NOT list Permit as MISSING. Classify it as UNDER-SCOPED: Carrier allowance $X; actual AHJ cost requires verification; supplement = documented cost minus $X already allowed. NEVER request a second full permit (e.g. $325) as if it were absent.
+- MISSING vs UNDER-SCOPED: Missing = zero matching line in the FULL estimate. Under-scoped = line exists but quantity or price may be short. The permit $75 case is UNDER-SCOPED, not missing.
 - Every missing row MUST include a real Xactimate-style code (e.g. RFG STRT, RFG RGCAP, O&P, JOB PERMIT). NEVER write N/A or leave the code blank.
 - Every missing row MUST include a concrete qty from Hover/EagleView/carrier measurements when available (e.g. "20.87 SQ", "213.14 LF"). Only write "Field Verification Required" when no measurement exists — and say so honestly in chat before generating the PDF.
 - If you need a moment to map line items to Xactimate codes, tell the user you are verifying codes — accuracy beats speed. Do NOT generate a PDF with N/A codes.
@@ -4586,7 +4623,7 @@ Go through all 12 buckets before writing Section 3 or Section 4. For each bucket
   1. Find tear-off SQ from the shingle removal line
   2. Divide by 30 to get minimum dumpster count. Round up.
   3. Example: 34 SQ ÷ 30 = 1.13 → needs 2 dumpsters. If carrier has 1 → flag the second ~$450
-- Permit fee → MANDATORY line item if absent from carrier scope (see Rule G)
+- Permit fee → Search the FULL estimate for "permit", "permits & fees", "bid item". If ANY permit dollar exists, it is NOT missing — treat as under-scoped (documented AHJ cost minus existing allowance). Only add a full permit line if truly absent from all trades.
 - Power washing / landscape protection → Flag if documented in contractor scope
 - Overtime / additional labor → Flag if 2-story, steep slope, or tight access and carrier did not include
 
@@ -4602,7 +4639,8 @@ Go through all 12 buckets before writing Section 3 or Section 4. For each bucket
 
 ☐ BUCKET 10 — O&P (OVERHEAD & PROFIT)
 - STEP 1 FIRST — CHECK IF O&P IS ALREADY INCLUDED: Look at the carrier estimate header, summary, or any line for "O&P", "Overhead & Profit", "10%/10%", or "20%". If you see "O&P Included: Yes" → O&P is ALREADY APPROVED. Do NOT add it to the supplement. Skip to Bucket 11.
-- STEP 2 ONLY IF O&P IS ABSENT: Count trades (roofing + flashing + gutters + siding = multiple trades). If 2+ trades AND O&P absent → add O&P to supplement: Carrier Total × 0.20
+- STEP 2 ONLY IF O&P IS ABSENT: List the actual recap categories/trades from the estimate (Roofing, Painting, Gutters, Siding, Windows, Doors, Fireplace, Stucco, etc.). If 2+ trades, describe this as a **Potential O&P Opportunity — Documentation Required** (GC coordination may be reasonably necessary). Do NOT write "Xactimate guidelines require" or that O&P is automatically mandated.
+- You MAY price O&P (Carrier Total × 0.20) as a potential item, but the justification must list the trades and request GC documentation — never state it as an automatic requirement.
 - NEVER add O&P to supplement when the carrier estimate already includes it. This is an incorrect claim.
 
 ☐ BUCKET 11 — INTERIOR / SECONDARY DAMAGE
@@ -4651,10 +4689,11 @@ NEVER ask the user to manually re-type carrier name, claim number, policy number
 generate_document call requirements:
 - type: "supplement"
 - title: "Supplement Request - [insured name or claim number]"
-- prompt must include ALL of: carrier name, carrier address, adjuster name/title/phone/email, claim number, policy number, insured name, property address, date of loss, cause of loss, deductible (never N/A if present on the estimate), carrier estimate date, FULL approved scope with EVERY line item + Xactimate codes + qty + unit + amounts (all trades), every genuinely missing item with real Xactimate code + concrete qty + pricing, underpaid items ONLY if positive dollar gaps exist (otherwise omit / say none), documentation needed, recommended line items with qty/unit price/height factor/O&P/RCV, contractor action plan, supplement total, revised RCV, revised ACV, net additional payment due, confidence level
+- prompt must include ALL of: carrier name, carrier address, adjuster name/title/phone/email, claim number, policy number, insured name, property address, date of loss, cause of loss, deductible (never N/A if present), prior payments, recoverable depreciation, net claim remaining, trades list, carrier estimate date, FULL approved scope with EVERY line item (all trades — typically 40–60 lines on a full dwelling estimate) + codes + qty + unit + amounts, genuinely missing items only, under-scoped items (existing allowance vs documented cost), underpaid items ONLY if positive dollar gaps exist, documentation needed, recommended line items, action plan, supplement RCV total. Do not invent a "net additional check" from revised RCV minus original depreciation.
 - Every dollar amount must be a calculated number — no placeholders, no N/A codes, no $0.00 gap stub rows
-- Before calling generate_document: if any Xactimate code or qty is still unknown, tell the user you are verifying codes/quantities, finish the mapping, THEN generate. Never ship a buggy PDF with "Tear o", blank codes, or false missing items already in the approved scope
-- Deductible must match the carrier estimate when present
+- Before calling generate_document: if any Xactimate code or qty is still unknown, tell the user you are verifying codes/quantities, finish the mapping, THEN generate. Never ship a buggy PDF with "Tear o", blank codes, false missing permit, or a 6-line table labeled as full carrier scope
+- Deductible, prior payments, and permit bid-item must match the carrier estimate when present
+- FINAL CHECK before generate: "Does any requested supplemental item already exist anywhere in the carrier estimate?" If yes, it cannot be categorized as missing.
 
 - Offer adjuster dispute letter if items are clearly underpaid
 - Ask if re-inspection should be scheduled
@@ -5183,6 +5222,11 @@ When chatting with the business owner/manager directly (in the internal chat thr
       where: { id: tenantId },
       select: { settings: true },
     })
+    if (!(await this.autonomy.canAutoProcess(tenantId))) {
+      this.logger.warn(`[Pipeline] Skipped advance — autonomy paused for tenant ${tenantId.slice(-6)}`)
+      return
+    }
+
     const playbook = (tenant?.settings as any)?.brain?.operationalPlaybook
     if (!playbook?.pipelineStages?.length) return
 

@@ -82,6 +82,7 @@ interface Stats { tenants: number; agents: number; conversations: number; users:
 interface Tenant {
   id: string; name: string; slug: string; industry: string | null
   isActive: boolean; isApproved: boolean; createdAt: string
+  autonomyMode?: 'off' | 'internal' | 'full'
   owner: { name: string; email: string; isActive: boolean } | null
   stats: { agents: number; conversations: number; users: number }
 }
@@ -252,6 +253,16 @@ export default function SuperAdminDashboard() {
 
   async function toggleTenant(id: string, isActive: boolean) {
     await api.post(`/super-admin/tenants/${id}/${isActive ? 'suspend' : 'activate'}`)
+    loadData()
+  }
+
+  async function toggleAutonomy(id: string, current?: 'off' | 'internal' | 'full') {
+    const pausing = current !== 'off'
+    if (pausing && !confirm('Pause AI workforce for this tenant? Staff can still log in. Auto emails and pipeline wakes will stop.')) return
+    await api.patch(`/super-admin/tenants/${id}/autonomy`, {
+      mode: pausing ? 'off' : 'full',
+      reason: pausing ? 'Paused from super-admin' : 'Resumed from super-admin',
+    })
     loadData()
   }
 
@@ -576,6 +587,7 @@ export default function SuperAdminDashboard() {
                 onConfigure={openConfigModal}
                 onWidget={openWidgetModal}
                 onFeatures={openFeatureFlags}
+                onAutonomy={toggleAutonomy}
                 userRole={userRole}
                 onCreateTenant={() => setShowCreateTenant(true)}
               />
@@ -1290,7 +1302,7 @@ function ApprovalsTab({ tenants, onApprove, onReject }: {
 
 // ── Tenants Tab ───────────────────────────────────────────────────
 
-function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure, onWidget, onFeatures, userRole, onCreateTenant }: {
+function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure, onWidget, onFeatures, onAutonomy, userRole, onCreateTenant }: {
   tenants: Tenant[]
   search: string
   onSearch: (v: string) => void
@@ -1299,6 +1311,7 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
   onConfigure: (t: Tenant) => void
   onWidget: (t: Tenant) => void
   onFeatures: (t: Tenant) => void
+  onAutonomy: (id: string, current?: 'off' | 'internal' | 'full') => void
   userRole?: string
   onCreateTenant?: () => void
 }) {
@@ -1386,6 +1399,11 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
                         Pending
                       </span>
                     )}
+                    {t.autonomyMode && t.autonomyMode !== 'full' && (
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium w-fit ${t.autonomyMode === 'off' ? 'bg-red-900/30 text-red-400' : 'bg-amber-900/30 text-amber-400'}`}>
+                        {t.autonomyMode === 'off' ? 'Workforce paused' : 'Internal only'}
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="px-4 py-3">
@@ -1406,6 +1424,16 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
                         {btn.label}
                       </button>
                     ))}
+                    <button
+                      onClick={() => onAutonomy(t.id, t.autonomyMode)}
+                      className="text-xs px-2.5 py-1 rounded-md font-medium transition-colors"
+                      style={t.autonomyMode === 'off'
+                        ? { background: 'rgba(74,222,128,0.12)', color: '#4ade80', border: '1px solid rgba(255,255,255,0.06)' }
+                        : { background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(255,255,255,0.06)' }
+                      }
+                    >
+                      {t.autonomyMode === 'off' ? 'Resume AI' : 'Pause AI'}
+                    </button>
                     <button
                       onClick={() => onToggle(t.id, t.isActive)}
                       className="text-xs px-2.5 py-1 rounded-md font-medium transition-colors"

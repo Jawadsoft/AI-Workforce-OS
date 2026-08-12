@@ -1,4 +1,10 @@
-import { cleanExtractedText, filterFalseMissingItems, inferXactimateCode, isPlaceholderValue } from '../../common/utils/text-sanitize.util'
+import {
+  applyDuplicateScopeGuard,
+  cleanExtractedText,
+  inferXactimateCode,
+  isPlaceholderValue,
+  softenOpLanguage,
+} from '../../common/utils/text-sanitize.util'
 import * as crypto from 'crypto'
 
 // ── Brand kit ─────────────────────────────────────────────────────
@@ -234,8 +240,8 @@ export function normalizeDocData(type: string, data: Record<string, any>): Recor
       })
       .filter(Boolean)
 
-    // Drop false "missing" items already present in approved scope
-    out.missingItems = filterFalseMissingItems(asArray(out.missingItems), out.approvedScope)
+    // Sanitize missing rows here; duplicate-scope guard reclassifies vs approved (missing vs under-scoped)
+    out.missingItems = asArray(out.missingItems)
       .map((item: any) => {
         const description = cleanStr(item.description)
         if (!description) return null
@@ -307,27 +313,62 @@ export function normalizeDocData(type: string, data: Record<string, any>): Recor
     }).filter((item: any) => item.description && (item.estimatedValue > 0 || item.xactimateCode === 'O&P'))
 
     out.recommendedLineItems = items
-    const supplementTotal = items.reduce((s: number, i: any) => s + (Number(i.estimatedValue) || 0), 0)
+    out.trades = asArray(out.trades).map((t: any) => cleanStr(t)).filter(Boolean)
+    const hasTradeAnalysis = out.trades.length >= 2
+    out.recommendedLineItems = out.recommendedLineItems.map((item: any) => ({
+      ...item,
+      justification: softenOpLanguage(item.justification ?? '', hasTradeAnalysis),
+    }))
+    if (out.opApplicable) out.opApplicable = softenOpLanguage(String(out.opApplicable), hasTradeAnalysis)
+    if (!hasTradeAnalysis && /yes|2\+\s*trades|required/i.test(String(out.opApplicable ?? ''))) {
+      out.opApplicable = 'Potential — documentation required (list trades from carrier recap)'
+    }
+
+    // Duplicate-scope gate: permit already in estimate cannot stay MISSING / full duplicate priced line
+    Object.assign(out, applyDuplicateScopeGuard(out))
+
+    const priced = asArray(out.recommendedLineItems)
+    const supplementTotal = priced.reduce((s: number, i: any) => s + (Number(i.estimatedValue) || 0), 0)
     out.supplementTotal = Math.round(supplementTotal * 100) / 100
     const carrierApproved = Number(out.carrierApprovedTotal ?? 0) || 0
     out.revisedRcvTotal = Math.round((carrierApproved + out.supplementTotal) * 100) / 100
+
+    const scopeSum = asArray(out.approvedScope).reduce((s: number, i: any) => s + (Number(i.amount) || 0), 0)
+    out.approvedScopeLineCount = asArray(out.approvedScope).length
+    out.approvedScopeIsPartial = carrierApproved > 0 && scopeSum > 0 && scopeSum < carrierApproved * 0.85
+    out.approvedScopeSubtotal = Math.round(scopeSum * 100) / 100
+
+    // Do NOT invent net additional payment from revised RCV − old depreciation.
+    // Only fill revised ACV / net due when prior payments + deductible are known.
     const depreciation = Number(out.depreciationHeld ?? 0) || 0
-    out.revisedAcv = Math.round((out.revisedRcvTotal - depreciation) * 100) / 100
-    const acvPaid = Number(out.acvPaid ?? 0) || 0
     const deductible = Number(out.deductible ?? 0) || 0
-    out.netAdditionalPaymentDue = Math.round((out.revisedAcv - acvPaid - deductible) * 100) / 100
+    const prior = Number(out.priorPayments ?? 0) || 0
+    const acvPaid = Number(out.acvPaid ?? 0) || 0
+    const financialsComplete = deductible > 0
+    out.financialsComplete = financialsComplete
+    if (financialsComplete) {
+      // Keep revised RCV; skip naive "revised ACV = new RCV − original deprec" as a payment figure
+      out.revisedAcv = depreciation > 0
+        ? Math.round((out.revisedRcvTotal - depreciation) * 100) / 100
+        : undefined
+    } else {
+      out.revisedAcv = undefined
+      out.netAdditionalPaymentDue = undefined
+    }
+    // Never subtract deductible+ACV as if this were a first payment when prior payments exist
+    if (prior > 0) out.netAdditionalPaymentDue = undefined
+    void acvPaid
 
     // Clean scalar string fields used on cover page
     for (const key of [
       'carrier', 'claimNumber', 'policyNumber', 'customerName', 'propertyAddress', 'address',
       'dateOfLoss', 'causeOfLoss', 'adjuster', 'adjusterTitle', 'claimSummary', 'storiesHeightFactor',
       'preparedBy', 'opIncluded', 'opApplicable', 'confidenceLevel', 'reinspectionRecommended',
-      'opportunityScoreLabel', 'opportunityScoreBreakdown',
+      'opportunityScoreLabel', 'opportunityScoreBreakdown', 'opRationale',
     ]) {
       if (out[key] !== undefined && out[key] !== null) out[key] = cleanStr(out[key])
     }
     if (isPlaceholderValue(out.deductible) || out.deductible === 'N/A') {
-      // keep numeric 0 only if truly unknown; prefer leaving number if already parsed
       if (typeof out.deductible === 'string') out.deductible = 0
     }
   }
@@ -339,8 +380,10 @@ export function normalizeDocData(type: string, data: Record<string, any>): Recor
     'approvedScope',
     'missingItems',
     'underpaidItems',
+    'underScopedItems',
     'documentationNeeded',
     'actionPlan',
+    'trades',
   ]) {
     if (out[key] !== undefined) out[key] = asArray(out[key])
   }
@@ -647,7 +690,7 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
           <div class="supp-item">
             <div class="supp-item-num">${itemCounter}. ${escapeHtml(item.description ?? item.item ?? 'Item')}</div>
             <p><span class="supp-field">• Item:</span> ${item.xactimateCode ? `Add <strong>${escapeHtml(item.xactimateCode)}</strong> — ` : ''}${escapeHtml(item.description ?? '')}</p>
-            <p><span class="supp-field">• Justification:</span> ${escapeHtml(item.justification ?? 'Required for code-compliant, warrantable installation.')}</p>
+            <p><span class="supp-field">• Justification:</span> ${escapeHtml(item.justification ?? 'Supported for a code-compliant, warrantable installation where documented.')}</p>
             ${item.qty ? `<p><span class="supp-field">• Quantities (estimated):</span> ${escapeHtml(item.qty)} ${escapeHtml(item.unit ?? '')}${item.heightFactor && item.heightFactor !== '1.0x' ? ` — Height factor: ${escapeHtml(item.heightFactor)}` : ''} (to be verified by field measurements)</p>` : ''}
             ${item.photosRequired ? `<p><span class="supp-field">• Documentation required:</span> ${escapeHtml(item.photosRequired)}</p>` : ''}
           </div>`
@@ -657,16 +700,19 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
     .join('')
 
   const approvedScopeItems = asArray(data.approvedScope)
+  const scopePartial = !!data.approvedScopeIsPartial
   const approvedScopeSection = approvedScopeItems.length
     ? `
       <div class="supp-section">
-        <div class="supp-section-title">CARRIER APPROVED SCOPE</div>
+        <div class="supp-section-title">${scopePartial ? 'SELECTED / PARTIAL CARRIER SCOPE' : 'CARRIER APPROVED SCOPE'}</div>
+        ${scopePartial ? `<p style="font-size:11px;color:#b45309;margin-bottom:8px">This table lists ${approvedScopeItems.length} extracted line(s) totaling ${m(data.approvedScopeSubtotal)} — less than the carrier grand total of ${m(data.carrierApprovedTotal)}. It is <strong>not</strong> the full estimate. Do not treat omitted lines as missing until every carrier line has been searched.</p>` : ''}
         <table class="pricing-table">
           <tr><th>#</th><th>Description</th><th>Code</th><th>Qty</th><th>Unit</th><th>RCV Amount</th></tr>
           ${approvedScopeItems.map((item: any, idx: number) => `<tr><td>${idx + 1}</td><td>${escapeHtml(item.description ?? '')}</td><td>${escapeHtml(item.xactimateCode ?? '—')}</td><td>${escapeHtml(item.qty ?? '—')}</td><td>${escapeHtml(item.unit ?? '—')}</td><td>${item.amount ? `${m(item.amount)}` : '—'}</td></tr>`).join('')}
-          <tr class="total-row"><td colspan="5"><strong>Carrier Approved Total (RCV)</strong></td><td><strong>${m(data.carrierApprovedTotal)}</strong></td></tr>
+          <tr class="total-row"><td colspan="5"><strong>${scopePartial ? 'Listed lines subtotal (not full claim RCV)' : 'Carrier Approved Total (RCV)'}</strong></td><td><strong>${m(scopePartial ? data.approvedScopeSubtotal : data.carrierApprovedTotal)}</strong></td></tr>
         </table>
-        <p style="font-size:11px;color:#64748b;margin-top:4px">O&amp;P Included: ${escapeHtml(data.opIncluded ?? 'Unknown')} &nbsp;|&nbsp; Depreciation Held: ${m(data.depreciationHeld)} &nbsp;|&nbsp; ACV Paid: ${m(data.acvPaid)}</p>
+        <p style="font-size:11px;color:#64748b;margin-top:4px">Full claim RCV: ${m(data.carrierApprovedTotal)} &nbsp;|&nbsp; O&amp;P Included: ${escapeHtml(data.opIncluded ?? 'Unknown')} &nbsp;|&nbsp; Depreciation Held: ${m(data.depreciationHeld)} &nbsp;|&nbsp; ACV: ${m(data.acvPaid)}${Number(data.deductible) > 0 ? ` &nbsp;|&nbsp; Deductible: ${m(data.deductible)}` : ''}${Number(data.priorPayments) > 0 ? ` &nbsp;|&nbsp; Prior payments: ${m(data.priorPayments)}` : ''}</p>
+        ${asArray(data.trades).length ? `<p style="font-size:11px;color:#64748b;margin-top:4px"><strong>Trades in estimate:</strong> ${escapeHtml(asArray(data.trades).join(', '))}</p>` : ''}
       </div>`
     : ''
 
@@ -720,6 +766,22 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
         </table>
       </div>`
     : `<div class="supp-section"><div class="supp-section-title">UNDERPAID / UNDER-SCOPED ITEMS</div><p>No underpaid items identified with a positive dollar gap — pricing appears consistent with the approved scope, or gaps require field verification before inclusion.</p></div>`
+
+  const underScopedNoteItems = asArray(data.underScopedItems).filter((i: any) => Number(i.gap ?? 0) <= 0)
+  const underScopedNote = underScopedNoteItems.length
+    ? `
+      <div class="supp-section">
+        <div class="supp-section-title">EXISTING ALLOWANCES — NOT MISSING</div>
+        <p style="font-size:11px;margin-bottom:8px">These concepts are already in the carrier estimate. They are <strong>not</strong> missing. Any additional amount requires documented actual cost minus the carrier allowance.</p>
+        ${underScopedNoteItems.map((item: any, idx: number) => `
+          <div class="supp-item" style="border:1px solid #e2e8f0;border-radius:6px;padding:12px 14px;margin-bottom:12px">
+            <div class="supp-item-num">${idx + 1}. ${escapeHtml(item.description ?? '')}</div>
+            <p><span class="supp-field">• Carrier allowance:</span> ${m(item.approvedAmount)}</p>
+            <p><span class="supp-field">• Status:</span> Existing but potentially under-scoped — field/AHJ verification required</p>
+            <p><span class="supp-field">• Supplement opportunity:</span> ${escapeHtml(item.reason ?? 'Actual documented cost minus amount already allowed')}</p>
+          </div>`).join('')}
+      </div>`
+    : ''
 
   const actionPlanSteps = asArray(data.actionPlan)
   const actionPlanSection = actionPlanSteps.length
@@ -822,7 +884,7 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
     <div class="claim-label">Claim No.</div>       <div class="claim-value">${escapeHtml(data.claimNumber ?? 'N/A')}</div>
     <div class="claim-label">Policy No.</div>      <div class="claim-value">${escapeHtml(data.policyNumber ?? 'N/A')}</div>
     <div class="claim-label">Insured</div>         <div class="claim-value">${escapeHtml(data.customerName ?? 'N/A')}</div>
-    <div class="claim-label">Deductible</div>      <div class="claim-value">${data.deductible ? `${m(data.deductible)}` : 'N/A'}</div>
+    <div class="claim-label">Deductible</div>      <div class="claim-value">${Number(data.deductible) > 0 ? `${m(data.deductible)}` : 'N/A'}</div>
     <div class="claim-label">Loss Type</div>       <div class="claim-value">${escapeHtml(data.causeOfLoss ?? 'N/A')}</div>
     <div class="claim-label">Property Address</div><div class="claim-value">${escapeHtml(data.propertyAddress ?? data.address ?? 'N/A')}</div>
     <div class="claim-label">Date of Loss</div>    <div class="claim-value">${escapeHtml(data.dateOfLoss ?? 'N/A')}</div>
@@ -851,6 +913,8 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
 
   ${missingSection}
 
+  ${underScopedNote}
+
   ${underpaidSection}
 
   <hr class="page-divider">
@@ -871,16 +935,16 @@ export function buildSupplementHtml(data: any, brand: BrandKit): string {
   <h3>Revised Payment Summary</h3>
   <table class="summary-table">
     <tr><td>Original Carrier Estimate (RCV)</td><td style="text-align:right">${m(data.carrierApprovedTotal)}</td></tr>
-    <tr class="highlight"><td><strong>Requested Supplement Amount</strong></td><td style="text-align:right"><strong>+ ${m(data.supplementTotal)}</strong></td></tr>
+    <tr class="highlight"><td><strong>Supplement RCV requested</strong></td><td style="text-align:right"><strong>+ ${m(data.supplementTotal)}</strong></td></tr>
     <tr class="highlight"><td><strong>Revised Total RCV</strong></td><td style="text-align:right"><strong>${m(revisedRcv)}</strong></td></tr>
-    ${Number(data.depreciationHeld) > 0 ? `<tr><td>Less Depreciation Held</td><td style="text-align:right">− ${m(data.depreciationHeld)}</td></tr>` : ''}
-    ${Number(data.depreciationHeld) > 0 ? `<tr><td>Revised ACV</td><td style="text-align:right">${m(data.revisedAcv ?? revisedRcv - Number(data.depreciationHeld ?? 0))}</td></tr>` : ''}
-    ${(Number(data.acvPaid) > 0 && Number(data.deductible) > 0)
-      ? `<tr><td>Less ACV Already Paid</td><td style="text-align:right">− ${m(data.acvPaid)}</td></tr>
-         <tr><td>Less Deductible</td><td style="text-align:right">− ${m(data.deductible)}</td></tr>
-         <tr class="grand-total"><td><strong>NET ADDITIONAL PAYMENT DUE</strong></td><td style="text-align:right"><strong>${m(data.netAdditionalPaymentDue)}</strong></td></tr>`
-      : `<tr class="grand-total"><td><strong>TOTAL SUPPLEMENT REQUESTED</strong></td><td style="text-align:right"><strong>${m(data.supplementTotal)}</strong></td></tr>
-         <tr><td colspan="2" style="font-size:10px;color:#94a3b8;padding-top:4px">Note: Net payment calculation requires confirmed ACV paid and deductible — verify with carrier and homeowner before finalizing.</td></tr>`}
+    ${Number(data.depreciationHeld) > 0 ? `<tr><td>Carrier depreciation held (original)</td><td style="text-align:right">− ${m(data.depreciationHeld)}</td></tr>` : ''}
+    ${Number(data.recoverableDepreciation) > 0 ? `<tr><td>Recoverable depreciation</td><td style="text-align:right">${m(data.recoverableDepreciation)}</td></tr>` : ''}
+    ${Number(data.acvPaid) > 0 ? `<tr><td>Carrier ACV (original)</td><td style="text-align:right">${m(data.acvPaid)}</td></tr>` : ''}
+    ${Number(data.deductible) > 0 ? `<tr><td>Deductible</td><td style="text-align:right">− ${m(data.deductible)}</td></tr>` : ''}
+    ${Number(data.priorPayments) > 0 ? `<tr><td>Prior carrier payments</td><td style="text-align:right">− ${m(data.priorPayments)}</td></tr>` : ''}
+    ${Number(data.netClaimRemaining) > 0 ? `<tr><td>Net claim remaining (carrier)</td><td style="text-align:right">${m(data.netClaimRemaining)}</td></tr>` : ''}
+    <tr class="grand-total"><td><strong>TOTAL SUPPLEMENT RCV REQUESTED</strong></td><td style="text-align:right"><strong>${m(data.supplementTotal)}</strong></td></tr>
+    <tr><td colspan="2" style="font-size:10px;color:#94a3b8;padding-top:4px">Net additional payment is not calculated here. New supplement items may depreciate separately; deductible and prior payments are already identified on the carrier estimate. Confirm with carrier before stating an additional check amount.</td></tr>
   </table>
 
   ${asArray(data.documentationNeeded).length ? `

@@ -27,6 +27,7 @@ import { InspectionModule } from './modules/inspection/inspection.module'
 import { PrismaModule } from './common/prisma/prisma.module'
 import { CloudinaryModule } from './common/cloudinary/cloudinary.module'
 import { FeatureFlagsModule } from './common/feature-flags/feature-flags.module'
+import { AutonomyModule } from './common/autonomy/autonomy.module'
 import { QueueModule } from './queue/queue.module'
 import { PdfExtractionModule } from './queue/pdf-extraction.module'
 import { MessageEmbeddingModule } from './queue/message-embedding.module'
@@ -55,6 +56,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     PrismaModule,
     CloudinaryModule,
     FeatureFlagsModule,
+    AutonomyModule,
     QueueModule,
     PdfExtractionModule,
     MessageEmbeddingModule,

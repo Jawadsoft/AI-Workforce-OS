@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common'
 import { Cron } from '@nestjs/schedule'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { ChatService } from '../chat/chat.service'
+import { AutonomyService } from '../../common/autonomy/autonomy.service'
 
 /**
  * Autonomous ticket processor — runs every minute.
@@ -32,6 +33,7 @@ export class TicketProcessorScheduler {
   constructor(
     private readonly prisma: PrismaService,
     private readonly chat: ChatService,
+    private readonly autonomy: AutonomyService,
   ) {}
 
   /**
@@ -67,6 +69,10 @@ export class TicketProcessorScheduler {
       const isPipeline = meta.pipelineStageIndex !== undefined
 
       try {
+        if (!(await this.autonomy.canAutoProcess(t.tenantId))) {
+          this.logger.log(`[TicketProcessor] Skipping #${ticketNum} — autonomy paused`)
+          continue
+        }
         if (isPipeline && t.assignedAgent) {
           // Pipeline ticket — mark stage COMPLETED and advance to next stage
           const inspectionDate = t.followUpAt
@@ -223,6 +229,10 @@ export class TicketProcessorScheduler {
 
     for (const ticket of tickets) {
       if (!ticket.assignedAgent) continue
+      if (!(await this.autonomy.canAutoProcess(ticket.tenantId))) {
+        this.logger.log(`[TicketProcessor] Skipping ticket ${ticket.id.slice(-6)} — autonomy paused`)
+        continue
+      }
       if (seenAgentIds.has(ticket.assignedAgent.id)) {
         this.logger.log(`[TicketProcessor] Skipping ticket ${ticket.id.slice(-6)} — ${ticket.assignedAgent.name} already queued this run`)
         continue
@@ -420,6 +430,7 @@ export class TicketProcessorScheduler {
 
     for (const ticket of tickets) {
       if (!ticket.assignedAgent) continue
+      if (!(await this.autonomy.canAutoProcess(ticket.tenantId))) continue
 
       // Pipeline tickets have a specific designated agent — give them 4 hours before escalating
       const meta = (ticket.metadata as Record<string, unknown>) ?? {}
@@ -567,6 +578,7 @@ export class TicketProcessorScheduler {
       const meta = (ticket.metadata as Record<string, unknown>) ?? {}
       if ((meta.pipelineStageIndex as number | undefined) === undefined) continue
       if (!ticket.assignedAgent) continue
+      if (!(await this.autonomy.canAutoProcess(ticket.tenantId))) continue
 
       const attempts = (meta.followUpAttempts as number | undefined) ?? 0
       const ticketNum = String(ticket.ticketNumber ?? '').padStart(4, '0')

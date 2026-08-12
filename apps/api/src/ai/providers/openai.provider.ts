@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import OpenAI from 'openai'
+import OpenAI, { toFile } from 'openai'
 import type { ChatMessage, AIResponse } from '../ai.service'
 
 export interface ToolDefinition {
@@ -144,5 +144,15 @@ export class OpenAIProvider {
       input: text,
     })
     return response.data[0].embedding
+  }
+
+  /** Speech-to-text via Whisper (WhatsApp voice notes, etc.). */
+  async transcribe(audio: Buffer, filename = 'audio.ogg'): Promise<string> {
+    const file = await toFile(audio, filename)
+    const result = await this.getClient().audio.transcriptions.create({
+      file,
+      model: 'whisper-1',
+    })
+    return (result.text || '').trim()
   }
 }

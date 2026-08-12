@@ -4,6 +4,7 @@ import { PrismaService } from '../../common/prisma/prisma.service'
 import { ChatService } from '../chat/chat.service'
 import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
 import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
+import { AutonomyService } from '../../common/autonomy/autonomy.service'
 
 /**
  * Social Daily Scheduler — wakes social media manager agents once a day so the
@@ -30,6 +31,7 @@ export class SocialDailyScheduler {
     private readonly prisma: PrismaService,
     private readonly chat: ChatService,
     private readonly featureFlags: FeatureFlagsService,
+    private readonly autonomy: AutonomyService,
   ) {}
 
   @Cron('0 9 * * *')
@@ -79,6 +81,9 @@ export class SocialDailyScheduler {
     agent: { id: string; name: string; role: string; tenantId: string },
     force = false,
   ): Promise<{ status: string; message: string }> {
+    if (!(await this.autonomy.canAutoProcess(agent.tenantId))) {
+      return { status: 'skipped', message: 'AI workforce emergency stop is on for this tenant.' }
+    }
     const featureOn = await this.featureFlags.isEnabled(agent.tenantId, FEATURES.SOCIAL_MEDIA)
     if (!featureOn) {
       return { status: 'skipped', message: 'SOCIAL_MEDIA feature flag is not enabled for this tenant.' }

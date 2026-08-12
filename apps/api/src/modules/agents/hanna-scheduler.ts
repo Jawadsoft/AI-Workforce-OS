@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { ChatService } from '../chat/chat.service'
 import { NotificationService } from '../notifications/notification.service'
+import { AutonomyService } from '../../common/autonomy/autonomy.service'
 
 /**
  * Hanna Scheduler — wakes Hanna (Executive Assistant) agents daily.
@@ -24,6 +25,7 @@ export class HannaScheduler {
     private readonly prisma: PrismaService,
     private readonly chat: ChatService,
     private readonly notifications: NotificationService,
+    private readonly autonomy: AutonomyService,
   ) {}
 
   @Cron('0 8 * * *')
@@ -54,6 +56,8 @@ export class HannaScheduler {
 
     for (const hanna of hannaAgents) {
       try {
+        if (!(await this.autonomy.canAutoProcess(hanna.tenantId))) continue
+
         // Stale open/in-progress tickets
         const staleTickets = await this.prisma.activityTicket.findMany({
           where: {

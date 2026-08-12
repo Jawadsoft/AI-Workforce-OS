@@ -39,6 +39,7 @@ export class CommunicationsService {
     body: string
     twilioSid: string
     mediaUrls?: string[]
+    mediaContentTypes?: string[]
   }): Promise<{ reply: string; sentViaApi: boolean }> {
     return this.handleInboundMessage({ ...params, channel: 'WHATSAPP' })
   }
@@ -49,6 +50,74 @@ export class CommunicationsService {
     return raw.replace(/^whatsapp:/i, '').trim()
   }
 
+  private isAudioContentType(contentType: string): boolean {
+    const ct = (contentType || '').toLowerCase()
+    return ct.startsWith('audio/') || ct.includes('ogg') || ct.includes('opus') || ct.includes('mpeg') || ct.includes('mp4')
+  }
+
+  private extensionForContentType(contentType: string): string {
+    const ct = (contentType || '').toLowerCase()
+    if (ct.includes('ogg') || ct.includes('opus')) return 'ogg'
+    if (ct.includes('mpeg') || ct.includes('mp3')) return 'mp3'
+    if (ct.includes('wav')) return 'wav'
+    if (ct.includes('mp4') || ct.includes('m4a')) return 'm4a'
+    if (ct.includes('webm')) return 'webm'
+    return 'ogg'
+  }
+
+  /**
+   * Resolve inbound text: prefer Body; if empty and media is audio (WhatsApp voice note),
+   * download from Twilio and transcribe with Whisper.
+   */
+  private async resolveInboundBody(params: {
+    tenantId: string
+    body: string
+    mediaUrls?: string[]
+    mediaContentTypes?: string[]
+  }): Promise<string> {
+    const text = (params.body || '').trim()
+    const urls = params.mediaUrls || []
+    const types = params.mediaContentTypes || []
+
+    if (text) return text
+    if (!urls.length) return '[empty message]'
+
+    const audioIdx = urls.findIndex((_, i) => this.isAudioContentType(types[i] || ''))
+    // WhatsApp voice notes always include MediaContentType audio/*; don't Whisper unknown images.
+    if (audioIdx < 0) {
+      const ct = (types[0] || '').toLowerCase()
+      if (ct.startsWith('image/')) return '[User sent an image]'
+      if (ct.startsWith('video/')) return '[User sent a video]'
+      if (ct) return '[User sent an attachment]'
+      // No content-type from Twilio — attempt first media as audio (common for voice notes)
+    }
+
+    const tryIdx = audioIdx >= 0 ? audioIdx : 0
+    const url = urls[tryIdx]
+    const contentTypeHint = types[tryIdx] || ''
+
+    try {
+      const { buffer, contentType } = await this.twilio.downloadMedia(params.tenantId, url)
+      const effectiveType = contentTypeHint || contentType
+      if (!this.isAudioContentType(effectiveType) && audioIdx < 0) {
+        if (effectiveType.startsWith('image/')) return '[User sent an image]'
+        if (effectiveType.startsWith('video/')) return '[User sent a video]'
+        return '[User sent an attachment]'
+      }
+
+      const ext = this.extensionForContentType(effectiveType)
+      const transcript = await this.ai.transcribe(buffer, `whatsapp-voice.${ext}`)
+      if (transcript) {
+        this.logger.log(`WhatsApp voice note transcribed (${transcript.length} chars)`)
+        return transcript
+      }
+      return '[User sent a voice note that could not be understood]'
+    } catch (err) {
+      this.logger.warn(`WhatsApp media transcription failed: ${err}`)
+      return '[User sent a voice note that could not be processed]'
+    }
+  }
+
   private async handleInboundMessage(params: {
     tenantId: string
     from: string
@@ -57,6 +126,7 @@ export class CommunicationsService {
     channel: 'SMS' | 'WHATSAPP'
     twilioSid: string
     mediaUrls?: string[]
+    mediaContentTypes?: string[]
   }): Promise<{ reply: string; sentViaApi: boolean }> {
     const tenantId = (params.tenantId || '').trim()
     if (!tenantId) {
@@ -81,7 +151,15 @@ export class CommunicationsService {
 
     const from = this.normalizePhone(params.from)
     const to = this.normalizePhone(params.to)
-    const body = (params.body || '').trim() || '[empty message]'
+    const body =
+      params.channel === 'WHATSAPP'
+        ? await this.resolveInboundBody({
+            tenantId,
+            body: params.body,
+            mediaUrls: params.mediaUrls,
+            mediaContentTypes: params.mediaContentTypes,
+          })
+        : (params.body || '').trim() || '[empty message]'
     const channel = params.channel
     const twilioSid = params.twilioSid
 
@@ -127,7 +205,7 @@ export class CommunicationsService {
     const agentPrompt = agent.prompt || ''
     const channelHint = channel === 'SMS'
       ? 'You are communicating via SMS. Keep replies concise (under 160 characters).'
-      : 'You are communicating via WhatsApp. Keep replies short and helpful (2–4 sentences).'
+      : 'You are communicating via WhatsApp. Keep replies short and helpful (2–4 sentences). The customer may send voice notes; treat transcribed text as their message.'
     const systemPrompt = `${agentPrompt}\n\n${brainCtx}${crmBlock}\n\n${channelHint}`
 
     const history = await this.prisma.message.findMany({

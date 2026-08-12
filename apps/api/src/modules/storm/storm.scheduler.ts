@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common'
 import { Cron } from '@nestjs/schedule'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { StormService } from './storm.service'
+import { AutonomyService } from '../../common/autonomy/autonomy.service'
 import { parse, subDays } from 'date-fns'
 
 @Injectable()
@@ -11,6 +12,7 @@ export class StormScheduler {
   constructor(
     private readonly prisma: PrismaService,
     private readonly stormService: StormService,
+    private readonly autonomy: AutonomyService,
   ) {}
 
   // ── Daily run at 7:00 AM UTC ─────────────────────────────────────
@@ -39,6 +41,7 @@ export class StormScheduler {
 
     for (const { tenantId, tenant } of activeTenants) {
       try {
+        if (!(await this.autonomy.canAutoProcess(tenantId))) continue
         await this.stormService.generateAndPostBriefing(tenantId)
         this.logger.log(`[Storm Scheduler] Completed for tenant: ${tenant?.name}`)
       } catch (err: any) {
@@ -77,6 +80,8 @@ export class StormScheduler {
 
     for (const task of stormTasks) {
       try {
+        if (!(await this.autonomy.canAutoProcess(task.tenantId))) continue
+
         // Mark as in-progress immediately
         await this.prisma.task.update({
           where: { id: task.id },

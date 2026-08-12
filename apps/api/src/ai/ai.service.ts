@@ -60,6 +60,11 @@ export class AIService {
     return this.openai.embed(text)
   }
 
+  /** Transcribe audio (e.g. WhatsApp voice note) via OpenAI Whisper. */
+  async transcribe(audio: Buffer, filename?: string): Promise<string> {
+    return this.openai.transcribe(audio, filename)
+  }
+
   /** Takes a system prompt + message history and returns the AI reply string */
   async chat(
     systemPrompt: string,

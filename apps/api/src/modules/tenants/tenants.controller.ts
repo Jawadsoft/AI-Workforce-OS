@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Patch, Delete, Param, Body, UseGuards } from '@nestjs/common'
+import { Controller, Get, Post, Put, Patch, Delete, Param, Body, UseGuards, BadRequestException } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { IsString, IsOptional, IsEmail, IsIn } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
@@ -9,6 +9,8 @@ import { TenantsService } from './tenants.service'
 import { EmailService } from '../email/email.service'
 import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
 import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
+import { AutonomyService } from '../../common/autonomy/autonomy.service'
+import { isAutonomyMode, AUTONOMY_MODES } from '../../common/autonomy/autonomy.constants'
 
 class OnboardDto {
   @IsString() industry: string
@@ -39,6 +41,7 @@ export class TenantsController {
     private readonly service: TenantsService,
     private readonly email: EmailService,
     private readonly featureFlags: FeatureFlagsService,
+    private readonly autonomy: AutonomyService,
   ) {}
 
   @Get('features')
@@ -72,6 +75,30 @@ export class TenantsController {
   @ApiOperation({ summary: 'Update tenant settings (deep-merges nested objects like widget, brain)' })
   updateSettings(@CurrentTenant() tenantId: string, @Body() dto: Record<string, any>) {
     return this.service.saveSettings(tenantId, dto)
+  }
+
+  @Get('autonomy')
+  @ApiOperation({ summary: 'Get AI workforce autonomy / emergency-stop mode for this tenant' })
+  getAutonomy(@CurrentTenant() tenantId: string) {
+    return this.autonomy.getState(tenantId)
+  }
+
+  @Patch('autonomy')
+  @UseGuards(RolesGuard)
+  @Roles('TENANT_ADMIN')
+  @ApiOperation({ summary: 'Set AI workforce autonomy mode (off | internal | full)' })
+  setAutonomy(
+    @CurrentTenant() tenantId: string,
+    @CurrentUser() user: any,
+    @Body() dto: { mode?: string; reason?: string },
+  ) {
+    if (!isAutonomyMode(dto.mode)) {
+      throw new BadRequestException(`mode must be one of: ${AUTONOMY_MODES.join(', ')}`)
+    }
+    return this.autonomy.setMode(tenantId, dto.mode, {
+      id: user?.id,
+      name: user?.name ?? user?.email ?? user?.id,
+    }, dto.reason)
   }
 
   @Get('onboarding-status')

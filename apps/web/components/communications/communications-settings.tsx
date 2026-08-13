@@ -42,6 +42,9 @@ export function CommunicationsSettings() {
     whatsappAgentId: '',
     voiceAgentId: '',
   })
+  const [sidConfigured, setSidConfigured] = useState(false)
+  const [tokenConfigured, setTokenConfigured] = useState(false)
+  const [credentialsReady, setCredentialsReady] = useState(false)
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -57,9 +60,14 @@ export function CommunicationsSettings() {
     ])
       .then(([sRes, aRes]) => {
         const s = sRes.data
+        const sidOk = s.twilioAccountSid === '***configured***'
+        const tokenOk = s.twilioAuthToken === '***configured***'
+        setSidConfigured(sidOk)
+        setTokenConfigured(tokenOk)
+        setCredentialsReady(Boolean(s.twilioCredentialsReady))
         setSettings({
-          twilioAccountSid: s.twilioAccountSid === '***configured***' ? '' : (s.twilioAccountSid || ''),
-          twilioAuthToken: s.twilioAuthToken === '***configured***' ? '' : (s.twilioAuthToken || ''),
+          twilioAccountSid: sidOk ? '' : (s.twilioAccountSid || ''),
+          twilioAuthToken: tokenOk ? '' : (s.twilioAuthToken || ''),
           twilioPhoneNumber: s.twilioPhoneNumber || '',
           twilioWhatsAppNumber: s.twilioWhatsAppNumber || '',
           notificationPhone: s.notificationPhone || '',
@@ -82,6 +90,11 @@ export function CommunicationsSettings() {
       })
       await api.put('/communications/settings', payload)
       toast.success('Communications settings saved')
+      const sRes = await api.get('/communications/settings')
+      const s = sRes.data
+      setSidConfigured(s.twilioAccountSid === '***configured***')
+      setTokenConfigured(s.twilioAuthToken === '***configured***')
+      setCredentialsReady(Boolean(s.twilioCredentialsReady))
     } catch {
       toast.error('Failed to save settings')
     } finally {
@@ -104,6 +117,9 @@ export function CommunicationsSettings() {
 
       const res = await api.post('/communications/test-connection')
       setTestResult(`Connected: ${res.data.friendlyName} (${res.data.status})`)
+      setCredentialsReady(true)
+      setSidConfigured(true)
+      setTokenConfigured(true)
       toast.success('Twilio connection verified!')
     } catch (err: unknown) {
       const axiosErr = err as {
@@ -193,6 +209,22 @@ export function CommunicationsSettings() {
           </a>
         </div>
         <div className="p-6 space-y-4">
+          {!credentialsReady && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <p className="font-medium">Account SID + Auth Token required</p>
+              <p className="mt-1 text-amber-800/90">
+                A WhatsApp number alone is enough for basic inbound replies (webhook TwiML). Voice notes and reliable
+                REST sends need a valid Account SID (<code className="font-mono text-xs">AC…</code>) and Auth Token
+                saved below — then click <strong>Test connection</strong>.
+                {settings.twilioWhatsAppNumber ? ' Your WhatsApp number is set; credentials are incomplete.' : ''}
+              </p>
+            </div>
+          )}
+          {credentialsReady && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-800">
+              Twilio Account SID and Auth Token are configured for this tenant.
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Account SID</label>
@@ -201,7 +233,7 @@ export function CommunicationsSettings() {
                   type={showSid ? 'text' : 'password'}
                   value={settings.twilioAccountSid}
                   onChange={(e) => setSettings((s) => ({ ...s, twilioAccountSid: e.target.value }))}
-                  placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                  placeholder={sidConfigured ? 'Saved — paste a new AC… SID to replace' : 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'}
                   className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                 />
                 <button onClick={() => setShowSid(!showSid)} className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600 text-xs">
@@ -219,7 +251,7 @@ export function CommunicationsSettings() {
                   type={showToken ? 'text' : 'password'}
                   value={settings.twilioAuthToken}
                   onChange={(e) => setSettings((s) => ({ ...s, twilioAuthToken: e.target.value }))}
-                  placeholder="Your auth token"
+                  placeholder={tokenConfigured ? 'Saved — paste a new token to replace' : 'Your auth token'}
                   className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <button onClick={() => setShowToken(!showToken)} className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600 text-xs">

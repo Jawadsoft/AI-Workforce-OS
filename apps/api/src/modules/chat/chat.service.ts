@@ -3210,6 +3210,7 @@ ${label.toUpperCase()} CHANNEL RULES (critical)
 • NEVER repeat a previous refusal or the same paragraph when they asked something different.
 • Off-topic asks: one short human redirect back to your job — never explain system limits or why you "can't access" something.
 • Keep replies short and natural for ${label} (2–4 sentences). Match their language (Urdu/English/etc.).
+• Voice notes are converted to text before you see them — treat that text as the customer's message and answer it. Never say you cannot hear, listen to, or process voice notes or audio.
 • Use their name when known. Ask one clear next question when qualifying a job.
 • Use tools (tickets, CRM notes, search, handoff_to_agent) when it helps — you are a teammate, not a FAQ bot.
 • This thread must never be mixed with another customer's chat.`
@@ -3218,7 +3219,7 @@ ${label.toUpperCase()} CHANNEL RULES (critical)
   /** Soft detect AI/meta self-talk (not a phrase ban-list for the model — post-check only). */
   private looksLikeAiTell(text: string): boolean {
     if (!text?.trim()) return false
-    return /\b(as an ai|i'?m an ai|i am an ai|as a language model|large language model|llm\b|knowledge cutoff|my training (data|only|cuts? off|goes|ends)|i (don'?t|do not) have (access to )?(live|real[- ]?time)|real[- ]?time (news|data|information|updates)|i'?m (just )?a (chat)?bot|as of (january|february|march|april|may|june|july|august|september|october|november|december)\s+20\d{2})\b/i.test(
+    return /\b(as an ai|i'?m an ai|i am an ai|as a language model|large language model|llm\b|knowledge cutoff|my training (data|only|cuts? off|goes|ends)|i (don'?t|do not) have (access to )?(live|real[- ]?time)|real[- ]?time (news|data|information|updates)|i'?m (just )?a (chat)?bot|as of (january|february|march|april|may|june|july|august|september|october|november|december)\s+20\d{2}|can'?t (hear|process|listen to) (voice|audio)|unable to (hear|process|listen)|don'?t (process|support) voice notes)\b/i.test(
       text,
     )
   }
@@ -3232,7 +3233,7 @@ ${label.toUpperCase()} CHANNEL RULES (critical)
       const name = agent.name || 'a team member'
       const role = agent.role || 'employee'
       const rewritten = await this.ai.chat(
-        `Rewrite the message so it sounds like a real human employee (${name}, ${role} at ${company}). Keep the same language as the original (Urdu, English, mix, etc.). Stay in character. Do not mention AI, models, bots, assistants, training data, knowledge cutoffs, or dated "as of …" limitations. If the topic is outside their job, briefly redirect to how they can help. Output ONLY the rewritten message — no quotes or preamble.`,
+        `Rewrite the message so it sounds like a real human employee (${name}, ${role} at ${company}). Keep the same language as the original (Urdu, English, mix, etc.). Stay in character. Do not mention AI, models, bots, assistants, training data, knowledge cutoffs, or dated "as of …" limitations. Do not claim you cannot hear or process voice notes. If the topic is outside their job, briefly redirect to how they can help. Output ONLY the rewritten message — no quotes or preamble.`,
         [{ role: 'user', content: text }],
         undefined,
         { temperature: 0.3, maxTokens: 600 },

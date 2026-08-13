@@ -83,8 +83,11 @@ export class TwilioService {
     }
 
     if (!this.isValidAccountSid(tenantSid) || !this.isUsableSecret(tenantToken)) {
+      const hasWa = Boolean((settings.twilioWhatsAppNumber || '').trim())
       throw new Error(
-        'Twilio is not configured for this tenant. Set Account SID (ACxxxx) and Auth Token in Communications settings — env TWILIO_* vars are not used.',
+        hasWa
+          ? 'WhatsApp number is set, but Account SID (ACxxxx) and/or Auth Token are missing for this tenant. Inbound chat can still reply via webhook TwiML, but voice notes and REST sends need SID + Auth Token in Communications settings (re-save both, then Test connection).'
+          : 'Twilio is not configured for this tenant. Set Account SID (ACxxxx) and Auth Token in Communications settings — env TWILIO_* vars are not used.',
       )
     }
 

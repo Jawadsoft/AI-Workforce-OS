@@ -99,21 +99,21 @@ export class CommunicationsService {
     body: string
     mediaUrls?: string[]
     mediaContentTypes?: string[]
-  }): Promise<string> {
+  }): Promise<{ text: string; voiceNoteFailed?: boolean }> {
     const text = (params.body || '').trim()
     const urls = params.mediaUrls || []
     const types = params.mediaContentTypes || []
 
-    if (text) return text
-    if (!urls.length) return '[empty message]'
+    if (text) return { text }
+    if (!urls.length) return { text: '[empty message]' }
 
     const audioIdx = urls.findIndex((_, i) => this.isAudioContentType(types[i] || ''))
     // WhatsApp voice notes always include MediaContentType audio/*; don't Whisper unknown images.
     if (audioIdx < 0) {
       const ct = (types[0] || '').toLowerCase()
-      if (ct.startsWith('image/')) return '[User sent an image]'
-      if (ct.startsWith('video/')) return '[User sent a video]'
-      if (ct) return '[User sent an attachment]'
+      if (ct.startsWith('image/')) return { text: '[User sent an image]' }
+      if (ct.startsWith('video/')) return { text: '[User sent a video]' }
+      if (ct) return { text: '[User sent an attachment]' }
       // No content-type from Twilio — attempt first media as audio (common for voice notes)
     }
 
@@ -125,21 +125,22 @@ export class CommunicationsService {
       const { buffer, contentType } = await this.twilio.downloadMedia(params.tenantId, url)
       const effectiveType = contentTypeHint || contentType
       if (!this.isAudioContentType(effectiveType) && audioIdx < 0) {
-        if (effectiveType.startsWith('image/')) return '[User sent an image]'
-        if (effectiveType.startsWith('video/')) return '[User sent a video]'
-        return '[User sent an attachment]'
+        if (effectiveType.startsWith('image/')) return { text: '[User sent an image]' }
+        if (effectiveType.startsWith('video/')) return { text: '[User sent a video]' }
+        return { text: '[User sent an attachment]' }
       }
 
       const ext = this.extensionForContentType(effectiveType)
       const transcript = await this.ai.transcribe(buffer, `whatsapp-voice.${ext}`)
       if (transcript) {
         this.logger.log(`WhatsApp voice note transcribed (${transcript.length} chars)`)
-        return transcript
+        // Plain user text so the agent answers the content — not "I can't hear audio"
+        return { text: transcript }
       }
-      return '[User sent a voice note that could not be understood]'
+      return { text: '', voiceNoteFailed: true }
     } catch (err) {
       this.logger.warn(`WhatsApp media transcription failed: ${err}`)
-      return '[User sent a voice note that could not be processed]'
+      return { text: '', voiceNoteFailed: true }
     }
   }
 
@@ -184,15 +185,20 @@ export class CommunicationsService {
       return { reply: '', sentViaApi: true }
     }
 
-    const body =
-      params.channel === 'WHATSAPP'
-        ? await this.resolveInboundBody({
-            tenantId,
-            body: params.body,
-            mediaUrls: params.mediaUrls,
-            mediaContentTypes: params.mediaContentTypes,
-          })
-        : (params.body || '').trim() || '[empty message]'
+    let body: string
+    let voiceNoteFailed = false
+    if (params.channel === 'WHATSAPP') {
+      const resolved = await this.resolveInboundBody({
+        tenantId,
+        body: params.body,
+        mediaUrls: params.mediaUrls,
+        mediaContentTypes: params.mediaContentTypes,
+      })
+      body = resolved.text
+      voiceNoteFailed = Boolean(resolved.voiceNoteFailed)
+    } else {
+      body = (params.body || '').trim() || '[empty message]'
+    }
 
     const agent = await this.pickChannelAgent(tenantId, channel)
 
@@ -201,7 +207,7 @@ export class CommunicationsService {
       channel,
       from,
       to,
-      body,
+      body: voiceNoteFailed ? '[voice note — transcription failed]' : body,
       twilioSid,
       agentId: agent?.id,
     })
@@ -212,6 +218,26 @@ export class CommunicationsService {
       return {
         reply: 'Thank you for your message. An agent will be in touch shortly.',
         sentViaApi: false,
+      }
+    }
+
+    // Don't send failed voice notes into the LLM — that causes "I can't hear audio" loops.
+    if (voiceNoteFailed) {
+      const reply =
+        "Sorry, I couldn't catch that voice note clearly. Could you type your message? Happy to help with a quote or booking."
+      const conversation = await this.getOrCreatePhoneConversation(
+        tenantId,
+        from,
+        channel,
+        agent.id,
+        agent.role,
+      )
+      try {
+        await this.sendReply(tenantId, channel, from, reply, agent.id, conversation.id)
+        return { reply, sentViaApi: true }
+      } catch (err) {
+        this.logger.warn(`Twilio REST send failed after voice-note fallback: ${err}`)
+        return { reply, sentViaApi: false }
       }
     }
 
@@ -377,9 +403,13 @@ export class CommunicationsService {
   async getSettings(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } })
     const s = (tenant?.settings as Record<string, string>) || {}
+    const sid = (s.twilioAccountSid || '').trim()
+    const token = (s.twilioAuthToken || '').trim()
+    const sidOk = /^AC[0-9a-f]{32}$/i.test(sid)
+    const tokenOk = Boolean(token) && !token.includes('*')
     return {
-      twilioAccountSid: s.twilioAccountSid ? '***configured***' : '',
-      twilioAuthToken: s.twilioAuthToken ? '***configured***' : '',
+      twilioAccountSid: sidOk ? '***configured***' : '',
+      twilioAuthToken: tokenOk ? '***configured***' : '',
       twilioPhoneNumber: s.twilioPhoneNumber || '',
       twilioWhatsAppNumber: s.twilioWhatsAppNumber || '',
       notificationPhone: s.notificationPhone || '',
@@ -387,6 +417,8 @@ export class CommunicationsService {
       smsAgentId: s.smsAgentId || '',
       whatsappAgentId: s.whatsappAgentId || '',
       voiceAgentId: s.voiceAgentId || '',
+      /** True only when Account SID (ACxxxx) + Auth Token are both present — required for REST + media. */
+      twilioCredentialsReady: sidOk && tokenOk,
     }
   }
 

@@ -288,7 +288,7 @@ export function CreateAgentForm() {
               {secondaryAgent && (
                 <p><span className="font-medium text-foreground">Adds scope from:</span> {secondaryAgent.name} ({secondaryAgent.role})</p>
               )}
-              <p className="pt-1">Prompts, tools, permissions, knowledge, and CRM access are combined automatically.</p>
+              <p className="pt-1">The new agent keeps the primary identity. Secondary prompt is added as extra skills (not a second “you are…”). Tools, knowledge, and CRM access are combined.</p>
             </div>
           )}
 

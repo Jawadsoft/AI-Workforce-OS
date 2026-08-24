@@ -15,6 +15,10 @@ export interface MergeableAgent {
 
 const TICKET_TOOLS = ['create_ticket', 'update_ticket', 'get_my_tickets']
 
+const IDENTITY_PREFIX = /^(you are|you'?re|i am|i'?m|my name is)\b/i
+const COMPANY_HEADER = /^(company context|company|brand)\s*:?\s*$/i
+const SECTION_HEADER = /^[A-Z][A-Z0-9 /&().,+\-]{2,}:?\s*$/
+
 export function firstName(agentName: string): string {
   return agentName.split(/[—(]/)[0].trim().split(/\s+/)[0] || agentName
 }
@@ -34,29 +38,107 @@ export function suggestMergedRole(primary: MergeableAgent, secondary?: Mergeable
   return `${p} & ${s}`
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function identityNames(agentName: string): string[] {
+  const cleaned = agentName.split(/[—(]/)[0].trim()
+  const parts = cleaned.split(/\s+/).filter(Boolean)
+  const names = [cleaned, parts[0], parts.join(' ')].filter(Boolean)
+  return [...new Set(names)]
+}
+
+function lineMentionsName(line: string, names: string[]): boolean {
+  return names.some((n) => new RegExp(`\\b${escapeRegExp(n)}\\b`, 'i').test(line))
+}
+
+/** Drop secondary company-identity blocks — primary already has company context. */
+function stripCompanySections(text: string): string {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const out: string[] = []
+  let skipping = false
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!skipping && COMPANY_HEADER.test(trimmed)) {
+      skipping = true
+      continue
+    }
+    if (skipping) {
+      if (trimmed && SECTION_HEADER.test(trimmed) && !COMPANY_HEADER.test(trimmed)) {
+        skipping = false
+        out.push(line)
+      }
+      continue
+    }
+    out.push(line)
+  }
+
+  return out.join('\n')
+}
+
+/**
+ * Turn a secondary agent prompt into extra skills only.
+ * Removes "You are Jake…" and duplicate company context so identity stays the primary agent.
+ */
+export function extractAdditionalSkills(prompt: string, secondaryName: string): string {
+  let text = (prompt || '').replace(/\r\n/g, '\n').trim()
+  if (!text) return ''
+
+  const names = identityNames(secondaryName)
+  text = stripCompanySections(text)
+
+  // Opening identity sentence only ("You are Jake, the Handyman…") — keep the rest of that line
+  text = text.replace(
+    /^(You are|You're|I am|I'm|My name is)\s+[A-Z][A-Za-z'’.\-]+[^.]*\.\s*/i,
+    '',
+  )
+
+  const kept = text.split('\n').filter((line) => {
+    const trimmed = line.trim()
+    if (!trimmed) return true
+    if (IDENTITY_PREFIX.test(trimmed) && lineMentionsName(trimmed, names)) return false
+    return true
+  })
+  text = kept.join('\n')
+
+  for (const name of names) {
+    const re = new RegExp(`\\b(you are|you'?re|i am|i'?m)\\s+${escapeRegExp(name)}\\b`, 'gi')
+    text = text.replace(re, 'you')
+  }
+
+  return text.replace(/\n{3,}/g, '\n\n').trim()
+}
+
 export function buildMergedPrompt(primary: MergeableAgent, secondary?: MergeableAgent | null): string {
   const primaryBlock = (primary.prompt || '').trim()
   if (!secondary?.prompt?.trim()) {
     return primaryBlock
   }
 
+  const primaryName = firstName(primary.name)
   const secName = firstName(secondary.name)
-  const secRole = secondary.role
+  const secRole = (secondary.role || 'additional services').trim()
+  const skills = extractAdditionalSkills(secondary.prompt, secondary.name)
+
+  const skillsBlock = skills
+    || `Handle ${secRole} enquiries: qualify, ballpark from any rates below or the company brain, and book — without naming ${secName}.`
 
   return `${primaryBlock}
 
 ═══════════════════════════════════════
-ADDITIONAL SCOPE (merged from ${secondary.name})
+ADDITIONAL SKILLS — ${secRole}
 ═══════════════════════════════════════
-You are ONE agent for the customer — never say you are transferring them to ${secName} or another teammate.
+You are still ${primaryName} only. The block below is extra capability you use yourself.
+Never introduce yourself as ${secName}, never say you are ${secName}, and never tell the customer you are transferring them to ${secName} or another teammate.
 
-You handle BOTH your primary role above AND the following responsibilities (from ${secRole}):
-
-${secondary.prompt.trim()}
+${skillsBlock}
 
 COMBINED ROLE RULES:
-• Match the customer's ask: use the right section above (primary vs merged scope).
-• If the job spans both areas, treat it as one conversation and one booking — do not split the customer across agents.
+• One identity (${primaryName}), one conversation, one booking.
+• Use your primary role for matching asks; use the additional skills above when the job is in that area.
+• If the job spans both, treat it as one job — do not split the customer across agents.
 • One question at a time; short, human replies (especially on WhatsApp).
 • Log the correct job type in CRM when creating tickets.`
 }

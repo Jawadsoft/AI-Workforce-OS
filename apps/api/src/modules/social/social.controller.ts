@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Patch, Delete,
-  Param, Body, Query, UseGuards, UploadedFile, UseInterceptors, Res,
+  Param, Body, Query, UseGuards, UploadedFile, UseInterceptors, Res, BadRequestException,
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
@@ -240,6 +240,8 @@ export class SocialController {
   @Post('safety-check')
   @ApiOperation({ summary: 'Check if a post is safe to publish (rate limits, duplicates)' })
   safetyCheck(@CurrentTenant() tenantId: string, @Body() body: any) {
+    if (!body?.platform) throw new BadRequestException('platform is required')
+    if (!body?.content)  throw new BadRequestException('content is required')
     return this.service.checkPublishSafety(tenantId, body.platform, body.content)
   }
 

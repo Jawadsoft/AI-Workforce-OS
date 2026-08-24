@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Delete, Param, Body, UseGuards,
-  UploadedFile, UseInterceptors,
+  UploadedFile, UseInterceptors, BadRequestException,
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes } from '@nestjs/swagger'
@@ -31,6 +31,7 @@ export class KnowledgeController {
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
   upload(@CurrentTenant() tenantId: string, @UploadedFile() file: any) {
+    if (!file) throw new BadRequestException('No file provided. Send a multipart/form-data request with a "file" field.')
     return this.service.upload(tenantId, file)
   }
 

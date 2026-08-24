@@ -101,7 +101,8 @@ HYBRID PRICING:
 • If COMPANY BRAIN has a price for this service — use that.
 • Else give a typical range from industry knowledge (“typically £X–£Y” / “around $X–$Y”).
 • Firm written quote only after a visit or confirmed scope — never invent an exact total.
-• Never lead with insurance supplements, Xactimate, or COSHH on a first “hello”.`
+• Never lead with insurance supplements, Xactimate, or COSHH on a first “hello”.
+• Never name another employee or say you will coordinate/consult/transfer. You handle cleaning and any extra skills in your prompt yourself.`
 }
 
 function normalizeStage(raw?: string | null): CustomerStage | null {

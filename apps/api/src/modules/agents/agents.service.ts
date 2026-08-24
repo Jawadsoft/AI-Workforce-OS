@@ -305,4 +305,36 @@ export class AgentsService {
       whatsappAgentSet: Boolean(opts.setAsWhatsappAgent),
     }
   }
+
+  /** Rewrite prompts for existing merged agents using current merge rules (skills, not second identity). */
+  async rebuildMergedPrompts(tenantId: string) {
+    const agents = await this.prisma.agent.findMany({ where: { tenantId } })
+    const updated: { id: string; name: string }[] = []
+
+    for (const agent of agents) {
+      const rules = (agent.approvalRules as Record<string, any>) || {}
+      const src = rules.mergeSource
+      if (!src?.primaryAgentId) continue
+
+      const primary = await this.prisma.agent.findFirst({
+        where: { id: src.primaryAgentId, tenantId },
+      })
+      if (!primary) continue
+
+      const secondary = src.secondaryAgentId
+        ? await this.prisma.agent.findFirst({
+            where: { id: src.secondaryAgentId, tenantId },
+          })
+        : null
+
+      const prompt = buildMergedPrompt(primary as any, secondary as any)
+      await this.prisma.agent.update({
+        where: { id: agent.id },
+        data: { prompt },
+      })
+      updated.push({ id: agent.id, name: agent.name })
+    }
+
+    return { rebuilt: updated.length, agents: updated }
+  }
 }

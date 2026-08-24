@@ -23,6 +23,15 @@ export function firstName(agentName: string): string {
   return agentName.split(/[—(]/)[0].trim().split(/\s+/)[0] || agentName
 }
 
+function skillLabel(role?: string | null): string {
+  const cleaned = (role || 'additional services')
+    .split(/[—(]/)[0]
+    .replace(/\b(coordinator|specialist|manager|executive|assistant|officer)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned || 'additional services'
+}
+
 export function suggestMergedName(primary: MergeableAgent, secondary?: MergeableAgent | null): string {
   const a = firstName(primary.name)
   if (!secondary) return `${a} — Combined`
@@ -108,6 +117,7 @@ export function extractAdditionalSkills(prompt: string, secondaryName: string): 
     text = text.replace(re, 'you')
   }
 
+  text = text.replace(/\bYOU COORDINATE\b/g, '')
   return text.replace(/\n{3,}/g, '\n\n').trim()
 }
 
@@ -118,20 +128,19 @@ export function buildMergedPrompt(primary: MergeableAgent, secondary?: Mergeable
   }
 
   const primaryName = firstName(primary.name)
-  const secName = firstName(secondary.name)
-  const secRole = (secondary.role || 'additional services').trim()
+  const secRole = skillLabel(secondary.role)
   const skills = extractAdditionalSkills(secondary.prompt, secondary.name)
 
   const skillsBlock = skills
-    || `Handle ${secRole} enquiries: qualify, ballpark from any rates below or the company brain, and book — without naming ${secName}.`
+    || `Handle ${secRole} enquiries: qualify, give a typical price or range, and book.`
 
   return `${primaryBlock}
 
 ═══════════════════════════════════════
 ADDITIONAL SKILLS — ${secRole}
 ═══════════════════════════════════════
-You are still ${primaryName} only. The block below is extra capability you use yourself.
-Never introduce yourself as ${secName}, never say you are ${secName}, and never tell the customer you are transferring them to ${secName} or another teammate.
+You are still ${primaryName} only. The block below is extra capability you handle yourself.
+Never name other staff and never say you will consult, coordinate with, or transfer the customer.
 
 ${skillsBlock}
 

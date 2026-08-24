@@ -102,6 +102,15 @@ export class AgentsController {
     return this.service.mergeAgents(tenantId, dto)
   }
 
+  @Post('merge/rebuild')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
+  @ApiOperation({ summary: 'Rewrite existing merged-agent prompts (skills, not second identity)' })
+  async rebuildMergedPrompts(@CurrentTenant() tenantId: string) {
+    await this.featureFlags.requireFeature(tenantId, FEATURES.CREATE_AGENTS)
+    return this.service.rebuildMergedPrompts(tenantId)
+  }
+
   @Post('install-template/:templateId')
   @UseGuards(RolesGuard)
   @Roles('MANAGER')

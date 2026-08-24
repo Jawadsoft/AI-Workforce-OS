@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto'
 import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { OAuth2Client } from 'google-auth-library'
@@ -91,6 +92,30 @@ export class IntegrationsService {
     )
   }
 
+  private buildOAuthState(tenantId: string): string {
+    const nonce = Date.now().toString()
+    const secret = this.config.get<string>('JWT_SECRET') ?? 'changeme'
+    const sig = createHmac('sha256', secret).update(`${tenantId}:${nonce}`).digest('hex')
+    return Buffer.from(JSON.stringify({ tenantId, nonce, sig })).toString('base64url')
+  }
+
+  private verifyOAuthState(rawState: string): string {
+    let parsed: { tenantId: string; nonce: string; sig: string }
+    try {
+      parsed = JSON.parse(Buffer.from(rawState, 'base64url').toString())
+    } catch {
+      throw new BadRequestException('Invalid OAuth state parameter')
+    }
+    const secret = this.config.get<string>('JWT_SECRET') ?? 'changeme'
+    const expected = createHmac('sha256', secret).update(`${parsed.tenantId}:${parsed.nonce}`).digest('hex')
+    if (parsed.sig !== expected) throw new BadRequestException('OAuth state signature mismatch')
+    // Reject states older than 15 minutes to prevent replay
+    if (Date.now() - parseInt(parsed.nonce) > 15 * 60 * 1000) {
+      throw new BadRequestException('OAuth state has expired — please try connecting again')
+    }
+    return parsed.tenantId
+  }
+
   getGoogleAuthUrl(tenantId: string): string {
     const oauth2 = this.getGoogleOAuthClient()
     return oauth2.generateAuthUrl({
@@ -103,11 +128,12 @@ export class IntegrationsService {
         'https://www.googleapis.com/auth/userinfo.email',
         'https://www.googleapis.com/auth/userinfo.profile',
       ],
-      state: tenantId,
+      state: this.buildOAuthState(tenantId),
     })
   }
 
-  async handleGoogleCallback(code: string, tenantId: string): Promise<void> {
+  async handleGoogleCallback(code: string, rawState: string): Promise<void> {
+    const tenantId = this.verifyOAuthState(rawState)
     const oauth2 = this.getGoogleOAuthClient()
     const { tokens } = await oauth2.getToken(code)
     oauth2.setCredentials(tokens)
@@ -168,6 +194,7 @@ export class IntegrationsService {
     const accounts = await this.prisma.connectedAccount.findMany({
       where: { tenantId },
       orderBy: { createdAt: 'desc' },
+      include: { assignedAgent: { select: { id: true, name: true, role: true, avatar: true } } },
     })
     return accounts.map(a => ({
       id: a.id,
@@ -178,7 +205,21 @@ export class IntegrationsService {
       scopes: a.scopes,
       expiresAt: a.expiresAt,
       createdAt: a.createdAt,
+      assignedAgentId: (a as any).assignedAgentId ?? null,
+      assignedAgent: (a as any).assignedAgent ?? null,
     }))
+  }
+
+  async updateConnectedAccount(tenantId: string, accountId: string, data: { assignedAgentId?: string | null }) {
+    const account = await this.prisma.connectedAccount.findFirst({ where: { id: accountId, tenantId } })
+    if (!account) throw new NotFoundException('Connected account not found')
+    return this.prisma.connectedAccount.update({
+      where: { id: accountId },
+      data: {
+        assignedAgentId: data.assignedAgentId ?? null,
+      },
+      include: { assignedAgent: { select: { id: true, name: true, role: true, avatar: true } } },
+    })
   }
 
   // ─────────────────────────────────────────────
@@ -458,7 +499,8 @@ export class IntegrationsService {
               classification,
               effectiveMode,
               rule?.replyTemplate ?? null,
-              rule?.assignedAgentId ?? null,
+              // Account-level agent assignment takes priority over rule-level
+              (account as any).assignedAgentId ?? rule?.assignedAgentId ?? null,
             )
           } catch (err: any) {
             errorMessage = err.message
@@ -595,7 +637,8 @@ export class IntegrationsService {
               effectiveMode,
               rule?.replyTemplate ?? null,
               account.accountEmail,
-              rule?.assignedAgentId ?? null,
+              // Account-level agent assignment takes priority over rule-level
+              (account as any).assignedAgentId ?? rule?.assignedAgentId ?? null,
             )
           } catch (err: any) {
             errorMessage = err.message
@@ -690,7 +733,8 @@ export class IntegrationsService {
           to: email.from,
           subject: email.subject,
           html: replyBody,
-          inReplyTo: email.threadId,
+          inReplyTo: email.threadId || undefined,
+          references: email.references,
         })
         await imap.markAsRead(email.id)
         await this.notifyAgentOfEmail(tenantId, email, classification,
@@ -704,7 +748,7 @@ export class IntegrationsService {
           : await this.generateEmailReply(email, classification, tenantId, assignedAgentId)
 
         // Save draft directly to Drafts folder via IMAP APPEND
-        const saved = await imap.saveDraft(email.from, email.subject, draftBody, email.threadId)
+        const saved = await imap.saveDraft(email.from, email.subject, draftBody, email.threadId || undefined, email.references)
         await imap.markAsRead(email.id)
 
         if (saved) {
@@ -874,8 +918,9 @@ export class IntegrationsService {
     const log = (ticket.activityLog as any[]) ?? []
     const now = new Date()
 
-    await this.prisma.activityTicket.update({
-      where: { id: ticket.id },
+    // updateMany enforces tenantId in the where clause as a defence-in-depth guard
+    await this.prisma.activityTicket.updateMany({
+      where: { id: ticket.id, tenantId },
       data: {
         status: newStatus as any,
         followUpAt: followUpAt ?? null,

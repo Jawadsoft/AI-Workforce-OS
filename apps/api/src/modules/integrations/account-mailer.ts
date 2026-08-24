@@ -34,12 +34,18 @@ export class AccountMailer {
     html: string
     text?: string
     inReplyTo?: string
+    /** Full prior References chain from the incoming email. The inReplyTo value
+     *  is automatically appended so callers only need to pass the original chain. */
+    references?: string[]
   }): Promise<void> {
     // Guard against malformed addresses
     if (!params.to || params.to.includes('undefined') || !params.to.includes('@')) {
       this.logger.warn(`sendReply skipped — invalid recipient: "${params.to}"`)
       return
     }
+    // Build complete References chain: prior chain + immediate parent (deduplicated)
+    const refChain = [...(params.references ?? []), ...(params.inReplyTo ? [params.inReplyTo] : [])]
+      .filter((v, i, a) => v && a.indexOf(v) === i)
     const transporter = this.buildTransporter()
     await transporter.sendMail({
       from: `"${this.config.smtpFromName}" <${this.config.fromEmail}>`,
@@ -47,7 +53,8 @@ export class AccountMailer {
       subject: params.subject.startsWith('Re:') ? params.subject : `Re: ${params.subject}`,
       html: params.html,
       text: params.text,
-      ...(params.inReplyTo ? { inReplyTo: params.inReplyTo, references: params.inReplyTo } : {}),
+      ...(params.inReplyTo ? { inReplyTo: params.inReplyTo } : {}),
+      ...(refChain.length ? { references: refChain.join(' ') } : {}),
     })
     this.logger.log(`Reply sent from ${this.config.fromEmail} to ${params.to}`)
   }

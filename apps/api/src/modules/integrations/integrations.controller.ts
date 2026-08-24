@@ -104,6 +104,12 @@ class UpdateProcessedEmailDto {
   action?: string
 }
 
+class UpdateConnectedAccountDto {
+  @IsOptional()
+  @IsString()
+  assignedAgentId?: string | null
+}
+
 class UpdateEmailRuleDto {
   @IsOptional()
   @IsIn(['auto_reply', 'auto_draft', 'approval_required', 'notify_only', 'block'])
@@ -143,6 +149,18 @@ export class IntegrationsController {
     return this.service.getConnectedAccounts(tenantId)
   }
 
+  @Patch('accounts/:id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update a connected account (e.g. assign agent)' })
+  updateAccount(
+    @CurrentTenant() tenantId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateConnectedAccountDto,
+  ) {
+    return this.service.updateConnectedAccount(tenantId, id, dto)
+  }
+
   @Delete('accounts/:id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -167,11 +185,11 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'Google OAuth callback — exchanges code for tokens' })
   async googleCallback(
     @Query('code') code: string,
-    @Query('state') tenantId: string,
+    @Query('state') state: string,
     @Res() res: Response,
   ) {
     try {
-      await this.service.handleGoogleCallback(code, tenantId)
+      await this.service.handleGoogleCallback(code, state)
       const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3000'
       res.redirect(`${frontendUrl}/settings?tab=integrations&connected=google`)
     } catch (err: any) {

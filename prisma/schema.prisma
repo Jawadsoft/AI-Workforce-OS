@@ -128,6 +128,7 @@ model Agent {
   knowledgeDocs         AgentKnowledge[]
   crmAccess             AgentCRMAccess[]
   emailRules            EmailAgentRule[]
+  connectedAccounts     ConnectedAccount[]
   createdTickets        ActivityTicket[]      @relation("TicketCreator")
   assignedTickets       ActivityTicket[]      @relation("TicketAssignee")
   conversationSummaries ConversationSummary[]
@@ -532,7 +533,7 @@ model AuditLog {
 model ConnectedAccount {
   id                    String    @id @default(cuid())
   tenantId              String
-  provider              String // 'google' | 'microsoft'
+  provider              String // 'google' | 'imap'
   accountEmail          String
   accountName           String?
   encryptedAccessToken  String    @db.Text
@@ -541,11 +542,13 @@ model ConnectedAccount {
   expiresAt             DateTime?
   status                String    @default("active") // active | expired | revoked
   metadata              Json      @default("{}") // imap host/port/secure, display name, etc.
+  assignedAgentId       String?   // override: all mail from this account is handled by this agent
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   processedEmails ProcessedEmail[]
+  assignedAgent   Agent?           @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, provider, accountEmail])
 }

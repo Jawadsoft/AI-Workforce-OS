@@ -12,6 +12,10 @@ export interface RawEmail {
   receivedAt: Date
   snippet: string
   labelIds: string[]
+  /** Value of the In-Reply-To header from the incoming email (for threading replies) */
+  inReplyTo?: string
+  /** Full References chain from the incoming email (space-separated Message-IDs) */
+  references?: string[]
 }
 
 export class GmailAdapter {
@@ -76,6 +80,9 @@ export class GmailAdapter {
 
       const body = this.extractBody(msg.payload)
 
+      const inReplyToRaw = getHeader('In-Reply-To')
+      const referencesRaw = getHeader('References')
+
       return {
         id,
         threadId: msg.threadId ?? '',
@@ -86,6 +93,8 @@ export class GmailAdapter {
         receivedAt: new Date(parseInt(msg.internalDate ?? '0')),
         snippet: msg.snippet ?? '',
         labelIds: msg.labelIds ?? [],
+        inReplyTo: inReplyToRaw || undefined,
+        references: referencesRaw ? referencesRaw.split(/\s+/).filter(Boolean) : undefined,
       }
     } catch {
       return null

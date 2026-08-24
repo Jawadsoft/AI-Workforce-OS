@@ -40,6 +40,8 @@ interface ConnectedAccount {
   scopes: string[]
   expiresAt: string | null
   createdAt: string
+  assignedAgentId: string | null
+  assignedAgent: AgentOption | null
 }
 
 interface EmailRule {
@@ -463,7 +465,13 @@ export function IntegrationsPanel() {
               <AccountCard
                 key={account.id}
                 account={account}
+                agents={agents}
                 onDisconnect={() => disconnectAccount(account.id)}
+                onAgentChange={(agentId) => {
+                  api.patch(`/integrations/accounts/${account.id}`, { assignedAgentId: agentId || null })
+                    .then(r => setAccounts(prev => prev.map(a => a.id === account.id ? { ...a, assignedAgentId: r.data.assignedAgentId, assignedAgent: r.data.assignedAgent } : a)))
+                    .catch(() => toast.error('Failed to assign agent'))
+                }}
               />
             ))}
 
@@ -786,7 +794,17 @@ export function IntegrationsPanel() {
 
 // ── Account Card ─────────────────────────────────────────────────────────────
 
-function AccountCard({ account, onDisconnect }: { account: ConnectedAccount; onDisconnect: () => void }) {
+function AccountCard({
+  account,
+  agents,
+  onDisconnect,
+  onAgentChange,
+}: {
+  account: ConnectedAccount
+  agents: AgentOption[]
+  onDisconnect: () => void
+  onAgentChange: (agentId: string) => void
+}) {
   const statusColor = account.status === 'active'
     ? 'text-green-600'
     : account.status === 'expired'
@@ -798,29 +816,51 @@ function AccountCard({ account, onDisconnect }: { account: ConnectedAccount; onD
     : XCircle
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-border bg-card">
-      <div className="w-9 h-9 rounded-full bg-white border border-border flex items-center justify-center shadow-sm shrink-0">
-        {account.provider === 'google' ? <GoogleIcon /> : account.provider === 'microsoft' ? <MicrosoftIcon /> : <Server className="w-4 h-4 text-muted-foreground" />}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <p className="text-sm font-medium truncate">{account.accountName || account.accountEmail}</p>
-          <span className={`flex items-center gap-1 text-xs ${statusColor}`}>
-            <StatusIcon className="w-3.5 h-3.5" />
-            {account.status}
-          </span>
+    <div className="rounded-lg border border-border bg-card">
+      <div className="flex items-center gap-3 px-4 py-3">
+        <div className="w-9 h-9 rounded-full bg-white border border-border flex items-center justify-center shadow-sm shrink-0">
+          {account.provider === 'google' ? <GoogleIcon /> : account.provider === 'microsoft' ? <MicrosoftIcon /> : <Server className="w-4 h-4 text-muted-foreground" />}
         </div>
-        <p className="text-xs text-muted-foreground">
-          {account.provider === 'google' ? 'Gmail' : account.provider === 'imap' ? `IMAP · ${account.accountEmail}` : 'Outlook'} · Connected {new Date(account.createdAt).toLocaleDateString()}
-        </p>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium truncate">{account.accountName || account.accountEmail}</p>
+            <span className={`flex items-center gap-1 text-xs ${statusColor}`}>
+              <StatusIcon className="w-3.5 h-3.5" />
+              {account.status}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {account.provider === 'google' ? 'Gmail' : account.provider === 'imap' ? `IMAP · ${account.accountEmail}` : 'Outlook'} · Connected {new Date(account.createdAt).toLocaleDateString()}
+          </p>
+        </div>
+        <button
+          onClick={onDisconnect}
+          className="p-1.5 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-50 transition-colors"
+          title="Disconnect"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
       </div>
-      <button
-        onClick={onDisconnect}
-        className="p-1.5 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-50 transition-colors"
-        title="Disconnect"
-      >
-        <Trash2 className="w-4 h-4" />
-      </button>
+
+      {/* Per-account agent assignment */}
+      {agents.length > 0 && (
+        <div className="px-4 pb-3 flex items-center gap-2 border-t border-border/50 pt-2.5">
+          <span className="text-xs text-muted-foreground shrink-0">Assigned agent:</span>
+          <select
+            value={account.assignedAgentId ?? ''}
+            onChange={e => onAgentChange(e.target.value)}
+            className="text-xs border border-border rounded-md px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-primary flex-1 max-w-[220px]"
+          >
+            <option value="">Use rule defaults</option>
+            {agents.map(a => (
+              <option key={a.id} value={a.id}>{a.name} — {a.role}</option>
+            ))}
+          </select>
+          {account.assignedAgent && (
+            <span className="text-xs text-primary font-medium truncate">{account.assignedAgent.name}</span>
+          )}
+        </div>
+      )}
     </div>
   )
 }

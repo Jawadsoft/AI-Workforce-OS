@@ -84,29 +84,35 @@ export class ImapAdapter {
         return []
       }
 
-      // 1) Try unread UIDs first
-      let range: string | number[] | { seen: false } = { seen: false }
+      // 1) Try unread + unanswered UIDs first (skip emails already replied to)
+      let range: string | number[] = []
       let mode = 'unread'
       try {
-        const unreadUids = await client.search({ seen: false }, { uid: true })
-        this.logger.log(`IMAP unread count for ${this.config.user}: ${unreadUids?.length ?? 0}`)
+        const unreadUids = await client.search({ seen: false, answered: false }, { uid: true })
+        this.logger.log(`IMAP unread+unanswered count for ${this.config.user}: ${unreadUids?.length ?? 0}`)
         if (unreadUids?.length) {
           range = unreadUids.slice(-maxResults)
           mode = 'unread'
         } else {
-          // 2) Fall back to last N messages by sequence number (includes already-read)
-          const start = Math.max(1, total - maxResults + 1)
-          range = `${start}:${total}`
-          mode = 'recent'
-          this.logger.log(`IMAP falling back to recent sequence ${range} for ${this.config.user}`)
+          // 2) Fall back to unanswered messages (read on phone/web but not replied to)
+          const unansweredUids = await client.search({ answered: false }, { uid: true })
+          this.logger.log(`IMAP unanswered fallback count for ${this.config.user}: ${unansweredUids?.length ?? 0}`)
+          if (unansweredUids?.length) {
+            range = unansweredUids.slice(-maxResults)
+            mode = 'unanswered'
+          } else {
+            this.logger.log(`IMAP no unread or unanswered messages for ${this.config.user}`)
+            await client.logout()
+            return []
+          }
         }
       } catch {
+        // Server does not support ANSWERED search — fall back to last N by sequence
         const start = Math.max(1, total - maxResults + 1)
-        range = `${start}:${total}`
-        mode = 'recent'
+        range = Array.from({ length: total - start + 1 }, (_, i) => start + i)
+        mode = 'recent-fallback'
       }
 
-      const useUid = Array.isArray(range)
       const messages = client.fetch(
         range as any,
         {
@@ -116,7 +122,7 @@ export class ImapAdapter {
           bodyStructure: true,
           source: true,
         },
-        { uid: useUid },
+        { uid: true },
       )
 
       for await (const msg of messages) {
@@ -162,25 +168,38 @@ export class ImapAdapter {
 
       const fromName = (from?.name && from.name !== 'undefined') ? from.name : fromEmail
 
-      let body = ''
-      if (msg.source) {
-        const raw = msg.source.toString('utf8')
-        // Extract text body from raw email — basic extraction
-        body = this.extractTextFromRaw(raw)
+      const rawStr: string = msg.source ? msg.source.toString('utf8') : ''
+
+      // Parse raw headers section for fields ENVELOPE may omit
+      const headerSection = rawStr.split(/\r?\n\r?\n/)[0] ?? ''
+      const getRawHeader = (name: string): string => {
+        const m = headerSection.match(new RegExp(`^${name}:\\s*(.+?)(?=\\r?\\n(?!\\s)|$)`, 'im'))
+        return m?.[1]?.trim() ?? ''
       }
 
+      // ENVELOPE messageId is often null on some servers — fall back to raw header
+      const messageId: string = env?.messageId || getRawHeader('Message-ID') || `<imap-${msg.uid ?? Date.now()}@local>`
+      const inReplyToRaw = getRawHeader('In-Reply-To')
+      const referencesRaw = getRawHeader('References')
+
+      const body = rawStr ? this.extractTextFromRaw(rawStr) : ''
       const uid = msg.uid ?? msg.seq ?? String(Date.now())
+
+      // Map ImapFlow flags Set to labelIds array so callers can check \\Answered etc.
+      const labelIds: string[] = msg.flags ? [...(msg.flags as Set<string>)] : []
 
       return {
         id: `imap-${uid}`,
-        threadId: env?.messageId ?? '',
+        threadId: messageId,
         from: fromEmail,
         fromName,
         subject: env?.subject ?? '(no subject)',
         body: body.slice(0, 4000),
         receivedAt: env?.date ? new Date(env.date) : new Date(),
         snippet: body.slice(0, 200).replace(/\s+/g, ' ').trim(),
-        labelIds: [],
+        labelIds,
+        inReplyTo: inReplyToRaw || undefined,
+        references: referencesRaw ? referencesRaw.split(/\s+/).filter(Boolean) : undefined,
       }
     } catch {
       return null
@@ -222,7 +241,8 @@ export class ImapAdapter {
       await client.mailboxOpen('INBOX')
       const uidNum = parseInt(uid.replace('imap-', ''))
       if (!isNaN(uidNum)) {
-        await client.messageFlagsAdd({ uid: `${uidNum}` }, ['\\Seen'], { uid: true })
+        // Set both \\Seen and \\Answered so future scans skip this message
+        await client.messageFlagsAdd({ uid: `${uidNum}` }, ['\\Seen', '\\Answered'], { uid: true })
       }
       await client.logout()
     } catch (err: any) {
@@ -232,7 +252,7 @@ export class ImapAdapter {
     }
   }
 
-  async saveDraft(to: string, subject: string, htmlBody: string, threadId?: string): Promise<boolean> {
+  async saveDraft(to: string, subject: string, htmlBody: string, threadId?: string, references?: string[]): Promise<boolean> {
     if (!to || to.includes('undefined') || !to.includes('@')) {
       this.logger.warn(`saveDraft skipped — invalid recipient: "${to}"`)
       return false
@@ -257,6 +277,9 @@ export class ImapAdapter {
       // Build raw RFC 2822 message
       const boundary = `boundary_${Date.now()}`
       const plainText = htmlBody.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+      // Build full References chain: prior chain + the immediate parent (deduplicated)
+      const refChain = [...(references ?? []), ...(threadId ? [threadId] : [])]
+        .filter((v, i, a) => v && a.indexOf(v) === i)
       const rawMessage = [
         `From: ${this.config.user}`,
         `To: ${to}`,
@@ -264,7 +287,8 @@ export class ImapAdapter {
         `MIME-Version: 1.0`,
         `Content-Type: multipart/alternative; boundary="${boundary}"`,
         `X-Draft: true`,
-        ...(threadId ? [`In-Reply-To: ${threadId}`, `References: ${threadId}`] : []),
+        ...(threadId ? [`In-Reply-To: ${threadId}`] : []),
+        ...(refChain.length ? [`References: ${refChain.join(' ')}`] : []),
         ``,
         `--${boundary}`,
         `Content-Type: text/plain; charset=utf-8`,

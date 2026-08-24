@@ -44,6 +44,8 @@ class MergeAgentsDto {
   @IsOptional() @IsString() role?: string
   @IsOptional() @IsBoolean() setAsWhatsappAgent?: boolean
   @IsOptional() @IsBoolean() deactivateSources?: boolean
+  /** When true, update the primary agent in-place instead of creating a new agent record. */
+  @IsOptional() @IsBoolean() updatePrimary?: boolean
 }
 
 @ApiTags('Agents')

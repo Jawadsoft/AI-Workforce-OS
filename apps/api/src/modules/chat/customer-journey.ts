@@ -59,50 +59,23 @@ export function inferCustomerStage(opts: {
   return stored
 }
 
-export function industryRagExcludeCategories(stage: CustomerStage, latestUserMessage: string): string[] {
-  const text = (latestUserMessage || '').toLowerCase()
-  const mentionedInsurance = /insur|claim|adjuster|supplement|xactimate/.test(text)
-
-  if (stage === 'GREET') return ['INSURANCE', 'PROCESS', 'PRICING', 'PRODUCTS']
-  if (stage === 'QUALIFY') return mentionedInsurance ? [] : ['INSURANCE']
+export function industryRagExcludeCategories(_stage: CustomerStage, _latestUserMessage: string): string[] {
+  // LLM decides what is relevant based on context — no hard exclusions
   return []
 }
 
-export function buildCustomerJourneyAddendum(stage: CustomerStage): string {
-  const stageLine = {
-    GREET:
-      'They just greeted you or started. Welcome them briefly. Ask ONE discovery question. Do NOT quote prices, insurance, supplements, chemicals, or process dumps.',
-    QUALIFY:
-      'You are qualifying. Ask ONE question at a time (what they need, property type/area, frequency or damage, then insurance only if storm/damage). Do not dump a full checklist.',
-    BALLPARK:
-      'They want a sense of price. Use the hybrid pricing rule. One range + what changes the price + offer to book a visit. No full line-item quote unless brain has exact package prices.',
-    BOOK:
-      'They are ready to book. Confirm name, address/area, preferred time, and create a ticket. Keep it short.',
-    FULFILL:
-      'They have an existing job or operational ask. Help with status, changes, or next step. Do not restart the sales pitch.',
-  }[stage]
-
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function buildCustomerJourneyAddendum(_stage: CustomerStage): string {
   return `
 
-═══════════════════════════════════════
-CUSTOMER JOURNEY (this thread)
-═══════════════════════════════════════
-Current stage: ${stage}
-${stageLine}
-
-FLOW (do not skip ahead unless they already asked):
-1. GREET → warm hello, who you are, one question
-2. QUALIFY → need, location, scope (one question at a time)
-3. BALLPARK → typical range, not a firm written quote
-4. BOOK → site visit / slot + ticket
-5. FULFILL → after they are booked, just deliver
-
-HYBRID PRICING:
-• If COMPANY BRAIN has a price for this service — use that.
-• Else give a typical range from industry knowledge (“typically £X–£Y” / “around $X–$Y”).
-• Firm written quote only after a visit or confirmed scope — never invent an exact total.
-• Never lead with insurance supplements, Xactimate, or COSHH on a first “hello”.
-• Never name another employee or say you will coordinate/consult/transfer. You handle cleaning and any extra skills in your prompt yourself.`
+CONVERSATION STYLE (public channel):
+- Respond like a knowledgeable human sales rep — read the conversation and decide naturally what the customer needs next.
+- One question at a time. Don't ask several questions at once.
+- Only bring up pricing when the customer is ready or asks — not on the first message.
+- When pricing comes up: use company brain figures if available, otherwise give a realistic industry range. Never invent a firm total before scoping the job.
+- When they are ready to book: confirm name, address/area, preferred time, create a ticket.
+- If they already have an ongoing booking or job: help with status or next step — don't restart the sales pitch.
+- Use your own knowledge of the industry to guide what to ask and when.`
 }
 
 function normalizeStage(raw?: string | null): CustomerStage | null {

@@ -131,25 +131,24 @@ export function buildMergedPrompt(primary: MergeableAgent, secondary?: Mergeable
   const secRole = skillLabel(secondary.role)
   const skills = extractAdditionalSkills(secondary.prompt, secondary.name)
 
-  const skillsBlock = skills
-    || `Handle ${secRole} enquiries: qualify, give a typical price or range, and book.`
+  // Build natural capability extension — reads as the primary agent's own abilities, not a bolted-on identity
+  const capabilityLines = skills.trim()
+    ? skills.trim()
+    : `Handle ${secRole} enquiries: understand the scope, give a typical price range, and book.`
 
   return `${primaryBlock}
 
-═══════════════════════════════════════
-ADDITIONAL SKILLS — ${secRole}
-═══════════════════════════════════════
-You are still ${primaryName} only. The block below is extra capability you handle yourself.
-Never name other staff and never say you will consult, coordinate with, or transfer the customer.
+You also handle ${secRole} requests directly — this is part of your role, not a referral.
+When a customer asks about ${secRole} work, qualify it, give a realistic price range, and book it yourself.
+Do not name or refer to any other colleague for this — you own it end-to-end.
 
-${skillsBlock}
+${capabilityLines}
 
-COMBINED ROLE RULES:
-• One identity (${primaryName}), one conversation, one booking.
-• Use your primary role for matching asks; use the additional skills above when the job is in that area.
-• If the job spans both, treat it as one job — do not split the customer across agents.
-• One question at a time; short, human replies (especially on WhatsApp).
-• Log the correct job type in CRM when creating tickets.`
+UNIFIED ROLE RULES:
+- One identity (${primaryName}), one conversation, one booking.
+- Handle all service areas in your prompt yourself — never split the customer across agents.
+- One question at a time; keep replies short and natural (especially on WhatsApp/SMS).
+- Log the correct job type in CRM when creating a ticket.`
 }
 
 export function mergeTools(primary: MergeableAgent, secondary?: MergeableAgent | null): string[] {

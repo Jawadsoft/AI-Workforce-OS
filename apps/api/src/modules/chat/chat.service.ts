@@ -1277,7 +1277,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     ])
 
     // ── Build enriched system prompt ──────────────────────────────
-    let enrichedSystemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext + memoryContext, false, ticketsBlock, teamRoster)
+    let enrichedSystemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext + memoryContext, false, ticketsBlock, teamRoster, conv.channel ?? '')
     if (journey?.addendum) enrichedSystemPrompt += journey.addendum
     if (conv.channel === 'WHATSAPP' || conv.channel === 'SMS') {
       enrichedSystemPrompt += this.buildPhoneChannelAddendum(conv.channel)
@@ -3101,7 +3101,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       `registry=${registryDocs.length} injectedChars=${scope.scopedDocuments.reduce((n, d) => n + d.text.length, 0)}`,
     )
 
-    let systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag + attachmentContextBlock, false, streamTicketsBlock, streamTeamRoster)
+    let systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag + attachmentContextBlock, false, streamTicketsBlock, streamTeamRoster, conv.channel ?? '')
     if (streamJourney?.addendum) systemPrompt += streamJourney.addendum
     if (conv.channel === 'WHATSAPP' || conv.channel === 'SMS') {
       systemPrompt += this.buildPhoneChannelAddendum(conv.channel)
@@ -3587,10 +3587,13 @@ ${label.toUpperCase()} CHANNEL RULES (critical)
 
   // ── Builds the structured system prompt ──────────────────────────
 
-  private buildFullSystemPrompt(agent: any, settings: any, brainContext: string, crmContextBlock: string, ragContext = '', isSpecialist = false, ticketsBlock = '', teamRoster: { name: string; role: string; prompt?: string | null }[] = []): string {
+  private buildFullSystemPrompt(agent: any, settings: any, brainContext: string, crmContextBlock: string, ragContext = '', isSpecialist = false, ticketsBlock = '', teamRoster: { name: string; role: string; prompt?: string | null }[] = [], channel = ''): string {
     const brain = settings?.brain ?? {}
     const company = brain.companyName || settings.tenantName || 'the company'
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+
+    // ── Channel flags (used in team coordination gating) ─────────────────────
+    const isPublicFacing = channel === 'WHATSAPP' || channel === 'SMS'
 
     // ── Industry flags (needed early — used in header and role sections) ──────
     const industry = (brain.industry || settings.industry || 'general').toLowerCase().replace(/_/g, ' ')
@@ -3965,7 +3968,21 @@ The person messaging you is staff or the business owner — NOT a customer.
       ? `\nYOUR TEAM AT ${company.toUpperCase()}:\n${rosterLines.join('\n')}\n`
       : ''
 
-    const teamCoordinationSection = `
+    const teamCoordinationSection = isPublicFacing
+      ? `
+
+SINGLE-VOICE RULES (public channel):
+You are the only person the customer talks to. Handle every request yourself.
+• Never name a colleague — no "Jake", "Alex", no "our coordinator", no "I'll check with the team".
+• If you need specialist input, call handoff_to_agent silently — the answer comes back to YOU and YOU deliver it naturally. Never mention the tool or that you consulted anyone.
+• Say "Let me look into that for you" or "Give me a moment" while you check — then come back with the answer.
+• One conversation, one voice, one booking.
+
+SPECIALIST MODE (when you receive [HANDOFF FROM ...]):
+- Answering internally — your reply goes BACK to the requesting agent, not to the customer
+- Be concise and factual — they will deliver your answer in their own voice
+- Do NOT address the customer directly`
+      : `
 
 TEAM COORDINATION — MANDATORY RULES:
 You work as part of a team. Refer to colleagues by their actual name listed below.${teamRosterBlock}

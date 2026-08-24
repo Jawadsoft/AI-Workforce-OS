@@ -239,6 +239,8 @@ export class AgentsService {
       role?: string
       setAsWhatsappAgent?: boolean
       deactivateSources?: boolean
+      /** When true, update the primary agent in-place instead of creating a new agent record. */
+      updatePrimary?: boolean
     },
   ) {
     const primary = await this.prisma.agent.findFirst({
@@ -274,6 +276,66 @@ export class AgentsService {
     const permissions = mergePermissions(primary as any, secondary as any)
     const approvalRules = mergeApprovalRules(primary as any, secondary as any, mergeMeta)
 
+    // ── updatePrimary: absorb secondary skills directly into the primary record ──
+    if (opts.updatePrimary) {
+      const updated = await this.prisma.agent.update({
+        where: { id: primary.id },
+        data: {
+          name,
+          role,
+          prompt,
+          tools,
+          permissions,
+          approvalRules: approvalRules as any,
+        },
+      })
+
+      // Union knowledge doc assignments from secondary into primary
+      if (secondary) {
+        const secLinks = await this.prisma.agentKnowledge.findMany({
+          where: { agentId: secondary.id },
+          select: { documentId: true },
+        })
+        if (secLinks.length) {
+          await this.prisma.agentKnowledge.createMany({
+            data: secLinks.map((k) => ({ agentId: primary.id, documentId: k.documentId })),
+            skipDuplicates: true,
+          })
+        }
+
+        // Union CRM access from secondary into primary
+        const secCrmRows = await this.prisma.agentCRMAccess.findMany({ where: { agentId: secondary.id } })
+        for (const row of secCrmRows) {
+          const existing = await this.prisma.agentCRMAccess.findUnique({
+            where: { agentId_connectionId: { agentId: primary.id, connectionId: row.connectionId } },
+          })
+          const merged = [...new Set([...(existing?.permissions ?? []), ...row.permissions])]
+          await this.prisma.agentCRMAccess.upsert({
+            where: { agentId_connectionId: { agentId: primary.id, connectionId: row.connectionId } },
+            create: { agentId: primary.id, connectionId: row.connectionId, permissions: merged },
+            update: { permissions: merged },
+          })
+        }
+
+        if (opts.deactivateSources) {
+          await this.prisma.agent.update({
+            where: { id: secondary.id },
+            data: { status: 'INACTIVE' },
+          })
+        }
+      }
+
+      if (opts.setAsWhatsappAgent) {
+        const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } })
+        const settings = { ...((tenant?.settings as Record<string, unknown>) ?? {}) }
+        settings.whatsappAgentId = primary.id
+        await this.prisma.tenant.update({ where: { id: tenantId }, data: { settings: settings as any } })
+      }
+
+      return { ...updated, mergeSource: mergeMeta, whatsappAgentSet: Boolean(opts.setAsWhatsappAgent), updatedInPlace: true }
+    }
+
+    // ── Default: create a new combined agent record ─────────────────────────
     const created = await this.prisma.agent.create({
       data: {
         tenantId,
@@ -332,7 +394,6 @@ export class AgentsService {
 
     if (opts.deactivateSources) {
       const deactivateIds = secondary ? [secondary.id] : []
-      // Only deactivate secondary by default pattern; primary stays unless both requested
       if (deactivateIds.length) {
         await this.prisma.agent.updateMany({
           where: { id: { in: deactivateIds }, tenantId },
@@ -358,6 +419,7 @@ export class AgentsService {
       ...created,
       mergeSource: mergeMeta,
       whatsappAgentSet: Boolean(opts.setAsWhatsappAgent),
+      updatedInPlace: false,
     }
   }
 

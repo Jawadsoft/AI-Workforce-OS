@@ -53,6 +53,7 @@ export function CreateAgentForm() {
     role: '',
     setAsWhatsappAgent: true,
     deactivateSources: false,
+    updatePrimary: false,
   })
   const [error, setError] = useState('')
 
@@ -99,9 +100,11 @@ export function CreateAgentForm() {
         role: mergeForm.role || undefined,
         setAsWhatsappAgent: mergeForm.setAsWhatsappAgent,
         deactivateSources: mergeForm.deactivateSources,
+        updatePrimary: mergeForm.updatePrimary,
       }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['agents'] })
+      // updatePrimary returns the primary agent id, new agent returns res.data.id
       router.push(`/agents/${res.data.id}`)
     },
     onError: (err: any) => setError(err.response?.data?.message ?? 'Failed to merge agents'),
@@ -239,7 +242,7 @@ export function CreateAgentForm() {
       ) : (
         <div className="rounded-lg border border-border bg-card p-6 space-y-5">
           <p className="text-sm text-muted-foreground">
-            Creates a <strong className="text-foreground font-medium">new</strong> agent. Your existing agents (Will, Jake, etc.) stay unchanged.
+            Transfer skills from a secondary agent into a primary. Enable <strong className="text-foreground font-medium">Transfer skills into primary</strong> below to update the primary agent directly, or leave it off to create a new combined agent record.
           </p>
 
           <div className="grid grid-cols-2 gap-4">
@@ -314,6 +317,18 @@ export function CreateAgentForm() {
           </div>
 
           <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={mergeForm.updatePrimary}
+                onChange={(e) => setMergeForm((f) => ({ ...f, updatePrimary: e.target.checked }))}
+                className="rounded border-border"
+              />
+              <span>
+                <span className="font-medium">Transfer skills into primary agent</span>
+                <span className="text-muted-foreground ml-1">(updates existing agent, no new record created)</span>
+              </span>
+            </label>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input
                 type="checkbox"

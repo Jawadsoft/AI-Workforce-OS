@@ -255,10 +255,17 @@ export class KnowledgeService {
   // ── RAG retrieval ─────────────────────────────────────────────────
   // Called by chat.service to inject relevant context into the prompt
 
-  async retrieveContext(agentId: string, query: string, industry?: string, agentRole?: string, topK = 4): Promise<string> {
+  async retrieveContext(
+    agentId: string,
+    query: string,
+    industry?: string,
+    agentRole?: string,
+    topK = 4,
+    opts?: { customerStage?: string; alwaysInjectSalesFlow?: boolean; excludeCategories?: string[] },
+  ): Promise<string> {
     try {
       // Run tenant docs + industry pack search in parallel for minimum latency
-      const [tenantChunks, industryContext] = await Promise.all([
+      const [tenantChunks, industryContext, salesFlow] = await Promise.all([
         // Layer 1 — Tenant-specific docs assigned to this agent
         this.prisma.knowledgeChunk.findMany({
           where: {
@@ -271,7 +278,12 @@ export class KnowledgeService {
         }),
         // Layer 2 — Industry pack for this tenant's industry + agent role
         industry && agentRole
-          ? this.industryKnowledge.retrieveForRole(industry, agentRole, query, 3)
+          ? this.industryKnowledge.retrieveForRole(industry, agentRole, query, 3, {
+              excludeCategories: opts?.excludeCategories,
+            })
+          : Promise.resolve(''),
+        industry && opts?.alwaysInjectSalesFlow
+          ? this.industryKnowledge.getSalesFlow(industry)
           : Promise.resolve(''),
       ])
 
@@ -292,6 +304,11 @@ export class KnowledgeService {
           .filter(c => c.score > 0.28)
 
         scored.forEach(c => lines.push(`[${c.docName}]\n${c.content}`))
+      }
+
+      // Journey script first so stage rules beat random pack chunks
+      if (salesFlow) {
+        lines.unshift(salesFlow)
       }
 
       // Add industry pack context (general industry knowledge)

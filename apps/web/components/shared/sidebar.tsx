@@ -9,6 +9,7 @@ import {
   Clock, BookOpen, FileText, Plug, UserCog,
   BarChart3, Settings, Zap, PanelLeftClose, PanelLeftOpen, Phone,
   CloudLightning, Wrench, ChevronDown, Ticket, Share2, Inbox, HelpCircle,
+  Radio,
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth.store'
 import { canAccessPath } from '@/lib/roles'
@@ -17,6 +18,7 @@ const navItems = [
   { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { label: 'AI Workforce', href: '/agents', icon: Users },
   { label: 'Chat', href: '/chat', icon: MessageSquare },
+  { label: 'Conference', href: '/conference', icon: Radio },
   { label: 'Tickets', href: '/tickets', icon: Ticket },
   { label: 'Tasks', href: '/tasks', icon: CheckSquare },
   { label: 'Approvals', href: '/approvals', icon: Clock },

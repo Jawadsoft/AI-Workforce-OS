@@ -29,6 +29,7 @@ export const ROUTE_MIN_ROLE: Record<string, string> = {
   '/dashboard': 'VIEWER',
   '/help': 'VIEWER',
   '/chat': 'USER',
+  '/conference': 'USER',
   '/tickets': 'USER',
   '/tasks': 'USER',
   '/approvals': 'USER',

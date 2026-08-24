@@ -26,6 +26,14 @@ import {
   resolveDocumentScope,
   formatScopedDocumentsForPrompt,
 } from './document-scope.util'
+import { stripPassTag } from '../conference/conference.defaults'
+import {
+  buildCustomerJourneyAddendum,
+  industryRagExcludeCategories,
+  inferCustomerStage,
+  isCustomerFacingSales,
+  type CustomerStage,
+} from './customer-journey'
 
 // Regex patterns to extract caller identity from first message
 const PHONE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/
@@ -1241,9 +1249,19 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       content,
     })
 
+    const journey = this.resolveCustomerJourney(conv.agent, conv.channel, meta, content, history)
+    if (journey) await this.persistCustomerStage(conversationId, meta, journey.stage)
+
     // ── RAG + Memory + ticket fetch (all in parallel) ──────────────
     const [ragContext, memoryContext, ticketsBlock, teamRoster] = await Promise.all([
-      this.knowledge.retrieveContext(conv.agent.id, content, mergedSettings.industry, conv.agent.role),
+      this.knowledge.retrieveContext(
+        conv.agent.id,
+        content,
+        mergedSettings.industry,
+        conv.agent.role,
+        4,
+        journey?.ragOptions,
+      ),
       this.memory.buildMemoryContext(conv.agent.id, tenantId, content, {
         subjectKey: memorySubjectKey,
         runningSummary: (conv as any).runningSummary,
@@ -1260,6 +1278,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
 
     // ── Build enriched system prompt ──────────────────────────────
     let enrichedSystemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext + memoryContext, false, ticketsBlock, teamRoster)
+    if (journey?.addendum) enrichedSystemPrompt += journey.addendum
     if (conv.channel === 'WHATSAPP' || conv.channel === 'SMS') {
       enrichedSystemPrompt += this.buildPhoneChannelAddendum(conv.channel)
     }
@@ -1427,6 +1446,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
 
     const isPublicChannel =
       conversationSource === 'WHATSAPP' || conversationSource === 'SMS'
+    const isConferenceChannel = conversationSource === 'CONFERENCE'
 
     let internalToolNames = isSpecialist
       // Called via handoff or auto-wake: update existing tickets only, no create_ticket
@@ -1463,6 +1483,24 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       }
       internalToolNames = internalToolNames.filter(
         (t) => t !== 'suggest_transfer' && t !== 'reply_to_widget_session',
+      )
+    }
+
+    // Conference: read/update tools OK — no customer outbound, no UI transfer, no widget.
+    // Agents must finish answers in-turn (progress, insurance cases, etc.).
+    if (isConferenceChannel) {
+      if (!internalToolNames.includes('get_team_activity')) {
+        internalToolNames = [...internalToolNames, 'get_team_activity']
+      }
+      if (!internalToolNames.includes('get_my_tickets')) {
+        internalToolNames = [...internalToolNames, 'get_my_tickets']
+      }
+      internalToolNames = internalToolNames.filter(
+        (t) =>
+          t !== 'suggest_transfer' &&
+          t !== 'reply_to_widget_session' &&
+          t !== 'contact_customer' &&
+          t !== 'ask_user',
       )
     }
 
@@ -2926,8 +2964,18 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       content: effectiveContent,
     })
 
+    const streamJourney = this.resolveCustomerJourney(conv.agent, conv.channel, streamMeta, content, history)
+    if (streamJourney) await this.persistCustomerStage(conversationId, streamMeta, streamJourney.stage)
+
     const [ragContext, memoryContext, streamTicketsBlock, streamTeamRoster] = await Promise.all([
-      this.knowledge.retrieveContext(conv.agent.id, content, mergedSettings.industry, conv.agent.role),
+      this.knowledge.retrieveContext(
+        conv.agent.id,
+        content,
+        mergedSettings.industry,
+        conv.agent.role,
+        4,
+        streamJourney?.ragOptions,
+      ),
       this.memory.buildMemoryContext(conv.agent.id, tenantId, content, {
         subjectKey: streamSubjectKey,
         runningSummary: (conv as any).runningSummary,
@@ -3053,7 +3101,11 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       `registry=${registryDocs.length} injectedChars=${scope.scopedDocuments.reduce((n, d) => n + d.text.length, 0)}`,
     )
 
-    const systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag + attachmentContextBlock, false, streamTicketsBlock, streamTeamRoster)
+    let systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag + attachmentContextBlock, false, streamTicketsBlock, streamTeamRoster)
+    if (streamJourney?.addendum) systemPrompt += streamJourney.addendum
+    if (conv.channel === 'WHATSAPP' || conv.channel === 'SMS') {
+      systemPrompt += this.buildPhoneChannelAddendum(conv.channel)
+    }
 
     // Build messages — inject vision content for the last user message if images present
     const baseMessages = history
@@ -3196,7 +3248,294 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     return this.buildFullSystemPrompt(agent, mergedSettings, brainContext, '')
   }
 
-  /** Extra rules for WhatsApp/SMS so the agent stays human and follows topic changes. */
+  /**
+   * Conference room: generate a reply as a specific agent using the shared transcript.
+   * Caller owns USER/ASSISTANT message persistence and turn locking.
+   * Uses tools (tickets/CRM/activity) so agents finish with real answers — not "one moment…".
+   */
+  async generateConferenceReply(opts: {
+    tenantId: string
+    conversationId: string
+    agentId: string
+    participantNames: string[]
+    briefMode?: boolean
+    speakerIndex?: number
+    speakerCount?: number
+    nextSpeakerName?: string | null
+    meetingType?: string
+    agenda?: string
+    priorConferenceMemory?: string
+    allowPassThrough?: boolean
+  }): Promise<{ text: string; passToName: string | null }> {
+    const {
+      tenantId,
+      conversationId,
+      agentId,
+      participantNames,
+      briefMode = false,
+      speakerIndex = 0,
+      speakerCount = 1,
+      nextSpeakerName = null,
+      meetingType = 'MANAGEMENT',
+      agenda = '',
+      priorConferenceMemory = '',
+      allowPassThrough = true,
+    } = opts
+
+    const agent = await this.prisma.agent.findFirst({
+      where: { id: agentId, tenantId, status: 'ACTIVE' },
+    })
+    if (!agent) throw new NotFoundException('Conference agent not found')
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { settings: true, industry: true, name: true },
+    })
+    const mergedSettings = {
+      ...(tenant?.settings as any ?? {}),
+      industry: (tenant?.settings as any)?.brain?.industry ?? tenant?.industry ?? '',
+      tenantName: tenant?.name ?? '',
+    }
+    const brainContext = this.brain.buildAgentContext(mergedSettings)
+
+    const [lastUser, convMeta] = await Promise.all([
+      this.prisma.message.findFirst({
+        where: { conversationId, role: 'USER' },
+        orderBy: { createdAt: 'desc' },
+        select: { content: true },
+      }),
+      this.prisma.conversation.findFirst({
+        where: { id: conversationId },
+        select: { runningSummary: true },
+      }),
+    ])
+    const queryForRag = lastUser?.content ?? 'conference meeting'
+
+    const [teamRoster, ragContext, ticketsBlock, historyRaw] = await Promise.all([
+      this.prisma.agent.findMany({
+        where: { tenantId, status: 'ACTIVE' },
+        select: { name: true, role: true, prompt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.knowledge.retrieveContext(agent.id, queryForRag, mergedSettings.industry, agent.role),
+      this.tickets.buildPromptBlock(tenantId, agent.id, conversationId),
+      this.prisma.message.findMany({
+        where: { conversationId },
+        orderBy: { createdAt: 'desc' },
+        take: 40,
+        select: { role: true, content: true, agentId: true, metadata: true },
+      }),
+    ])
+
+    const history = historyRaw.reverse()
+    const agentIds = [...new Set(history.map((m) => m.agentId).filter(Boolean) as string[])]
+    const nameById = new Map<string, string>()
+    if (agentIds.length) {
+      const rows = await this.prisma.agent.findMany({
+        where: { id: { in: agentIds } },
+        select: { id: true, name: true },
+      })
+      for (const r of rows) nameById.set(r.id, r.name.split(/[—(]/)[0].trim())
+    }
+
+    const messages = history
+      .filter((m) => m.role === 'USER' || m.role === 'ASSISTANT')
+      .map((m) => {
+        const md = (m.metadata as any) || {}
+        const speaker =
+          md.speakerName ||
+          (m.role === 'USER' ? 'Owner' : nameById.get(m.agentId || '') || 'Agent')
+        return {
+          role: (m.role === 'USER' ? 'user' : 'assistant') as 'user' | 'assistant',
+          content: m.role === 'USER'
+            ? m.content
+            : `(${speaker}) ${m.content.replace(/^\[[^\]]+\]:\s*/, '')}`,
+        }
+      })
+
+    let systemPrompt = this.buildFullSystemPrompt(
+      agent,
+      mergedSettings,
+      brainContext,
+      '',
+      ragContext,
+      false,
+      ticketsBlock,
+      teamRoster,
+    )
+    if (convMeta?.runningSummary?.trim()) {
+      systemPrompt += `\n\nTHIS MEETING SO FAR (working memory):\n${convMeta.runningSummary.trim()}`
+    }
+    if (priorConferenceMemory?.trim()) {
+      systemPrompt += `\n\nPRIOR ${meetingType} CONFERENCES (recall if relevant):\n${priorConferenceMemory.trim()}`
+    }
+    systemPrompt += this.buildConferenceAddendum(agent.name, participantNames, {
+      briefMode,
+      speakerIndex,
+      speakerCount,
+      nextSpeakerName,
+      meetingType,
+      agenda,
+      allowPassThrough,
+      wantDetail: this.conferenceWantsDetail(queryForRag),
+    })
+
+    let reply: string
+    if (briefMode) {
+      reply = await this.ai.chat(systemPrompt, messages, undefined, {
+        temperature: 0.55,
+        maxTokens: 160,
+      })
+    } else {
+      reply = await this.runWithToolDispatch(
+        tenantId,
+        agent,
+        systemPrompt,
+        messages,
+        undefined,
+        undefined,
+        0,
+        undefined,
+        conversationId,
+        'CONFERENCE',
+      )
+    }
+
+    reply = (reply || '')
+      .replace(/^\[[^\]]+\]:\s*/g, '')
+      .replace(/^\([^)]+\)\s*/g, '')
+      .trim()
+
+    const parsed = stripPassTag(
+      reply || 'Quick note from me — can dig deeper if you want.',
+    )
+    return { text: parsed.clean, passToName: parsed.passToName }
+  }
+
+  /** Owner asked for depth (explain / full / walk through) — allow longer conference answers. */
+  private conferenceWantsDetail(utterance: string): boolean {
+    return /\b(explain|detail|details|in depth|in\-depth|walk me through|break it down|full (update|report|picture|summary)|tell me more|elaborate|how exactly|step by step|everything about)\b/i.test(
+      utterance || '',
+    )
+  }
+
+  private buildConferenceAddendum(
+    agentName: string,
+    participantNames: string[],
+    opts: {
+      briefMode?: boolean
+      speakerIndex?: number
+      speakerCount?: number
+      nextSpeakerName?: string | null
+      meetingType?: string
+      agenda?: string
+      allowPassThrough?: boolean
+      wantDetail?: boolean
+    } = {},
+  ): string {
+    const first = agentName.split(/[—(]/)[0].trim()
+    const others = participantNames.filter((n) => n !== agentName).join(', ') || 'other teammates'
+    const {
+      briefMode,
+      speakerIndex = 0,
+      speakerCount = 1,
+      nextSpeakerName = null,
+      meetingType = 'MANAGEMENT',
+      agenda = '',
+      allowPassThrough = true,
+      wantDetail = false,
+    } = opts
+
+    const nextFirst = nextSpeakerName
+      ? nextSpeakerName.split(/[—(]/)[0].trim()
+      : null
+    const isLast = !nextFirst || speakerIndex >= speakerCount - 1
+
+    const meetingBlock = `
+MEETING DEFINITION (critical — this is NOT customer chat / WhatsApp / widget help)
+• Meeting type: ${meetingType}
+• Agenda: ${agenda || 'Internal sync with the owner'}
+• You are ${first} in a live ${meetingType.toLowerCase()} conference with the business owner and: ${others}.
+• Sound like a colleague in the room — never "How can I help you today?", "If you need estimates…", "I'm here to help", or support-desk filler.`
+
+    const passRules = allowPassThrough
+      ? `• If the owner's ask is clearly better answered by another teammate in the room, say one short sentence to the owner, verbally hand off ("Kevin — this is more your lane"), then append exactly: ⟦PASS:FirstName⟧
+• Only PASS when another participant is a clearly better fit. Do not invent people not in the room.`
+      : `• Do not pass the floor this turn — answer in your lane.`
+
+    if (briefMode && speakerCount > 1) {
+      const handoff = isLast
+        ? `• You are last in this go-around — close briefly to the owner. Do not pass to anyone.`
+        : `• After your line, hand the floor to ${nextFirst} with a natural pass (e.g. "…${nextFirst}, over to you."). Do NOT use ⟦PASS:…⟧ for the planned next speaker.`
+      return `
+
+═══════════════════════════════════════
+${meetingType} CONFERENCE — ROUNDTABLE (${speakerIndex + 1} of ${speakerCount})
+═══════════════════════════════════════
+${meetingBlock}
+• 1–2 short sentences max. Greet / status as a teammate in this meeting — not a helpdesk intro.
+• Speak to the owner; then ${handoff}
+• No essays, no "Sure thing!", no "Happy to help!"`
+    }
+
+    const lengthRules = wantDetail
+      ? `• Owner asked for detail — clear structured answer (meeting tone). Use tools if needed, then answer fully.`
+      : `• DEFAULT LENGTH: 2–4 short sentences. Lead with the answer. Colleague on a call — not a report or chatbot.
+• No "Happy to help!", "Great question!", long intros, or repeating the question.
+• Numbers/names/status beat fluff.`
+
+    return `
+
+═══════════════════════════════════════
+${meetingType} CONFERENCE — YOU HAVE THE FLOOR
+═══════════════════════════════════════
+${meetingBlock}
+• YOU have the floor. Answer as yourself — do not speak for other agents.
+${lengthRules}
+${passRules}
+• COMPLETE THIS TURN. Never stop at "one moment" / "let me pull that up".
+• Need live data? Call tools NOW, then give a concrete update.
+• No customer emails, widget replies, or tickets unless the owner explicitly asks.`
+  }
+
+  private resolveCustomerJourney(
+    agent: { role?: string | null; name?: string | null },
+    channel: string,
+    metadata: Record<string, any> | null | undefined,
+    latestUserMessage: string,
+    history: { role: string; content: string }[],
+  ): { stage: CustomerStage; addendum: string; ragOptions: { customerStage: CustomerStage; alwaysInjectSalesFlow: boolean; excludeCategories: string[] } } | null {
+    if (!isCustomerFacingSales(agent, channel)) return null
+    const userTexts = history.filter((m) => m.role === 'USER').map((m) => m.content)
+    const stage = inferCustomerStage({
+      stored: metadata?.customerStage,
+      latestUserMessage,
+      userTexts,
+    })
+    return {
+      stage,
+      addendum: buildCustomerJourneyAddendum(stage),
+      ragOptions: {
+        customerStage: stage,
+        alwaysInjectSalesFlow: true,
+        excludeCategories: industryRagExcludeCategories(stage, latestUserMessage),
+      },
+    }
+  }
+
+  private async persistCustomerStage(
+    conversationId: string,
+    metadata: Record<string, any>,
+    stage: CustomerStage,
+  ) {
+    if (metadata.customerStage === stage) return
+    metadata.customerStage = stage
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { metadata: metadata as any },
+    }).catch((err: any) => this.logger.warn(`[Journey] Failed to persist stage: ${err.message}`))
+  }
+
   private buildPhoneChannelAddendum(channel: string): string {
     const label = channel === 'SMS' ? 'SMS' : 'WhatsApp'
     return `
@@ -4977,6 +5316,7 @@ Call suggest_transfer with a natural message like:
 
 YOUR ROLE — SALES:
 You handle the full sales cycle at ${company}: new enquiries, qualifying leads, providing quotes and estimates, following up on proposals, and closing business.
+Follow the CUSTOMER JOURNEY stages injected below — greet first, then qualify, then ballpark, then book. Do not dump insurance, process, or a full price list on a first hello.
 
 DOCUMENT GENERATION — WAIT FOR EXPLICIT CONFIRMATION:
 Discuss the quote in chat (pricing, currency, company header, line items). Let the user customize freely.
@@ -5135,6 +5475,8 @@ When chatting with the business owner/manager directly (in the internal chat thr
     // Female voices
     nora:    '21m00Tcm4TlvDq8ikWAM', // Rachel  — calm, professional
     sarah:   '21m00Tcm4TlvDq8ikWAM',
+    hanna:   'EXAVITQu4vr4xnSDxMaL', // Bella   — warm
+    anna:    'EXAVITQu4vr4xnSDxMaL',
     emma:    'EXAVITQu4vr4xnSDxMaL', // Bella   — warm, soft
     lisa:    'MF3mGyEYCl7XYWbV9V6O', // Elli    — bright, emotional
     maya:    'AZnzlk1XvdvUeBnXmlld', // Domi    — strong, confident
@@ -5144,8 +5486,16 @@ When chatting with the business owner/manager directly (in the internal chat thr
     will:    'pNInz6obpgDQGcFmaJgB', // Adam    — neutral male
     chris:   'VR6AewLTigWG4xSOukaG', // Arnold  — crisp, direct
     kevin:   'ErXwobaYiN019PkySvjV', // Antoni  — well-rounded
+    leo:     'VR6AewLTigWG4xSOukaG', // Arnold
+    charlie: 'yoZ06aMxZJJ28mfd3POQ', // Sam
+    arturo:  'ODq5zmih8GrVes37Dx0d', // Patrick
     mike:    'yoZ06aMxZJJ28mfd3POQ', // Sam     — raspy, casual
     tom:     'ODq5zmih8GrVes37Dx0d', // Patrick — confident
+  }
+
+  private agentFirstName(name?: string | null): string {
+    if (!name) return ''
+    return name.split(/[—\-(]/)[0].trim().split(/\s+/)[0].toLowerCase()
   }
 
   async textToSpeech(text: string, agentName?: string, agentId?: string): Promise<Readable> {
@@ -5160,15 +5510,14 @@ When chatting with the business owner/manager directly (in the internal chat thr
       const agent = await this.prisma.agent.findFirst({ where: { id: agentId } })
       voiceId = (agent as any)?.voiceId ?? undefined
       if (!voiceId && agent?.name) {
-        const firstName = agent.name.split(' ')[0].toLowerCase()
-        voiceId = this.VOICE_MAP[firstName]
+        voiceId = this.VOICE_MAP[this.agentFirstName(agent.name)]
       }
     }
     if (!voiceId) {
-    const firstName = (agentName ?? '').split(' ')[0].toLowerCase()
-      voiceId = this.VOICE_MAP[firstName]
+      voiceId = this.VOICE_MAP[this.agentFirstName(agentName)]
     }
     voiceId = voiceId ?? process.env.ELEVENLABS_VOICE_ID ?? '21m00Tcm4TlvDq8ikWAM'
+
 
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`
 

@@ -145,9 +145,37 @@ export class IndustryKnowledgeService {
   // Returns top-K chunks from the industry pack relevant to the query,
   // filtered by the agent's role so each specialist gets their slice.
 
-  async retrieveForRole(industry: string, agentRole: string, query: string, topK = 3): Promise<string> {
+  /** Always-inject journey script (full doc text — no RAG). */
+  async getSalesFlow(industry: string): Promise<string> {
+    try {
+      const docs = await this.prisma.industryKnowledgeDoc.findMany({
+        where: {
+          isActive: true,
+          category: 'SALES_FLOW',
+          pack: { industry: industry.toUpperCase(), isActive: true },
+        },
+        select: { name: true, content: true },
+        orderBy: { createdAt: 'asc' },
+      })
+      if (!docs.length) return ''
+      return docs.map((d) => `[Industry: SALES_FLOW — ${d.name}]\n${d.content}`).join('\n\n---\n')
+    } catch (e: any) {
+      this.logger.warn(`[IndustryKnowledge] Sales flow load failed: ${e.message}`)
+      return ''
+    }
+  }
+
+  async retrieveForRole(
+    industry: string,
+    agentRole: string,
+    query: string,
+    topK = 3,
+    opts?: { excludeCategories?: string[] },
+  ): Promise<string> {
     try {
       const roleLC = agentRole.toLowerCase()
+      const exclude = new Set((opts?.excludeCategories ?? []).map((c) => c.toUpperCase()))
+      exclude.add('SALES_FLOW') // always injected separately
 
       // Find relevant docs for this role in this industry
       const docs = await this.prisma.industryKnowledgeDoc.findMany({
@@ -157,17 +185,22 @@ export class IndustryKnowledgeService {
           // Match docs whose agentRoles array contains a role keyword matching this agent
           // We do a broad fetch and filter in memory for simplicity
         },
-        select: { id: true, agentRoles: true },
+        select: { id: true, agentRoles: true, category: true },
       })
 
       // Filter by role match in memory
       const matchingDocIds = docs
-        .filter(d => d.agentRoles.length === 0 || d.agentRoles.some(r => roleLC.includes(r.toLowerCase()) || r.toLowerCase().includes(roleLC.split(' ')[0])))
+        .filter(d => {
+          if (exclude.has((d.category || '').toUpperCase())) return false
+          return d.agentRoles.length === 0 || d.agentRoles.some(r => roleLC.includes(r.toLowerCase()) || r.toLowerCase().includes(roleLC.split(' ')[0]))
+        })
         .map(d => d.id)
 
       if (!matchingDocIds.length) {
-        // Fallback: return any doc in this industry pack
-        const fallbackDocs = docs.map(d => d.id)
+        // Fallback: any remaining doc in this industry pack (still skip excluded)
+        const fallbackDocs = docs
+          .filter(d => !exclude.has((d.category || '').toUpperCase()))
+          .map(d => d.id)
         if (!fallbackDocs.length) return ''
         matchingDocIds.push(...fallbackDocs)
       }

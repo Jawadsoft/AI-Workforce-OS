@@ -17,6 +17,37 @@ const prisma = new PrismaClient()
 
 const ROOFING_DOCS = [
   {
+    name: 'Roofing Customer Sales Journey',
+    category: 'SALES_FLOW',
+    agentRoles: ['sales', 'intake', 'estimator', 'handyman', 'customer'],
+    content: `
+ROOFING CUSTOMER JOURNEY — use this order. Never dump later stages on a first hello.
+
+STAGE 1 — GREET
+• Warm intro. Name yourself. One question: what happened, or what do they need?
+• Do NOT mention insurance, supplements, Xactimate, ice-and-water shield, or inspection checklists yet.
+
+STAGE 2 — QUALIFY (one question at a time)
+• Property address / area
+• What they noticed (leak, missing shingles, hail, age of roof)
+• Storm/damage? If yes, then ask if they have already filed insurance
+• Best callback time
+
+STAGE 3 — BALLPARK
+• If company brain has a price, use it
+• Else typical installed range from the pricing guide — label it as typical, not a firm quote
+• Firm written estimate after inspection
+• Do not recite full Xactimate line items unless they ask for a detailed scope
+
+STAGE 4 — BOOK
+• Offer a roof inspection / site visit
+• Confirm name, address, preferred window
+• Log a ticket
+
+HYBRID PRICING: brain price first → else “typically $X–$Y per square” → firm quote after visit.
+    `.trim(),
+  },
+  {
     name: 'GAF Shingle Product Guide',
     category: 'PRODUCTS',
     agentRoles: ['estimator', 'sales', 'intake', 'coordinator'],
@@ -271,6 +302,36 @@ BUSINESS / INSURANCE
 ]
 
 const CLEANING_DOCS = [
+  {
+    name: 'Cleaning Customer Sales Journey',
+    category: 'SALES_FLOW',
+    agentRoles: ['sales', 'intake', 'estimator', 'handyman', 'customer', 'coordinator'],
+    content: `
+CLEANING / PROPERTY SERVICES CUSTOMER JOURNEY — follow this order.
+
+STAGE 1 — GREET
+• Friendly hello. Name yourself. Ask what they need help with (clean, handyman, or both).
+• Do NOT list chemicals, COSHH, full price menus, or insurance.
+
+STAGE 2 — QUALIFY (one question at a time)
+• Home or commercial? Rough size (beds/baths or sq ft)
+• One-off, regular, end of tenancy, or handyman job?
+• Area / postcode
+• Preferred day or how soon
+
+STAGE 3 — BALLPARK
+• Brain package price if you have one
+• Else typical UK range (e.g. 3-bed regular clean, EOT, hourly handyman)
+• Say what changes the price (access, extras, frequency)
+• Firm quote after confirmed scope or visit for larger jobs
+
+STAGE 4 — BOOK
+• Offer a slot. Confirm name, address, time.
+• Create a ticket with the right job type (cleaning vs handyman)
+
+One conversation, one booking — never say you will transfer them to another teammate.
+    `.trim(),
+  },
   {
     name: 'Cleaning Services Pricing Guide',
     category: 'PRICING',

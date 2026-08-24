@@ -8,6 +8,7 @@ import { AgentsModule } from './modules/agents/agents.module'
 import { HannaSchedulerModule } from './modules/agents/hanna-scheduler.module'
 import { SocialDailySchedulerModule } from './modules/social/social-daily-scheduler.module'
 import { ChatModule } from './modules/chat/chat.module'
+import { ConferenceModule } from './modules/conference/conference.module'
 import { TasksModule } from './modules/tasks/tasks.module'
 import { ApprovalsModule } from './modules/approvals/approvals.module'
 import { KnowledgeModule } from './modules/knowledge/knowledge.module'
@@ -69,6 +70,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     SocialDailySchedulerModule,
     PublicChatModule,
     ChatModule,
+    ConferenceModule,
     TasksModule,
     ApprovalsModule,
     KnowledgeModule,

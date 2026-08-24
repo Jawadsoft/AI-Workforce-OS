@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck, CheckSquare, FileText, Camera, EyeOff, Eye, Volume2, Play } from 'lucide-react'
+import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck, CheckSquare, FileText, Camera, EyeOff, Eye, Volume2, Play, GitMerge } from 'lucide-react'
 import { AgentCRMPermissions } from './agent-crm-permissions'
 import { useAuthStore } from '@/stores/auth.store'
 import { toast } from 'sonner'
@@ -105,6 +105,9 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   }
 
   const data = edited ?? agent
+  const mergeSource = (agent.approvalRules as Record<string, unknown> | null)?.mergeSource as
+    | { primaryName?: string; secondaryName?: string; mergedAt?: string }
+    | undefined
 
   const previewVoice = async (previewUrl: string | undefined, voiceId: string) => {
     if (!previewUrl) return
@@ -172,6 +175,19 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-semibold">{data.name}</h1>
+              {mergeSource && (
+                <span
+                  className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-600 font-medium"
+                  title={
+                    mergeSource.secondaryName
+                      ? `Merged from ${mergeSource.primaryName} + ${mergeSource.secondaryName}`
+                      : `Merged from ${mergeSource.primaryName}`
+                  }
+                >
+                  <GitMerge className="w-3 h-3" />
+                  Merged
+                </span>
+              )}
               {agent.status === 'INACTIVE' && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 font-medium">Inactive</span>
               )}
@@ -235,7 +251,24 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
 
       {/* Overview */}
       {tab === 'Overview' && (
-        <div className="grid grid-cols-3 gap-4">
+        <div className="space-y-4">
+          {mergeSource && (
+            <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-4 text-sm">
+              <p className="font-medium flex items-center gap-1.5 text-violet-700">
+                <GitMerge className="w-4 h-4" /> Merged agent
+              </p>
+              <p className="text-muted-foreground mt-1">
+                Built from <span className="text-foreground">{mergeSource.primaryName}</span>
+                {mergeSource.secondaryName ? (
+                  <> + <span className="text-foreground">{mergeSource.secondaryName}</span></>
+                ) : null}
+                {mergeSource.mergedAt ? (
+                  <> · {new Date(mergeSource.mergedAt).toLocaleString()}</>
+                ) : null}
+              </p>
+            </div>
+          )}
+          <div className="grid grid-cols-3 gap-4">
           {[
             { label: 'Industry', value: agent.industry?.replace('_', ' ') },
             { label: 'Status', value: agent.status },
@@ -247,6 +280,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               <p className="font-medium mt-1 text-sm">{s.value}</p>
             </div>
           ))}
+          </div>
         </div>
       )}
 

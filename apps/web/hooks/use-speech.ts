@@ -95,6 +95,12 @@ export interface UseSpeechReturn {
   addSpeechChunk:    (text: string, agentName?: string, agentId?: string) => void
   /** Call after stream ends — flushes any remaining sentence buffer */
   flushSpeechBuffer: (agentName?: string, agentId?: string) => void
+  /** Speak a full reply (conference / non-streaming) */
+  speakText:         (text: string, agentName?: string, agentId?: string) => void
+  /** Speak multiple conference replies at the same time (parallel voices) */
+  speakSequence:     (items: Array<{ text: string; agentName?: string; agentId?: string | null }>) => void
+  /** True while TTS queue / parallel audio is active */
+  isAudioPlaying:    () => boolean
   /** Stop playback and clear the whole queue (barge-in / mute) */
   stopSpeaking:      () => void
   toggleTts:         () => void
@@ -106,14 +112,16 @@ export interface UseSpeechReturn {
 export function useSpeech(
   onTranscript:   (text: string) => void,
   onQueueDrained?: () => void,  // called when all queued audio has finished playing
+  options?: { defaultTtsEnabled?: boolean },
 ): UseSpeechReturn {
   const [isListening, setIsListening] = useState(false)
   const [isSpeaking,  setIsSpeaking]  = useState(false)
-  const [ttsEnabled,  setTtsEnabled]  = useState(false)
+  const [ttsEnabled,  setTtsEnabled]  = useState(Boolean(options?.defaultTtsEnabled))
   const [interimText, setInterimText] = useState('')
 
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
   const currentAudioRef = useRef<HTMLAudioElement | null>(null)
+  const parallelAudiosRef = useRef<HTMLAudioElement[]>([])
 
   // Queue: each entry is a Promise<string | null> (object URL or null on error)
   const queueRef        = useRef<Array<Promise<string | null>>>([])
@@ -203,6 +211,13 @@ export function useSpeech(
       currentAudioRef.current.currentTime = 0
       currentAudioRef.current = null
     }
+    for (const a of parallelAudiosRef.current) {
+      try {
+        a.pause()
+        a.currentTime = 0
+      } catch { /* ignore */ }
+    }
+    parallelAudiosRef.current = []
     isPlayingRef.current = false
     setIsSpeaking(false)
   }, [])
@@ -240,6 +255,49 @@ export function useSpeech(
     } else if (queueRef.current.length === 0 && !isPlayingRef.current) {
       onQueueDrainedRef.current?.()
     }
+  }, [fetchAudio, playQueue])
+
+  /** Non-streaming: speak a full agent reply (used by conference). */
+  const speakText = useCallback((text: string, agentName?: string, agentId?: string) => {
+    if (!ttsEnabledRef.current) return
+    const clean = stripMarkdown(text || '').trim()
+    if (clean.length < 2) return
+    sentenceBufferRef.current = ''
+    cancelledRef.current = false
+    queueRef.current.push(fetchAudio(clean, agentName, agentId))
+    playQueue()
+  }, [fetchAudio, playQueue])
+
+  /** Speak several conference replies one after another (sequential). */
+  const speakSequence = useCallback((
+    items: Array<{ text: string; agentName?: string; agentId?: string | null }>,
+  ) => {
+    if (!ttsEnabledRef.current) {
+      onQueueDrainedRef.current?.()
+      return
+    }
+    const prepared = items
+      .map((it) => ({
+        text: stripMarkdown(it.text || '').trim(),
+        agentName: (it.agentName || '')
+          .split(/[—(]/)[0]
+          .trim()
+          .split(/\s+/)[0],
+        agentId: it.agentId || undefined,
+      }))
+      .filter((it) => it.text.length >= 2)
+
+    if (!prepared.length) {
+      onQueueDrainedRef.current?.()
+      return
+    }
+
+    cancelledRef.current = false
+    sentenceBufferRef.current = ''
+    for (const it of prepared) {
+      queueRef.current.push(fetchAudio(it.text, it.agentName, it.agentId))
+    }
+    playQueue()
   }, [fetchAudio, playQueue])
 
   const toggleTts = useCallback(() => {
@@ -309,6 +367,9 @@ export function useSpeech(
     toggleListening,
     addSpeechChunk,
     flushSpeechBuffer,
+    speakText,
+    speakSequence,
+    isAudioPlaying: () => isPlayingRef.current,
     stopSpeaking,
     toggleTts,
     interimText,

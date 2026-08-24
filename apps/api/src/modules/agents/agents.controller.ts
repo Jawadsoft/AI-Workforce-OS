@@ -1,7 +1,7 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, Res, UploadedFile, UseInterceptors } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes } from '@nestjs/swagger'
-import { IsString, IsOptional, IsArray } from 'class-validator'
+import { IsString, IsOptional, IsArray, IsBoolean } from 'class-validator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { RolesGuard } from '../../common/guards/roles.guard'
 import { Roles } from '../../common/decorators/roles.decorator'
@@ -35,6 +35,15 @@ class UpdateAgentDto {
 
 class SpeakDto {
   @IsString() text: string
+}
+
+class MergeAgentsDto {
+  @IsString() primaryAgentId: string
+  @IsOptional() @IsString() secondaryAgentId?: string
+  @IsOptional() @IsString() name?: string
+  @IsOptional() @IsString() role?: string
+  @IsOptional() @IsBoolean() setAsWhatsappAgent?: boolean
+  @IsOptional() @IsBoolean() deactivateSources?: boolean
 }
 
 @ApiTags('Agents')
@@ -80,6 +89,17 @@ export class AgentsController {
   async create(@CurrentTenant() tenantId: string, @Body() dto: CreateAgentDto) {
     await this.featureFlags.requireFeature(tenantId, FEATURES.CREATE_AGENTS)
     return this.service.create(tenantId, dto)
+  }
+
+  @Post('merge')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
+  @ApiOperation({
+    summary: 'Create a new agent by merging one or two existing tenant agents (sources unchanged)',
+  })
+  async mergeAgents(@CurrentTenant() tenantId: string, @Body() dto: MergeAgentsDto) {
+    await this.featureFlags.requireFeature(tenantId, FEATURES.CREATE_AGENTS)
+    return this.service.mergeAgents(tenantId, dto)
   }
 
   @Post('install-template/:templateId')

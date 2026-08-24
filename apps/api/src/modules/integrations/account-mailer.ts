@@ -10,6 +10,8 @@ export interface AccountMailerConfig {
   encryptedSmtpPassword: string
   smtpFromName: string
   fromEmail: string
+  /** OAuth2 access token — when provided, XOAUTH2 is used instead of password (Microsoft/O365) */
+  accessToken?: string
 }
 
 export class AccountMailer {
@@ -18,13 +20,27 @@ export class AccountMailer {
   constructor(private readonly config: AccountMailerConfig) {}
 
   private buildTransporter() {
-    const password = decrypt(this.config.encryptedSmtpPassword)
-    return nodemailer.createTransport({
+    const baseOptions = {
       host: this.config.smtpHost,
       port: this.config.smtpPort,
       secure: this.config.smtpSecure,
-      auth: { user: this.config.smtpUser, pass: password },
       tls: { rejectUnauthorized: false },
+    }
+    // Use XOAUTH2 for Microsoft/O365 when an OAuth2 access token is available
+    if (this.config.accessToken) {
+      return nodemailer.createTransport({
+        ...baseOptions,
+        auth: {
+          type: 'OAuth2',
+          user: this.config.smtpUser,
+          accessToken: this.config.accessToken,
+        },
+      })
+    }
+    const password = decrypt(this.config.encryptedSmtpPassword)
+    return nodemailer.createTransport({
+      ...baseOptions,
+      auth: { user: this.config.smtpUser, pass: password },
     })
   }
 
@@ -69,15 +85,16 @@ export class AccountMailer {
     }
   }
 
-  static fromAccountMetadata(meta: any, accountEmail: string): AccountMailer {
+  static fromAccountMetadata(meta: any, accountEmail: string, accessToken?: string): AccountMailer {
     return new AccountMailer({
       smtpHost: meta.smtpHost,
       smtpPort: meta.smtpPort ?? 587,
       smtpSecure: meta.smtpSecure ?? false,
       smtpUser: meta.smtpUser || accountEmail,
-      encryptedSmtpPassword: meta.encryptedSmtpPassword,
+      encryptedSmtpPassword: meta.encryptedSmtpPassword ?? '',
       smtpFromName: meta.smtpFromName || accountEmail,
       fromEmail: accountEmail,
+      accessToken,
     })
   }
 }

@@ -198,6 +198,34 @@ export class IntegrationsController {
     }
   }
 
+  // ── Microsoft / Office 365 OAuth ─────────────────────────────────────
+
+  @Get('microsoft/connect')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Redirect to Microsoft OAuth consent screen' })
+  connectMicrosoft(@CurrentTenant() tenantId: string, @Res() res: Response) {
+    const url = this.service.getMicrosoftAuthUrl(tenantId)
+    res.redirect(url)
+  }
+
+  @Get('microsoft/callback')
+  @ApiOperation({ summary: 'Microsoft OAuth callback — exchanges code for tokens' })
+  async microsoftCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Res() res: Response,
+  ) {
+    try {
+      await this.service.handleMicrosoftCallback(code, state)
+      const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3000'
+      res.redirect(`${frontendUrl}/settings?tab=integrations&connected=microsoft`)
+    } catch (err: any) {
+      const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3000'
+      res.redirect(`${frontendUrl}/settings?tab=integrations&error=${encodeURIComponent(err.message)}`)
+    }
+  }
+
   // ── IMAP ─────────────────────────────────────────────────────────────
 
   @Post('imap/test')

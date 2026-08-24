@@ -198,6 +198,12 @@ export class ChatController {
     return this.service.getAgentSystemPrompt(tenantId, agentId).then((prompt) => ({ prompt }))
   }
 
+  @Get(':agentId/system-prompt')
+  @ApiOperation({ summary: 'Preview the full system prompt sent to this agent (alias path)' })
+  getSystemPromptAlias(@CurrentTenant() tenantId: string, @Param('agentId') agentId: string) {
+    return this.service.getAgentSystemPrompt(tenantId, agentId).then((prompt) => ({ prompt }))
+  }
+
   @Get('agents/:agentId/primary')
   @ApiOperation({ summary: 'Get or create the persistent primary conversation with this agent' })
   getPrimary(

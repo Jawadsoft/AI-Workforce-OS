@@ -180,6 +180,257 @@ export class IntegrationsService {
     this.logger.log(`Google account connected for tenant ${tenantId}: ${accountEmail}`)
   }
 
+  // ─────────────────────────────────────────────
+  // MICROSOFT / OFFICE 365 OAUTH
+  // ─────────────────────────────────────────────
+
+  getMicrosoftAuthUrl(tenantId: string): string {
+    const params = new URLSearchParams({
+      client_id:     this.config.get('MICROSOFT_CLIENT_ID')!,
+      response_type: 'code',
+      redirect_uri:  this.config.get('MICROSOFT_REDIRECT_URI')!,
+      scope: [
+        'https://outlook.office.com/IMAP.AccessAsUser.All',
+        'https://outlook.office.com/SMTP.Send',
+        'offline_access',
+        'User.Read',
+      ].join(' '),
+      response_mode: 'query',
+      state: this.buildOAuthState(tenantId),
+    })
+    return `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${params}`
+  }
+
+  async handleMicrosoftCallback(code: string, rawState: string): Promise<void> {
+    const tenantId = this.verifyOAuthState(rawState)
+
+    const tokenRes = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id:     this.config.get('MICROSOFT_CLIENT_ID')!,
+        client_secret: this.config.get('MICROSOFT_CLIENT_SECRET')!,
+        code,
+        redirect_uri:  this.config.get('MICROSOFT_REDIRECT_URI')!,
+        grant_type:    'authorization_code',
+      }),
+    })
+    const tokens = await tokenRes.json() as any
+    if (tokens.error) throw new BadRequestException(tokens.error_description ?? tokens.error)
+
+    const profileRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    })
+    const profile = await profileRes.json() as any
+    const accountEmail: string = profile.mail || profile.userPrincipalName
+    if (!accountEmail) throw new BadRequestException('Could not get email from Microsoft account')
+
+    const expiresAt = new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000)
+
+    await this.prisma.connectedAccount.upsert({
+      where: { tenantId_provider_accountEmail: { tenantId, provider: 'microsoft', accountEmail } },
+      create: {
+        tenantId,
+        provider: 'microsoft',
+        accountEmail,
+        accountName: profile.displayName ?? accountEmail,
+        encryptedAccessToken:  encrypt(tokens.access_token),
+        encryptedRefreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : '',
+        scopes:    tokens.scope?.split(' ') ?? [],
+        expiresAt,
+        status: 'active',
+        metadata: {
+          imapHost:  'outlook.office365.com',
+          imapPort:  993,
+          imapSecure: true,
+          smtpHost:  'smtp.office365.com',
+          smtpPort:  587,
+          smtpSecure: false,
+          useOAuth:  true,
+        },
+      },
+      update: {
+        accountName: profile.displayName ?? accountEmail,
+        encryptedAccessToken: encrypt(tokens.access_token),
+        ...(tokens.refresh_token ? { encryptedRefreshToken: encrypt(tokens.refresh_token) } : {}),
+        scopes:    tokens.scope?.split(' ') ?? [],
+        expiresAt,
+        status: 'active',
+      },
+    })
+
+    await this.seedDefaultRules(tenantId)
+    this.logger.log(`Microsoft account connected for tenant ${tenantId}: ${accountEmail}`)
+  }
+
+  private async refreshMicrosoftToken(account: any): Promise<string> {
+    const refreshToken = decrypt(account.encryptedRefreshToken)
+    const res = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id:     this.config.get('MICROSOFT_CLIENT_ID')!,
+        client_secret: this.config.get('MICROSOFT_CLIENT_SECRET')!,
+        refresh_token: refreshToken,
+        grant_type:    'refresh_token',
+      }),
+    })
+    const tokens = await res.json() as any
+    if (tokens.error) {
+      await this.prisma.connectedAccount.update({ where: { id: account.id }, data: { status: 'expired' } })
+      throw new Error(`Microsoft token refresh failed: ${tokens.error_description ?? tokens.error}`)
+    }
+    const expiresAt = new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000)
+    await this.prisma.connectedAccount.update({
+      where: { id: account.id },
+      data: {
+        encryptedAccessToken: encrypt(tokens.access_token),
+        expiresAt,
+        ...(tokens.refresh_token ? { encryptedRefreshToken: encrypt(tokens.refresh_token) } : {}),
+      },
+    })
+    this.logger.log(`[Microsoft] Token refreshed for ${account.accountEmail}`)
+    return tokens.access_token
+  }
+
+  private async processMicrosoftAccountEmails(
+    tenantId: string,
+    account: any,
+  ): Promise<{ items: EmailScanItem[]; fetchedCount: number; skippedCount: number }> {
+    try {
+      // Refresh the access token if it has expired
+      let accessToken = decrypt(account.encryptedAccessToken)
+      if (account.expiresAt && new Date(account.expiresAt) <= new Date()) {
+        accessToken = await this.refreshMicrosoftToken(account)
+      }
+
+      const imap = new ImapAdapter({
+        host: 'outlook.office365.com',
+        port: 993,
+        secure: true,
+        user: account.accountEmail,
+        password: '',
+        accessToken,
+      })
+      const emails = await imap.listUnread(30)
+
+      const items: EmailScanItem[] = []
+      let skippedCount = 0
+
+      if (!emails.length) {
+        this.logger.log(`[O365][${tenantId}] No recent inbox emails for ${account.accountEmail}`)
+        return { items, fetchedCount: 0, skippedCount: 0 }
+      }
+
+      // Build SMTP mailer using OAuth2 (no password needed)
+      const mailer = new AccountMailer({
+        smtpHost: 'smtp.office365.com',
+        smtpPort: 587,
+        smtpSecure: false,
+        smtpUser: account.accountEmail,
+        encryptedSmtpPassword: '',
+        smtpFromName: account.accountName ?? account.accountEmail,
+        fromEmail: account.accountEmail,
+        accessToken,
+      })
+
+      const rules = await this.prisma.emailAgentRule.findMany({ where: { tenantId, isActive: true } })
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        include: { users: { where: { role: { in: ['TENANT_OWNER', 'TENANT_ADMIN'] } } } },
+      })
+      const brainSettings = (tenant?.settings as any)?.brain ?? {}
+      const companyContext = `${brainSettings.companyName ?? ''} — ${brainSettings.description ?? brainSettings.tagline ?? ''}`
+      const staffEmails = tenant?.users.map(u => u.email) ?? []
+      const classifier = new EmailClassifier(this.ai)
+
+      for (const email of emails) {
+        const exists = await this.prisma.processedEmail.findUnique({
+          where: { connectedAccountId_gmailMessageId: { connectedAccountId: account.id, gmailMessageId: email.id } },
+        })
+        if (exists) { skippedCount++; continue }
+
+        const classification = await classifier.classify(email, staffEmails, companyContext)
+        const rule = rules.find(r => r.emailType === classification.type)
+        const mode = rule?.mode ?? 'notify_only'
+        const threshold = rule?.confidenceThreshold ?? 70
+        const effectiveMode = classification.confidence >= threshold ? mode : 'notify_only'
+
+        let confirmationHandled = false
+        try {
+          confirmationHandled = await this.handleCustomerConfirmation(tenantId, email, classification)
+        } catch (err: any) {
+          this.logger.warn(`[Confirmation][O365] Failed for ${email.from}: ${err.message}`)
+        }
+
+        let action: string | null = confirmationHandled ? 'confirmation_auto_updated' : null
+        let errorMessage: string | null = null
+
+        if (!confirmationHandled) {
+          try {
+            action = await this.executeImapEmailAction(
+              tenantId,
+              imap,
+              mailer,
+              email,
+              classification,
+              effectiveMode,
+              rule?.replyTemplate ?? null,
+              account.accountEmail,
+              (account as any).assignedAgentId ?? rule?.assignedAgentId ?? null,
+            )
+          } catch (err: any) {
+            errorMessage = err.message
+            this.logger.error(`[O365] Action failed for ${email.from}: ${err.message}`)
+          }
+        }
+
+        {
+          const processedData = {
+            tenantId,
+            connectedAccountId: account.id,
+            gmailMessageId: email.id,
+            threadId: email.threadId,
+            fromEmail: email.from,
+            fromName: email.fromName,
+            subject: email.subject,
+            receivedAt: email.receivedAt,
+            classification: classification.type,
+            confidence: classification.confidence,
+            extractedData: classification.extractedData as any,
+            action: action ?? 'skipped',
+            status: errorMessage ? 'failed' : 'actioned',
+            errorMessage,
+          }
+          await this.prisma.processedEmail.upsert({
+            where: { connectedAccountId_gmailMessageId: { connectedAccountId: account.id, gmailMessageId: email.id } },
+            create: processedData,
+            update: processedData,
+          })
+        }
+
+        items.push({
+          from: email.from,
+          fromName: email.fromName ?? null,
+          subject: email.subject ?? '(no subject)',
+          type: classification.type,
+          confidence: classification.confidence,
+          action: action ?? 'skipped',
+          accountEmail: account.accountEmail,
+        })
+
+        this.logger.log(`[O365][${tenantId}] ${email.from} → ${classification.type} (${classification.confidence}%) → ${action}`)
+      }
+      return { items, fetchedCount: emails.length, skippedCount }
+    } catch (err: any) {
+      this.logger.error(`processMicrosoftAccountEmails failed for ${account.accountEmail}: ${err.message}`)
+      if (err.message?.includes('Authentication') || err.message?.includes('AUTHENTICATE')) {
+        await this.prisma.connectedAccount.update({ where: { id: account.id }, data: { status: 'expired' } })
+      }
+      throw err
+    }
+  }
+
   async disconnectGoogleAccount(tenantId: string, accountId: string): Promise<void> {
     // Works for any provider — google, microsoft, or imap
     const account = await this.prisma.connectedAccount.findFirst({
@@ -393,6 +644,11 @@ export class IntegrationsService {
       try {
         if (account.provider === 'google') {
           const { items, fetchedCount, skippedCount } = await this.processAccountEmails(tenantId, account)
+          results.push(...items)
+          fetched += fetchedCount
+          skipped += skippedCount
+        } else if (account.provider === 'microsoft') {
+          const { items, fetchedCount, skippedCount } = await this.processMicrosoftAccountEmails(tenantId, account)
           results.push(...items)
           fetched += fetchedCount
           skipped += skippedCount

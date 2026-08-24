@@ -9,18 +9,22 @@
 
 export type AppRole =
   | 'SUPER_ADMIN'
+  | 'SCOPED_ADMIN'
   | 'TENANT_OWNER'
   | 'TENANT_ADMIN'
   | 'MANAGER'
   | 'USER'
+  | 'MEMBER'
   | 'VIEWER'
 
 export const ROLE_RANK: Record<string, number> = {
   VIEWER: 1,
   USER: 2,
+  MEMBER: 2,     // alias for USER (SRF terminology)
   MANAGER: 3,
   TENANT_ADMIN: 4,
   TENANT_OWNER: 5,
+  SCOPED_ADMIN: 5, // platform-level admin scoped to specific tenants
   SUPER_ADMIN: 6,
 }
 
@@ -49,17 +53,21 @@ export const ROUTE_MIN_ROLE: Record<string, string> = {
 
 export const ROLE_LABELS: Record<string, string> = {
   SUPER_ADMIN: 'Super Admin',
+  SCOPED_ADMIN: 'Scoped Admin',
   TENANT_OWNER: 'Owner',
   TENANT_ADMIN: 'Admin',
   MANAGER: 'Manager',
   USER: 'Member',
+  MEMBER: 'Member',
   VIEWER: 'Viewer',
 }
 
 export const ROLE_DESCRIPTIONS: Record<string, string> = {
+  SCOPED_ADMIN: 'Platform admin with access limited to granted tenants',
   TENANT_ADMIN: 'Full access — team, settings, agents, and all modules',
   MANAGER: 'Manage agents, CRM, social, emails — cannot change team or settings',
   USER: 'Chat, tickets, tasks, documents — no configuration access',
+  MEMBER: 'Chat, tickets, tasks, documents — no configuration access',
   VIEWER: 'Read-only access to dashboard, documents, and analytics',
 }
 

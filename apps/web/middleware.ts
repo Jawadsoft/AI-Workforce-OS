@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-const PUBLIC_ROUTES = ['/login', '/register', '/forgot-password', '/onboarding', '/sso']
+const PUBLIC_ROUTES = ['/login', '/register', '/forgot-password', '/reset-password', '/onboarding', '/sso']
 const LANDING_ROUTES = ['/']
 // SSO must stay reachable even when already logged in (token handoff / test page)
 const AUTH_BYPASS_ROUTES = ['/sso']

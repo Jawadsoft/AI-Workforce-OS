@@ -181,6 +181,30 @@ export class SocialController {
 
   // ── Content calendar ─────────────────────────────────────────────
 
+  @Get('calendar')
+  @ApiOperation({ summary: 'Get posts organized by date for calendar view (scheduled + recent)' })
+  async getCalendar(
+    @CurrentTenant() tenantId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    const posts = await this.service.getPosts(tenantId, {})
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    const end = endDate ? new Date(endDate) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+
+    // Group posts by date
+    const byDate: Record<string, any[]> = {}
+    for (const post of posts) {
+      const dateKey = (post.scheduledAt ?? post.createdAt ?? new Date()).toISOString().split('T')[0]
+      const postDate = new Date(dateKey)
+      if (postDate >= start && postDate <= end) {
+        if (!byDate[dateKey]) byDate[dateKey] = []
+        byDate[dateKey].push(post)
+      }
+    }
+    return { calendar: byDate, total: posts.length, range: { startDate: start.toISOString(), endDate: end.toISOString() } }
+  }
+
   @Post('calendar')
   @ApiOperation({ summary: 'Generate a content calendar' })
   generateCalendar(@CurrentTenant() tenantId: string, @Body() body: any) {

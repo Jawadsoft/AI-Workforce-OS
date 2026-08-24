@@ -1,6 +1,6 @@
 import { Controller, Post, Get, Body, HttpCode, HttpStatus, UseGuards, Headers, UnauthorizedException } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiHeader } from '@nestjs/swagger'
-import { IsEmail, IsString, MinLength, IsOptional } from 'class-validator'
+import { IsEmail, IsString, MinLength, IsOptional, IsPhoneNumber } from 'class-validator'
 import { AuthService } from './auth.service'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { CurrentUser } from '../../common/decorators/tenant.decorator'
@@ -10,6 +10,8 @@ class RegisterDto {
   @IsString() name: string
   @IsEmail() email: string
   @IsString() @MinLength(8) password: string
+  @IsOptional() @IsString() industry?: string
+  @IsOptional() @IsString() phone?: string
 }
 
 class LoginDto {

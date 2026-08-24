@@ -386,9 +386,13 @@ export function IntegrationsPanel() {
   }
 
   async function connectGoogle() {
-    // Build the connect URL — the backend will redirect to Google OAuth
     const apiBase = (api.defaults.baseURL ?? '').replace(/\/api\/v1$/, '')
     window.location.href = `${apiBase}/api/v1/integrations/google/connect`
+  }
+
+  async function connectMicrosoft() {
+    const apiBase = (api.defaults.baseURL ?? '').replace(/\/api\/v1$/, '')
+    window.location.href = `${apiBase}/api/v1/integrations/microsoft/connect`
   }
 
   async function disconnectAccount(id: string) {
@@ -486,6 +490,20 @@ export function IntegrationsPanel() {
               <div className="text-left">
                 <p className="text-sm font-medium group-hover:text-primary transition-colors">Connect Gmail Account</p>
                 <p className="text-xs text-muted-foreground">Read, classify, and auto-reply to emails</p>
+              </div>
+            </button>
+
+            {/* Add Microsoft / Office 365 */}
+            <button
+              onClick={connectMicrosoft}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border-2 border-dashed border-border hover:border-primary/50 hover:bg-accent/50 transition-all group"
+            >
+              <div className="w-9 h-9 rounded-full bg-white border border-border flex items-center justify-center shadow-sm">
+                <MicrosoftIcon />
+              </div>
+              <div className="text-left">
+                <p className="text-sm font-medium group-hover:text-primary transition-colors">Connect Microsoft / Office 365</p>
+                <p className="text-xs text-muted-foreground">Outlook, Exchange Online — OAuth2, no password needed</p>
               </div>
             </button>
 

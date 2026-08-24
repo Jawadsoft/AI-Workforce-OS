@@ -8,6 +8,8 @@ export interface ImapConfig {
   secure: boolean
   user: string
   password: string
+  /** OAuth2 access token — when provided, XOAUTH2 is used instead of password */
+  accessToken?: string
 }
 
 export class ImapAdapter {
@@ -20,10 +22,10 @@ export class ImapAdapter {
       host: this.config.host,
       port: this.config.port,
       secure: this.config.secure,
-      auth: {
-        user: this.config.user,
-        pass: this.config.password,
-      },
+      // Use XOAUTH2 when an OAuth2 access token is provided (e.g. Microsoft/O365)
+      auth: this.config.accessToken
+        ? { user: this.config.user, accessToken: this.config.accessToken }
+        : { user: this.config.user, pass: this.config.password },
       logger: false,
       tls: {
         rejectUnauthorized: false,

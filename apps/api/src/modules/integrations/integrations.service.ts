@@ -184,6 +184,10 @@ export class IntegrationsService {
   // MICROSOFT / OFFICE 365 OAUTH
   // ─────────────────────────────────────────────
 
+  private get msftTenant(): string {
+    return this.config.get<string>('MICROSOFT_TENANT_ID') || 'common'
+  }
+
   getMicrosoftAuthUrl(tenantId: string): string {
     const params = new URLSearchParams({
       client_id:     this.config.get('MICROSOFT_CLIENT_ID')!,
@@ -198,13 +202,13 @@ export class IntegrationsService {
       response_mode: 'query',
       state: this.buildOAuthState(tenantId),
     })
-    return `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${params}`
+    return `https://login.microsoftonline.com/${this.msftTenant}/oauth2/v2.0/authorize?${params}`
   }
 
   async handleMicrosoftCallback(code: string, rawState: string): Promise<void> {
     const tenantId = this.verifyOAuthState(rawState)
 
-    const tokenRes = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+    const tokenRes = await fetch(`https://login.microsoftonline.com/${this.msftTenant}/oauth2/v2.0/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -265,7 +269,7 @@ export class IntegrationsService {
 
   private async refreshMicrosoftToken(account: any): Promise<string> {
     const refreshToken = decrypt(account.encryptedRefreshToken)
-    const res = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+    const res = await fetch(`https://login.microsoftonline.com/${this.msftTenant}/oauth2/v2.0/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({

@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
-import { Plus, Search, EyeOff, Eye, Zap, RefreshCw, Loader2, Pencil, X, Check, MessageSquare } from 'lucide-react'
+import { Plus, Search, EyeOff, Eye, Zap, RefreshCw, Loader2, Pencil, X, Check, MessageSquare, Trash2 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth.store'
 import { resolveAvatarUrl } from '@/lib/utils'
 import { canEditAgents } from '@/lib/roles'
@@ -67,9 +67,15 @@ export function AgentsPage() {
   const toggleMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) =>
       api.post(`/agents/${id}/${status === 'ACTIVE' ? 'deactivate' : 'activate'}`),
-    onSuccess: (_data, { status }) => {
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agents'] })
-      // toast import not available in this file; rely on detail page for toasts
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.delete(`/agents/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agents'] })
     },
   })
 
@@ -261,6 +267,18 @@ export function AgentsPage() {
                           className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground"
                         >
                           {agent.status === 'ACTIVE' ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (confirm(`Permanently delete ${agent.name}? Conversations move to another agent. This cannot be undone.`)) {
+                              deleteMutation.mutate(agent.id)
+                            }
+                          }}
+                          disabled={deleteMutation.isPending}
+                          title="Delete agent"
+                          className="p-1 rounded hover:bg-destructive/10 transition-colors text-muted-foreground hover:text-destructive"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </>
                     )}

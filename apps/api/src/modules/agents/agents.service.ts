@@ -89,11 +89,66 @@ export class AgentsService {
     })
   }
 
-  remove(tenantId: string, id: string) {
-    return this.prisma.agent.updateMany({
-      where: { id, tenantId },
-      data: { status: 'INACTIVE' },
+  async remove(tenantId: string, id: string) {
+    const agent = await this.prisma.agent.findFirst({ where: { id, tenantId } })
+    if (!agent) throw new NotFoundException('Agent not found')
+
+    const mergePrimaryId = ((agent.approvalRules as Record<string, any>)?.mergeSource?.primaryAgentId as string | undefined) || null
+    const preferred = mergePrimaryId && mergePrimaryId !== id
+      ? await this.prisma.agent.findFirst({ where: { id: mergePrimaryId, tenantId } })
+      : null
+    const fallback =
+      preferred ??
+      (await this.prisma.agent.findFirst({
+        where: { tenantId, id: { not: id }, status: 'ACTIVE' },
+        orderBy: { createdAt: 'asc' },
+      })) ??
+      (await this.prisma.agent.findFirst({
+        where: { tenantId, id: { not: id } },
+        orderBy: { createdAt: 'asc' },
+      }))
+
+    if (!fallback) {
+      throw new BadRequestException('Cannot delete the last agent. Create another agent first, or set this one inactive.')
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.conversation.updateMany({
+        where: { tenantId, agentId: id },
+        data: { agentId: fallback.id },
+      })
+      await tx.task.updateMany({
+        where: { tenantId, agentId: id },
+        data: { agentId: null },
+      })
+      await tx.approval.updateMany({
+        where: { tenantId, agentId: id },
+        data: { agentId: null },
+      })
+
+      const tenant = await tx.tenant.findUnique({
+        where: { id: tenantId },
+        select: { settings: true },
+      })
+      const settings = { ...((tenant?.settings as Record<string, unknown>) ?? {}) }
+      let settingsChanged = false
+      for (const key of ['whatsappAgentId', 'smsAgentId', 'voiceAgentId'] as const) {
+        if (settings[key] === id) {
+          settings[key] = fallback.id
+          settingsChanged = true
+        }
+      }
+      if (settingsChanged) {
+        await tx.tenant.update({
+          where: { id: tenantId },
+          data: { settings: settings as any },
+        })
+      }
+
+      await tx.agent.delete({ where: { id } })
     })
+
+    return { deleted: true, id, reassignedTo: fallback.id, reassignedName: fallback.name }
   }
 
   getTemplates() {

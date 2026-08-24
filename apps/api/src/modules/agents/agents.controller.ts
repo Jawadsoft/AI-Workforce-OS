@@ -147,7 +147,7 @@ export class AgentsController {
   @Delete(':id')
   @UseGuards(RolesGuard)
   @Roles('MANAGER')
-  @ApiOperation({ summary: 'Remove agent' })
+  @ApiOperation({ summary: 'Permanently delete an agent (conversations move to another agent)' })
   remove(@CurrentTenant() tenantId: string, @Param('id') id: string) {
     return this.service.remove(tenantId, id)
   }

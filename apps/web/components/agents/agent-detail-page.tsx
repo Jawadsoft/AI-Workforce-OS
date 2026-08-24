@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck, CheckSquare, FileText, Camera, EyeOff, Eye, Volume2, Play, GitMerge } from 'lucide-react'
+import { ChevronLeft, Power, Save, Loader2, MessageSquare, Brain, Copy, CheckCheck, CheckSquare, FileText, Camera, EyeOff, Eye, Volume2, Play, GitMerge, Trash2 } from 'lucide-react'
 import { AgentCRMPermissions } from './agent-crm-permissions'
 import { useAuthStore } from '@/stores/auth.store'
 import { toast } from 'sonner'
@@ -23,6 +23,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   const [edited, setEdited] = useState<any>(null)
   const [saved, setSaved] = useState(false)
   const [confirmDeactivate, setConfirmDeactivate] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [voiceSearch, setVoiceSearch] = useState('')
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null)
 
@@ -88,6 +89,20 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
       toast.success(status === 'ACTIVE' ? 'Agent set to inactive — hidden from dashboard & workforce' : 'Agent reactivated')
     },
     onError: () => toast.error('Failed to update agent status'),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: () => api.delete(`/agents/${agentId}`),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['agents'] })
+      const moved = res.data?.reassignedName
+      toast.success(moved ? `Agent deleted. Conversations moved to ${moved}.` : 'Agent deleted')
+      router.push('/agents')
+    },
+    onError: (err: any) => {
+      toast.error(err?.response?.data?.message ?? 'Failed to delete agent')
+      setConfirmDelete(false)
+    },
   })
 
   const { user, fetchMe, isAuthenticated } = useAuthStore()
@@ -223,6 +238,28 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                 >
                   {agent.status === 'ACTIVE' ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   {agent.status === 'ACTIVE' ? 'Set Inactive' : 'Reactivate'}
+                </button>
+              )}
+              {confirmDelete ? (
+                <div className="flex items-center gap-1.5 border border-destructive/50 bg-destructive/10 px-3 py-1.5 rounded-md text-sm">
+                  <span className="text-destructive text-xs">Delete permanently?</span>
+                  <button
+                    onClick={() => deleteMutation.mutate()}
+                    disabled={deleteMutation.isPending}
+                    className="text-xs font-medium text-destructive hover:text-destructive/80"
+                  >
+                    {deleteMutation.isPending ? 'Deleting…' : 'Confirm'}
+                  </button>
+                  <button onClick={() => setConfirmDelete(false)} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmDelete(true)}
+                  disabled={deleteMutation.isPending}
+                  className="flex items-center gap-1.5 border border-destructive/40 px-3 py-1.5 rounded-md text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Delete
                 </button>
               )}
             </>

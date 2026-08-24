@@ -386,13 +386,21 @@ export function IntegrationsPanel() {
   }
 
   async function connectGoogle() {
-    const apiBase = (api.defaults.baseURL ?? '').replace(/\/api\/v1$/, '')
-    window.location.href = `${apiBase}/api/v1/integrations/google/connect`
+    try {
+      const res = await api.get('/integrations/google/connect-url')
+      window.location.href = res.data.url
+    } catch {
+      toast.error('Failed to start Google OAuth')
+    }
   }
 
   async function connectMicrosoft() {
-    const apiBase = (api.defaults.baseURL ?? '').replace(/\/api\/v1$/, '')
-    window.location.href = `${apiBase}/api/v1/integrations/microsoft/connect`
+    try {
+      const res = await api.get('/integrations/microsoft/connect-url')
+      window.location.href = res.data.url
+    } catch {
+      toast.error('Failed to start Microsoft OAuth')
+    }
   }
 
   async function disconnectAccount(id: string) {

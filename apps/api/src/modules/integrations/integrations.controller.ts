@@ -172,6 +172,14 @@ export class IntegrationsController {
 
   // ── Google OAuth ─────────────────────────────────────────────────────
 
+  @Get('google/connect-url')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Return Google OAuth URL (for frontend redirect)' })
+  getGoogleConnectUrl(@CurrentTenant() tenantId: string) {
+    return { url: this.service.getGoogleAuthUrl(tenantId) }
+  }
+
   @Get('google/connect')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -199,6 +207,14 @@ export class IntegrationsController {
   }
 
   // ── Microsoft / Office 365 OAuth ─────────────────────────────────────
+
+  @Get('microsoft/connect-url')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Return Microsoft OAuth URL (for frontend redirect)' })
+  getMicrosoftConnectUrl(@CurrentTenant() tenantId: string) {
+    return { url: this.service.getMicrosoftAuthUrl(tenantId) }
+  }
 
   @Get('microsoft/connect')
   @UseGuards(JwtAuthGuard)

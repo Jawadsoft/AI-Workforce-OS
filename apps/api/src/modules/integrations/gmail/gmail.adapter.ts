@@ -142,6 +142,17 @@ export class GmailAdapter {
     })
   }
 
+  async sendReply(to: string, subject: string, body: string, threadId?: string): Promise<void> {
+    const raw = this.buildRawEmail(to, subject, body)
+    await this.gmail.users.messages.send({
+      userId: 'me',
+      requestBody: {
+        raw,
+        ...(threadId ? { threadId } : {}),
+      },
+    })
+  }
+
   async createDraft(to: string, subject: string, body: string, threadId?: string): Promise<string> {
     const raw = this.buildRawEmail(to, subject, body)
     const res = await this.gmail.users.drafts.create({

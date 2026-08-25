@@ -345,6 +345,7 @@ export class IntegrationsController {
     @Query('action') action?: string,
     @Query('status') status?: string,
     @Query('needsReview') needsReview?: string,
+    @Query('accountId') accountId?: string,
   ) {
     return this.service.getProcessedEmails(
       tenantId,
@@ -354,6 +355,7 @@ export class IntegrationsController {
         action,
         status,
         needsReview: needsReview === 'true' || needsReview === '1',
+        connectedAccountId: accountId,
       },
     )
   }

@@ -370,6 +370,13 @@ export class IntegrationsService {
         })
         if (exists) { skippedCount++; continue }
 
+        // Skip emails sent by the connected account itself (prevents self-reply loops)
+        if (email.from.toLowerCase() === account.accountEmail.toLowerCase()) {
+          skippedCount++
+          this.logger.debug(`[O365][${tenantId}] Skipping self-sent email from ${email.from}`)
+          continue
+        }
+
         const classification = await classifier.classify(email, staffEmails, companyContext)
         const rule = rules.find(r => r.emailType === classification.type)
         const mode = rule?.mode ?? 'notify_only'
@@ -781,6 +788,13 @@ export class IntegrationsService {
         })
         if (exists) { skippedCount++; continue }
 
+        // Skip emails sent by the connected account itself (prevents self-reply loops)
+        if (email.from.toLowerCase() === account.accountEmail.toLowerCase()) {
+          skippedCount++
+          this.logger.debug(`[Gmail][${tenantId}] Skipping self-sent email from ${email.from}`)
+          continue
+        }
+
         const classification = await classifier.classify(email, staffEmails, companyContext)
 
         const rule = rules.find(r => r.emailType === classification.type)
@@ -921,6 +935,13 @@ export class IntegrationsService {
           where: { connectedAccountId_gmailMessageId: { connectedAccountId: account.id, gmailMessageId: email.id } },
         })
         if (exists) { skippedCount++; continue }
+
+        // Skip emails sent by the connected account itself (prevents self-reply loops)
+        if (email.from.toLowerCase() === account.accountEmail.toLowerCase()) {
+          skippedCount++
+          this.logger.debug(`[IMAP][${tenantId}] Skipping self-sent email from ${email.from}`)
+          continue
+        }
 
         const classification = await classifier.classify(email, staffEmails, companyContext)
         const rule = rules.find(r => r.emailType === classification.type)
@@ -1513,9 +1534,13 @@ Instructions:
     tenantId: string,
     limit = 50,
     offset = 0,
-    filters?: { action?: string; status?: string; needsReview?: boolean },
+    filters?: { action?: string; status?: string; needsReview?: boolean; connectedAccountId?: string },
   ): Promise<{ items: any[]; total: number; limit: number; offset: number }> {
     const where: any = { tenantId }
+
+    if (filters?.connectedAccountId) {
+      where.connectedAccountId = filters.connectedAccountId
+    }
 
     if (filters?.needsReview) {
       where.OR = [
@@ -1551,21 +1576,15 @@ Instructions:
   ): Promise<{ success: boolean; id: string }> {
     const email = await this.prisma.processedEmail.findFirst({
       where: { id: emailId, tenantId },
-      include: { connectedAccount: { select: { accountEmail: true, provider: true, metadata: true } } },
+      include: { connectedAccount: true },
     })
     if (!email) throw new NotFoundException('Processed email not found')
     if (!body?.trim()) throw new BadRequestException('Reply body is required')
 
+    const account = email.connectedAccount
     const subject = email.subject?.startsWith('Re:')
       ? (email.subject ?? 'Re: (no subject)')
       : `Re: ${email.subject || '(no subject)'}`
-
-    const smtp = await this.email.getSmtpConfig(tenantId)
-    if (!smtp.user || !smtp.pass) {
-      throw new BadRequestException(
-        'SMTP is not configured — connect an email account with SMTP or set tenant SMTP settings.',
-      )
-    }
 
     const html = `<div style="font-family:sans-serif;white-space:pre-wrap">${body
       .replace(/&/g, '&amp;')
@@ -1573,15 +1592,51 @@ Instructions:
       .replace(/>/g, '&gt;')
       .replace(/\n/g, '<br>')}</div>`
 
-    await this.email.send({
-      tenantId,
-      to: email.fromEmail,
-      subject,
-      html,
-      text: body,
-      inReplyTo: email.threadId ?? undefined,
-      references: email.threadId ?? undefined,
-    })
+    // Use the connected account's own mailer so the reply comes from the right address
+    // and threading headers (In-Reply-To / References) are correctly set
+    if (account.provider === 'google') {
+      // Gmail — use the Gmail API to reply in the thread
+      const oauth2 = this.getGoogleOAuthClient()
+      const accessToken = decrypt(account.encryptedAccessToken)
+      const refreshToken = account.encryptedRefreshToken ? decrypt(account.encryptedRefreshToken) : undefined
+      oauth2.setCredentials({ access_token: accessToken, refresh_token: refreshToken, expiry_date: account.expiresAt?.getTime() })
+      const gmail = new GmailAdapter(oauth2)
+      await gmail.sendReply(email.fromEmail, subject, html, email.threadId ?? undefined)
+    } else if (account.provider === 'microsoft') {
+      // Office 365 — use OAuth2 SMTP with threading headers
+      const accessToken = await this.refreshMicrosoftToken(account)
+      const mailer = new AccountMailer({
+        smtpHost: 'smtp.office365.com',
+        smtpPort: 587,
+        smtpSecure: false,
+        smtpUser: account.accountEmail,
+        encryptedSmtpPassword: '',
+        smtpFromName: account.accountName ?? account.accountEmail,
+        fromEmail: account.accountEmail,
+        accessToken,
+      })
+      await mailer.sendReply({
+        to: email.fromEmail,
+        subject,
+        html,
+        inReplyTo: email.threadId ?? undefined,
+        references: email.threadId ? [email.threadId] : undefined,
+      })
+    } else {
+      // IMAP — use account's SMTP credentials with threading headers
+      const meta = account.metadata as any
+      if (!meta?.smtpHost && !meta?.encryptedSmtpPassword) {
+        throw new BadRequestException('SMTP is not configured for this account — edit the account and add SMTP settings.')
+      }
+      const mailer = AccountMailer.fromAccountMetadata(meta, account.accountEmail)
+      await mailer.sendReply({
+        to: email.fromEmail,
+        subject,
+        html,
+        inReplyTo: email.threadId ?? undefined,
+        references: email.threadId ? [email.threadId] : undefined,
+      })
+    }
 
     await this.prisma.processedEmail.update({
       where: { id: email.id },
@@ -1596,7 +1651,7 @@ Instructions:
       },
     })
 
-    this.logger.log(`Manual reply sent for processed email ${email.id} → ${email.fromEmail}`)
+    this.logger.log(`Manual reply sent for processed email ${email.id} → ${email.fromEmail} via ${account.provider}`)
     return { success: true, id: email.id }
   }
 

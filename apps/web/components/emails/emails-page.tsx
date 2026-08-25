@@ -10,6 +10,8 @@ import {
 
 type FilterTab = 'needs_review' | 'all' | 'replied' | 'drafted' | 'flagged'
 
+type ConnectedAccount = { id: string; accountEmail: string; provider: string }
+
 type ProcessedEmail = {
   id: string
   fromEmail: string
@@ -46,6 +48,12 @@ function actionBadge(action?: string | null) {
   return styles[a] || 'bg-muted text-muted-foreground'
 }
 
+function providerLabel(provider: string) {
+  if (provider === 'google') return 'Gmail'
+  if (provider === 'microsoft') return 'Outlook'
+  return 'IMAP'
+}
+
 function formatRelative(dateStr: string) {
   const d = new Date(dateStr)
   const diff = Date.now() - d.getTime()
@@ -62,17 +70,31 @@ function formatRelative(dateStr: string) {
 export function EmailsPage() {
   const qc = useQueryClient()
   const [tab, setTab] = useState<FilterTab>('needs_review')
+  const [selectedAccountId, setSelectedAccountId] = useState<string>('all')
   const [selected, setSelected] = useState<ProcessedEmail | null>(null)
   const [replyBody, setReplyBody] = useState('')
   const [replyError, setReplyError] = useState<string | null>(null)
 
   const filter = FILTERS.find((f) => f.id === tab)!
 
+  // Load connected accounts for the filter dropdown
+  const accountsQuery = useQuery({
+    queryKey: ['connected-accounts'],
+    queryFn: () => api.get('/integrations/accounts').then(r => r.data as ConnectedAccount[]),
+  })
+  const accounts = accountsQuery.data ?? []
+
+  const queryParams = useMemo(() => {
+    const p: Record<string, string> = { limit: '50', ...filter.query }
+    if (selectedAccountId !== 'all') p.accountId = selectedAccountId
+    return p
+  }, [tab, selectedAccountId, filter.query])
+
   const { data, isLoading, isFetching, refetch } = useQuery({
-    queryKey: ['processed-emails', tab],
+    queryKey: ['processed-emails', tab, selectedAccountId],
     queryFn: () =>
       api
-        .get('/integrations/emails', { params: { limit: 50, ...filter.query } })
+        .get('/integrations/emails', { params: queryParams })
         .then((r) => r.data as { items: ProcessedEmail[]; total: number }),
     refetchInterval: 30000,
   })
@@ -134,7 +156,7 @@ export function EmailsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-xl font-semibold flex items-center gap-2">
             <Inbox className="w-5 h-5" />
@@ -144,7 +166,22 @@ export function EmailsPage() {
             Review flagged inbox mail, send replies, and clear items that need attention.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Account filter — always visible once accounts are loaded */}
+          {accounts.length > 0 && (
+            <select
+              value={selectedAccountId}
+              onChange={e => setSelectedAccountId(e.target.value)}
+              className="text-sm rounded-md border border-border bg-background px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              <option value="all">All accounts</option>
+              {accounts.map(a => (
+                <option key={a.id} value={a.id}>
+                  {a.accountEmail} ({providerLabel(a.provider)})
+                </option>
+              ))}
+            </select>
+          )}
           {(needsReviewCountQuery.data ?? 0) > 0 && (
             <div className="flex items-center gap-1.5 bg-amber-500/10 text-amber-700 text-sm px-3 py-1.5 rounded-full">
               <AlertCircle className="w-4 h-4" />
@@ -233,7 +270,8 @@ export function EmailsPage() {
                   {email.connectedAccount?.accountEmail && (
                     <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                       <Mail className="w-3 h-3" />
-                      Inbox: {email.connectedAccount.accountEmail}
+                      Inbox: <span className="font-medium text-foreground">{email.connectedAccount.accountEmail}</span>
+                      <span className="text-muted-foreground/60">· reply will send from this address</span>
                     </p>
                   )}
                 </div>
@@ -280,8 +318,16 @@ export function EmailsPage() {
               <div className="min-w-0">
                 <h2 className="font-semibold text-sm">Reply</h2>
                 <p className="text-xs text-muted-foreground mt-1 truncate">
-                  To {selected.fromName || selected.fromEmail} · {selected.subject || '(no subject)'}
+                  To: <span className="font-medium text-foreground">{selected.fromName || selected.fromEmail}</span>
+                  {' · '}{selected.subject || '(no subject)'}
                 </p>
+                {selected.connectedAccount?.accountEmail && (
+                  <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                    <Mail className="w-3 h-3 shrink-0" />
+                    From: <span className="font-medium text-foreground">{selected.connectedAccount.accountEmail}</span>
+                    <span className="text-muted-foreground/60">({providerLabel(selected.connectedAccount.provider)})</span>
+                  </p>
+                )}
               </div>
               <button
                 type="button"

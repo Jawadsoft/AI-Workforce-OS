@@ -424,7 +424,10 @@ export class IntegrationsService {
             receivedAt: email.receivedAt,
             classification: classification.type,
             confidence: classification.confidence,
-            extractedData: classification.extractedData as any,
+            extractedData: {
+              ...(classification.extractedData as any ?? {}),
+              snippet: email.snippet || email.body?.slice(0, 500) || '',
+            },
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
             errorMessage,
@@ -849,7 +852,10 @@ export class IntegrationsService {
             receivedAt: email.receivedAt,
             classification: classification.type,
             confidence: classification.confidence,
-            extractedData: classification.extractedData as any,
+            extractedData: {
+              ...(classification.extractedData as any ?? {}),
+              snippet: email.snippet || email.body?.slice(0, 500) || '',
+            },
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
             errorMessage,
@@ -996,7 +1002,10 @@ export class IntegrationsService {
             receivedAt: email.receivedAt,
             classification: classification.type,
             confidence: classification.confidence,
-            extractedData: classification.extractedData as any,
+            extractedData: {
+              ...(classification.extractedData as any ?? {}),
+              snippet: email.snippet || email.body?.slice(0, 500) || '',
+            },
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
             errorMessage,
@@ -1063,12 +1072,15 @@ export class IntegrationsService {
         const replyBody = replyTemplate
           ? this.fillTemplate(replyTemplate, email, classification)
           : await this.generateEmailReply(email, classification, tenantId, assignedAgentId)
+        const replySubject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || ''}`
+        const inReplyTo = email.threadId || undefined
+        const refs = [...(email.references ?? []), ...(inReplyTo ? [inReplyTo] : [])].filter((v: string, i: number, a: string[]) => v && a.indexOf(v) === i)
         await mailer.sendReply({
           to: email.from,
-          subject: email.subject,
+          subject: replySubject,
           html: replyBody,
-          inReplyTo: email.threadId || undefined,
-          references: email.references,
+          inReplyTo,
+          references: refs.length ? refs : undefined,
         })
         await imap.markAsRead(email.id)
         await this.notifyAgentOfEmail(tenantId, email, classification,
@@ -1144,12 +1156,29 @@ export class IntegrationsService {
         return 'notified'
       }
 
+      case 'auto_reply': {
+        if (!(await this.autonomy.canContactCustomer(tenantId))) {
+          await this.notifyAgentOfEmail(tenantId, email, classification,
+            '⚠️ Auto-reply skipped — AI workforce autonomy is paused or internal-only.')
+          return 'notified'
+        }
+        const replyBody = replyTemplate
+          ? this.fillTemplate(replyTemplate, email, classification)
+          : await this.generateEmailReply(email, classification, tenantId, assignedAgentId)
+        const replySubject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || ''}`
+        await gmail.sendReply(email.from, replySubject, replyBody, email.threadId)
+        await gmail.markAsRead(email.id)
+        await this.notifyAgentOfEmail(tenantId, email, classification,
+          `✅ Auto-reply sent via Gmail`)
+        return 'replied'
+      }
+
       case 'auto_draft': {
         const replyBody = replyTemplate
           ? this.fillTemplate(replyTemplate, email, classification)
           : await this.generateEmailReply(email, classification, tenantId, assignedAgentId)
-
-        const draftId = await gmail.createDraft(email.from, `Re: ${email.subject}`, replyBody, email.threadId)
+        const replySubject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || ''}`
+        const draftId = await gmail.createDraft(email.from, replySubject, replyBody, email.threadId)
         await this.notifyAgentOfEmail(tenantId, email, classification, `📝 Draft reply created (Draft ID: ${draftId})`)
         await gmail.markAsRead(email.id)
         return 'drafted'
@@ -1515,9 +1544,17 @@ Instructions:
 - Be concise and helpful (3-5 sentences max unless more detail is needed)
 - Address their specific question or need
 - Sign off as "${agentName}, ${companyName}"
-- Format as clean HTML (use <p> tags, no complex layout)`
+- Output ONLY the raw HTML email body using <p> tags
+- Do NOT wrap output in markdown code fences or backticks
+- Do NOT include \`\`\`html or \`\`\` anywhere in your response`
 
-    return this.ai.chat(prompt, [])
+    const raw = await this.ai.chat(prompt, [])
+    // Strip any markdown code fences the LLM may have added despite instructions
+    return raw
+      .replace(/^```html\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim()
   }
 
   private async lookupCrmContext(_tenantId: string, _senderEmail: string): Promise<string> {

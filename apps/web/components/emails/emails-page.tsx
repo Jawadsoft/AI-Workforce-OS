@@ -26,6 +26,102 @@ type ProcessedEmail = {
   connectedAccount?: { accountEmail: string; provider: string }
 }
 
+function EmailCard({
+  email,
+  onDismiss,
+  onReply,
+  dismissing,
+}: {
+  email: ProcessedEmail
+  onDismiss: () => void
+  onReply: () => void
+  dismissing: boolean
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const snippet = (email.extractedData as any)?.snippet as string | undefined
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-5 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${actionBadge(email.action)}`}>
+              {(email.action || 'unknown').replace(/_/g, ' ')}
+            </span>
+            {email.classification && (
+              <span className="text-xs text-muted-foreground">
+                {email.classification.replace(/_/g, ' ')}
+                {email.confidence != null ? ` · ${email.confidence}%` : ''}
+              </span>
+            )}
+            <span className="text-xs text-muted-foreground">{formatRelative(email.receivedAt)}</span>
+          </div>
+          <p className="font-medium text-sm mt-2 truncate">{email.subject || '(no subject)'}</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            From {email.fromName || email.fromEmail}
+            {email.fromName ? ` <${email.fromEmail}>` : ''}
+          </p>
+          {email.connectedAccount?.accountEmail && (
+            <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+              <Mail className="w-3 h-3" />
+              Inbox: <span className="font-medium text-foreground">{email.connectedAccount.accountEmail}</span>
+              <span className="text-muted-foreground/60">· reply will send from this address</span>
+            </p>
+          )}
+          {/* Message preview toggle */}
+          {snippet && (
+            <button
+              type="button"
+              onClick={() => setExpanded(v => !v)}
+              className="mt-2 text-xs text-primary hover:underline"
+            >
+              {expanded ? 'Hide message ▲' : 'View message ▼'}
+            </button>
+          )}
+          {expanded && snippet && (
+            <div className="mt-2 p-3 bg-muted/60 rounded-md text-xs text-foreground whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
+              {snippet}
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2 shrink-0">
+          {email.action !== 'replied' && email.action !== 'archived' && (
+            <button
+              type="button"
+              onClick={onDismiss}
+              disabled={dismissing}
+              className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors"
+            >
+              <Archive className="w-3.5 h-3.5" /> Done
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onReply}
+            className="flex items-center gap-1 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm hover:opacity-90 transition-opacity"
+          >
+            <Send className="w-3.5 h-3.5" /> Reply
+          </button>
+        </div>
+      </div>
+
+      {email.extractedData && Object.keys(email.extractedData).filter(k => k !== 'snippet' && k !== 'lastReplyAt' && k !== 'lastReplyPreview').length > 0 && (
+        <details className="text-xs">
+          <summary className="text-muted-foreground cursor-pointer hover:text-foreground">
+            Extracted details
+          </summary>
+          <pre className="mt-2 p-3 bg-muted rounded text-xs overflow-x-auto">
+            {JSON.stringify(
+              Object.fromEntries(Object.entries(email.extractedData).filter(([k]) => k !== 'snippet')),
+              null, 2
+            )}
+          </pre>
+        </details>
+      )}
+    </div>
+  )
+}
+
 const FILTERS: { id: FilterTab; label: string; query: Record<string, string> }[] = [
   { id: 'needs_review', label: 'Needs Review', query: { needsReview: 'true' } },
   { id: 'flagged', label: 'Flagged', query: { action: 'flagged' } },
@@ -245,68 +341,13 @@ export function EmailsPage() {
         <div className="space-y-3">
           <p className="text-xs text-muted-foreground">{total} email{total === 1 ? '' : 's'}</p>
           {items.map((email) => (
-            <div key={email.id} className="rounded-lg border border-border bg-card p-5 space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${actionBadge(email.action)}`}>
-                      {(email.action || 'unknown').replace(/_/g, ' ')}
-                    </span>
-                    {email.classification && (
-                      <span className="text-xs text-muted-foreground">
-                        {email.classification.replace(/_/g, ' ')}
-                        {email.confidence != null ? ` · ${email.confidence}%` : ''}
-                      </span>
-                    )}
-                    <span className="text-xs text-muted-foreground">{formatRelative(email.receivedAt)}</span>
-                  </div>
-                  <p className="font-medium text-sm mt-2 truncate">
-                    {email.subject || '(no subject)'}
-                  </p>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    From {email.fromName || email.fromEmail}
-                    {email.fromName ? ` <${email.fromEmail}>` : ''}
-                  </p>
-                  {email.connectedAccount?.accountEmail && (
-                    <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                      <Mail className="w-3 h-3" />
-                      Inbox: <span className="font-medium text-foreground">{email.connectedAccount.accountEmail}</span>
-                      <span className="text-muted-foreground/60">· reply will send from this address</span>
-                    </p>
-                  )}
-                </div>
-                <div className="flex gap-2 shrink-0">
-                  {email.action !== 'replied' && email.action !== 'archived' && (
-                    <button
-                      type="button"
-                      onClick={() => dismissMutation.mutate(email.id)}
-                      disabled={dismissMutation.isPending}
-                      className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors"
-                    >
-                      <Archive className="w-3.5 h-3.5" /> Done
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => openReply(email)}
-                    className="flex items-center gap-1 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm hover:opacity-90 transition-opacity"
-                  >
-                    <Send className="w-3.5 h-3.5" /> Reply
-                  </button>
-                </div>
-              </div>
-
-              {email.extractedData && Object.keys(email.extractedData).length > 0 && (
-                <details className="text-xs">
-                  <summary className="text-muted-foreground cursor-pointer hover:text-foreground">
-                    Extracted details
-                  </summary>
-                  <pre className="mt-2 p-3 bg-muted rounded text-xs overflow-x-auto">
-                    {JSON.stringify(email.extractedData, null, 2)}
-                  </pre>
-                </details>
-              )}
-            </div>
+            <EmailCard
+              key={email.id}
+              email={email}
+              onDismiss={() => dismissMutation.mutate(email.id)}
+              onReply={() => openReply(email)}
+              dismissing={dismissMutation.isPending}
+            />
           ))}
         </div>
       )}

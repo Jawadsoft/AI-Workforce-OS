@@ -45,22 +45,63 @@ export class EmailClassifier {
 
   constructor(private readonly ai: AIService) {}
 
-  async classify(email: RawEmail, staffEmails: string[], companyContext: string): Promise<ClassificationResult> {
+  async classify(
+    email: RawEmail,
+    staffEmails: string[],
+    companyContext: string,
+    /** The email address of the connected inbox (e.g. cleaning@guardianfm.co.uk) */
+    connectedAccountEmail?: string,
+  ): Promise<ClassificationResult> {
     // Layer 1: Fast rule-based pre-filter
-    const fast = this.fastClassify(email, staffEmails)
+    const fast = this.fastClassify(email, staffEmails, connectedAccountEmail)
     if (fast) return fast
 
     // Layer 2: AI classification
-    return this.aiClassify(email, companyContext)
+    const result = await this.aiClassify(email, companyContext, staffEmails, connectedAccountEmail)
+
+    // Layer 3: Post-AI safety override — never block same-domain senders as spam
+    const senderDomain = email.from.split('@')[1]?.toLowerCase()
+    const internalDomains = this.getInternalDomains(staffEmails, connectedAccountEmail)
+    if (
+      senderDomain &&
+      internalDomains.has(senderDomain) &&
+      (result.type === 'spam_promotion' || result.type === 'newsletter')
+    ) {
+      return {
+        type: 'internal_team',
+        confidence: 95,
+        reason: `Sender domain @${senderDomain} matches company domain — overriding spam classification`,
+        extractedData: result.extractedData,
+      }
+    }
+
+    return result
   }
 
-  private fastClassify(email: RawEmail, staffEmails: string[]): ClassificationResult | null {
+  /** Collect all unique domains from staff emails + connected account email */
+  private getInternalDomains(staffEmails: string[], connectedAccountEmail?: string): Set<string> {
+    const domains = new Set<string>()
+    for (const e of [...staffEmails, ...(connectedAccountEmail ? [connectedAccountEmail] : [])]) {
+      const d = e.split('@')[1]?.toLowerCase()
+      if (d) domains.add(d)
+    }
+    return domains
+  }
+
+  private fastClassify(email: RawEmail, staffEmails: string[], connectedAccountEmail?: string): ClassificationResult | null {
     const text = `${email.subject} ${email.snippet}`.toLowerCase()
     const from = email.from.toLowerCase()
+    const senderDomain = email.from.split('@')[1]?.toLowerCase()
 
-    // Internal staff
+    // Internal: exact email match in staff list
     if (staffEmails.some(s => from.includes(s.toLowerCase()))) {
       return { type: 'internal_team', confidence: 99, reason: 'From known staff email', extractedData: {} }
+    }
+
+    // Internal: sender domain matches any known company domain (e.g. jawad@guardianfm.co.uk when connected is cleaning@guardianfm.co.uk)
+    const internalDomains = this.getInternalDomains(staffEmails, connectedAccountEmail)
+    if (senderDomain && internalDomains.has(senderDomain)) {
+      return { type: 'internal_team', confidence: 97, reason: `Sender shares company domain @${senderDomain}`, extractedData: {} }
     }
 
     // Urgent — check first so it overrides other rules
@@ -91,10 +132,20 @@ export class EmailClassifier {
     return null // needs AI classification
   }
 
-  private async aiClassify(email: RawEmail, companyContext: string): Promise<ClassificationResult> {
+  private async aiClassify(
+    email: RawEmail,
+    companyContext: string,
+    staffEmails: string[] = [],
+    connectedAccountEmail?: string,
+  ): Promise<ClassificationResult> {
+    const internalDomains = [...this.getInternalDomains(staffEmails, connectedAccountEmail)]
+    const domainHint = internalDomains.length
+      ? `\nInternal company domains: ${internalDomains.map(d => `@${d}`).join(', ')} — emails from these domains are ALWAYS internal_team, never spam.`
+      : ''
+
     const systemPrompt = `You are an email classification assistant for a business.
 
-Company context: ${companyContext}
+Company context: ${companyContext}${domainHint}
 
 Classify this email into exactly one type:
 - lead_inquiry: New customer asking about services/pricing

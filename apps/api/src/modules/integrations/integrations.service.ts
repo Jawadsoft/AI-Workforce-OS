@@ -412,7 +412,7 @@ export class IntegrationsService {
           ? conversation.allMessageIds
           : (email.references ?? [])
 
-        const classification = await classifier.classify(email, staffEmails, companyContext)
+        const classification = await classifier.classify(email, staffEmails, companyContext, account.email)
         const rule = rules.find(r => r.emailType === classification.type)
         const mode = rule?.mode ?? 'notify_only'
         const threshold = rule?.confidenceThreshold ?? 70
@@ -1018,7 +1018,7 @@ export class IntegrationsService {
           ? conversation.allMessageIds
           : (email.references ?? [])
 
-        const classification = await classifier.classify(email, staffEmails, companyContext)
+        const classification = await classifier.classify(email, staffEmails, companyContext, account.email)
         const rule = rules.find(r => r.emailType === classification.type)
         const mode = rule?.mode ?? 'notify_only'
         const threshold = rule?.confidenceThreshold ?? 70

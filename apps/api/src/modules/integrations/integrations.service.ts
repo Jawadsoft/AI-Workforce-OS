@@ -1153,8 +1153,9 @@ export class IntegrationsService {
         // References = full conversation chain (allMessageIds) already injected by caller,
         // deduplicated and with inReplyTo appended
         const refs = [...new Set([...(email.references ?? []), ...(inReplyTo ? [inReplyTo] : [])])].filter(Boolean)
-        // Pre-generate Message-ID so we control exactly what goes on the wire AND in the DB
-        const outboundMsgId = `<reply-${Date.now()}-${Math.random().toString(36).slice(2)}@ai-workforce>`
+        // Pre-generate Message-ID using the real sending domain so SMTP servers don't rewrite it
+        const sendingDomain = fromEmail.split('@')[1] ?? 'mail.local'
+        const outboundMsgId = `<reply-${Date.now()}-${Math.random().toString(36).slice(2)}@${sendingDomain}>`
         // sendReply returns the actual Message-ID accepted by the SMTP server
         const sentMsgId = await mailer.sendReply({
           to: email.from,
@@ -1684,6 +1685,66 @@ Instructions:
   }
 
   /**
+   * Strip raw MIME multipart junk from an email body, returning clean readable text.
+   * Handles: boundary markers, Content-* headers, quoted-printable soft line breaks,
+   * and HTML tags (converting to plain text for use in quoted blocks).
+   */
+  private stripMimeJunk(raw: string): string {
+    if (!raw) return ''
+
+    // If the body contains HTML tags, extract inner text
+    if (/<\s*(html|body|div|p|br|span|table)\b/i.test(raw)) {
+      return raw
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/=\r?\n/g, '')  // quoted-printable soft line breaks
+        .replace(/\r\n/g, '\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+    }
+
+    // Plain text: strip MIME boundary markers and Content-* header lines
+    const lines = raw.replace(/\r\n/g, '\n').split('\n')
+    const cleaned: string[] = []
+    let inHeader = false
+
+    for (const line of lines) {
+      // MIME boundary line (starts with --)
+      if (/^-{2,}/.test(line)) {
+        inHeader = true
+        continue
+      }
+      // Content-* header line immediately after a boundary
+      if (inHeader && /^(Content-|MIME-Version:)/i.test(line)) {
+        continue
+      }
+      // Blank line after headers ends the header block
+      if (inHeader && line.trim() === '') {
+        inHeader = false
+        continue
+      }
+      inHeader = false
+      cleaned.push(line)
+    }
+
+    return cleaned
+      .join('\n')
+      .replace(/=\r?\n/g, '')  // quoted-printable soft line breaks
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  }
+
+  /**
    * Build the quoted conversation thread appended below an email reply.
    * Renders as:
    *   <hr>
@@ -1713,7 +1774,8 @@ Instructions:
     const quoted = entries
       .filter(e => e.body)
       .map(e => {
-        const safeBody = e.body
+        const cleanBody = this.stripMimeJunk(e.body)
+        const safeBody = cleanBody
           .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
           .replace(/\n/g, '<br>')
         return `
@@ -1945,8 +2007,9 @@ Instructions:
 
     // Use the connected account's own mailer so the reply comes from the right address
     // and threading headers (In-Reply-To / References) are correctly set
-    // Pre-generate Message-ID — passed to SMTP so the wire ID matches what we store
-    const pregenMsgId = `<manual-${Date.now()}-${Math.random().toString(36).slice(2)}@ai-workforce>`
+    // Pre-generate Message-ID using the real sending domain so SMTP servers don't rewrite it
+    const replyDomain = account.email?.split('@')[1] ?? 'mail.local'
+    const pregenMsgId = `<manual-${Date.now()}-${Math.random().toString(36).slice(2)}@${replyDomain}>`
     let sentMsgId = pregenMsgId
 
     if (account.provider === 'google') {

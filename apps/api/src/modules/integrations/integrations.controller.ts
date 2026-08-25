@@ -312,10 +312,23 @@ export class IntegrationsController {
   @Post('email-scan')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Manually trigger email scan for the tenant' })
+  @ApiOperation({ summary: 'Manually trigger email scan for all accounts in the tenant' })
   @HttpCode(200)
   async manualScan(@CurrentTenant() tenantId: string) {
     const result = await this.service.scanEmailsForTenant(tenantId)
+    return { success: true, ...result }
+  }
+
+  @Post('email-scan/:accountId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Manually trigger email scan for a single connected account' })
+  @HttpCode(200)
+  async manualScanAccount(
+    @CurrentTenant() tenantId: string,
+    @Param('accountId') accountId: string,
+  ) {
+    const result = await this.service.scanSingleAccount(tenantId, accountId)
     return { success: true, ...result }
   }
 

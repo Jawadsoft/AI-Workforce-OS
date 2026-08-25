@@ -503,6 +503,20 @@ export function IntegrationsPanel() {
                     .then(r => setAccounts(prev => prev.map(a => a.id === account.id ? { ...a, assignedAgentId: r.data.assignedAgentId, assignedAgent: r.data.assignedAgent } : a)))
                     .catch(() => toast.error('Failed to assign agent'))
                 }}
+                onScan={async () => {
+                  setScanning(true)
+                  setScanResult(null)
+                  setShowScanModal(true)
+                  try {
+                    const { data } = await api.post<ScanResult>(`/integrations/email-scan/${account.id}`)
+                    setScanResult(data)
+                  } catch {
+                    toast.error('Scan failed')
+                    setShowScanModal(false)
+                  } finally {
+                    setScanning(false)
+                  }
+                }}
               />
             ))}
 
@@ -856,11 +870,13 @@ function AccountCard({
   agents,
   onDisconnect,
   onAgentChange,
+  onScan,
 }: {
   account: ConnectedAccount
   agents: AgentOption[]
   onDisconnect: () => void
   onAgentChange: (agentId: string) => void
+  onScan: () => void
 }) {
   const statusColor = account.status === 'active'
     ? 'text-green-600'
@@ -890,6 +906,13 @@ function AccountCard({
             {account.provider === 'google' ? 'Gmail' : account.provider === 'imap' ? `IMAP · ${account.accountEmail}` : 'Outlook'} · Connected {new Date(account.createdAt).toLocaleDateString()}
           </p>
         </div>
+        <button
+          onClick={onScan}
+          className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors"
+          title="Scan this account now"
+        >
+          <RefreshCw className="w-4 h-4" />
+        </button>
         <button
           onClick={onDisconnect}
           className="p-1.5 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-50 transition-colors"

@@ -696,6 +696,40 @@ export class IntegrationsService {
     }
   }
 
+  async scanSingleAccount(tenantId: string, accountId: string): Promise<ScanResult> {
+    const account = await this.prisma.connectedAccount.findFirst({
+      where: { id: accountId, tenantId, status: 'active' },
+    })
+    if (!account) {
+      return { scanned: 0, results: [], accounts: 0, fetched: 0, skipped: 0, errors: ['Account not found or inactive'] }
+    }
+
+    const results: EmailScanItem[] = []
+    const errors: string[] = []
+    let fetched = 0
+    let skipped = 0
+
+    try {
+      let scan: { items: EmailScanItem[]; fetchedCount: number; skippedCount: number }
+      if (account.provider === 'google') {
+        scan = await this.processAccountEmails(tenantId, account)
+      } else if (account.provider === 'microsoft') {
+        scan = await this.processMicrosoftAccountEmails(tenantId, account)
+      } else {
+        scan = await this.processImapAccountEmails(tenantId, account)
+      }
+      results.push(...scan.items)
+      fetched = scan.fetchedCount
+      skipped = scan.skippedCount
+    } catch (err: any) {
+      const msg = `${account.accountEmail}: ${err.message}`
+      this.logger.error(`[Scan] ${msg}`)
+      errors.push(msg)
+    }
+
+    return { scanned: results.length, results, accounts: 1, fetched, skipped, errors }
+  }
+
   private async processAccountEmails(tenantId: string, account: any): Promise<{ items: EmailScanItem[]; fetchedCount: number; skippedCount: number }> {
     const items: EmailScanItem[] = []
     let skippedCount = 0

@@ -388,8 +388,13 @@ export function IntegrationsPanel() {
       toast.success(`${imapForm.accountEmail} connected successfully!`)
       setShowImapForm(false)
       setImapForm({ accountEmail: '', accountName: '', imapHost: 'imap.one.com', imapPort: 993, imapSecure: true, password: '', showPass: false, smtpHost: 'send.one.com', smtpPort: 587, smtpSecure: false, smtpUser: '', smtpPassword: '', smtpFromName: '', smtpSamePassword: true })
-      fetchAccounts()
-      fetchRules()
+      const refreshed = await api.get('/integrations/accounts')
+      setAccounts(refreshed.data)
+      const newAccount = refreshed.data.find((a: any) => a.accountEmail === imapForm.accountEmail)
+      if (newAccount) {
+        setSelectedRulesAccountId(newAccount.id)
+        fetchRules(newAccount.id)
+      }
     } catch (err: any) {
       const msg = err?.response?.data?.message
       const errText = Array.isArray(msg) ? msg.join(', ') : (msg || 'Failed to connect account')

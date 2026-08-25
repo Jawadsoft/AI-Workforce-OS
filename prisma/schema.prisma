@@ -549,6 +549,7 @@ model ConnectedAccount {
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   processedEmails ProcessedEmail[]
   assignedAgent   Agent?           @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
+  emailRules      EmailAgentRule[]
 
   @@unique([tenantId, provider, accountEmail])
 }
@@ -556,19 +557,21 @@ model ConnectedAccount {
 model EmailAgentRule {
   id                  String   @id @default(cuid())
   tenantId            String
-  emailType           String // lead_inquiry | complaint | quote_request | etc.
+  connectedAccountId  String   // rules are scoped per connected account
+  emailType           String   // lead_inquiry | complaint | quote_request | etc.
   mode                String   @default("notify_only") // auto_reply | auto_draft | approval_required | notify_only | block
   replyTemplate       String?  @db.Text
   confidenceThreshold Int      @default(80)
   isActive            Boolean  @default(true)
-  assignedAgentId     String? // which agent writes/sends replies for this email type
+  assignedAgentId     String?  // which agent writes/sends replies for this email type
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
-  tenant        Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  assignedAgent Agent? @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  assignedAgent    Agent?           @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
 
-  @@unique([tenantId, emailType])
+  @@unique([connectedAccountId, emailType])
 }
 
 model ProcessedEmail {

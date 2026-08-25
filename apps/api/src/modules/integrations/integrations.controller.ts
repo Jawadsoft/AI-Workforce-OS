@@ -111,6 +111,9 @@ class UpdateConnectedAccountDto {
 }
 
 class UpdateEmailRuleDto {
+  @IsString()
+  connectedAccountId: string
+
   @IsOptional()
   @IsIn(['auto_reply', 'auto_draft', 'approval_required', 'notify_only', 'block'])
   mode?: string
@@ -284,21 +287,24 @@ export class IntegrationsController {
   @Get('email-rules')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get all email agent rules for the tenant' })
-  getEmailRules(@CurrentTenant() tenantId: string) {
-    return this.service.getEmailRules(tenantId)
+  @ApiOperation({ summary: 'Get email agent rules for a specific connected account' })
+  getEmailRules(
+    @CurrentTenant() tenantId: string,
+    @Query('accountId') accountId: string,
+  ) {
+    return this.service.getEmailRules(tenantId, accountId)
   }
 
   @Patch('email-rules/:emailType')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update an email rule (mode, template, threshold)' })
+  @ApiOperation({ summary: 'Update an email rule for a specific connected account' })
   updateEmailRule(
     @CurrentTenant() tenantId: string,
     @Param('emailType') emailType: string,
     @Body() dto: UpdateEmailRuleDto,
   ) {
-    return this.service.updateEmailRule(tenantId, emailType, dto)
+    return this.service.updateEmailRule(tenantId, dto.connectedAccountId, emailType, dto)
   }
 
   // ── Email Scan (manual trigger) ──────────────────────────────────────

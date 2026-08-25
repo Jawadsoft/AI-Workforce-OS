@@ -151,7 +151,7 @@ export class IntegrationsService {
     const encryptedRefreshToken = tokens.refresh_token ? encrypt(tokens.refresh_token) : undefined
 
     // Upsert connected account
-    await this.prisma.connectedAccount.upsert({
+    const googleAccount = await this.prisma.connectedAccount.upsert({
       where: { tenantId_provider_accountEmail: { tenantId, provider: 'google', accountEmail } },
       create: {
         tenantId,
@@ -174,8 +174,8 @@ export class IntegrationsService {
       },
     })
 
-    // Create default email rules if not exists
-    await this.seedDefaultRules(tenantId)
+    // Create default email rules for this account
+    await this.seedDefaultRules(tenantId, googleAccount.id)
 
     this.logger.log(`Google account connected for tenant ${tenantId}: ${accountEmail}`)
   }
@@ -246,7 +246,7 @@ export class IntegrationsService {
 
     const expiresAt = new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000)
 
-    await this.prisma.connectedAccount.upsert({
+    const msAccount = await this.prisma.connectedAccount.upsert({
       where: { tenantId_provider_accountEmail: { tenantId, provider: 'microsoft', accountEmail } },
       create: {
         tenantId,
@@ -278,7 +278,7 @@ export class IntegrationsService {
       },
     })
 
-    await this.seedDefaultRules(tenantId)
+    await this.seedDefaultRules(tenantId, msAccount.id)
     this.logger.log(`Microsoft account connected for tenant ${tenantId}: ${accountEmail}`)
   }
 
@@ -353,7 +353,8 @@ export class IntegrationsService {
         accessToken,
       })
 
-      const rules = await this.prisma.emailAgentRule.findMany({ where: { tenantId, isActive: true } })
+      await this.seedDefaultRules(tenantId, account.id)
+      const rules = await this.prisma.emailAgentRule.findMany({ where: { connectedAccountId: account.id, isActive: true } })
       const tenant = await this.prisma.tenant.findUnique({
         where: { id: tenantId },
         include: { users: { where: { role: { in: ['TENANT_OWNER', 'TENANT_ADMIN'] } } } },
@@ -548,7 +549,7 @@ export class IntegrationsService {
       encryptedSmtpPassword,
     }
 
-    await this.prisma.connectedAccount.upsert({
+    const imapAccount = await this.prisma.connectedAccount.upsert({
       where: {
         tenantId_provider_accountEmail: {
           tenantId,
@@ -574,8 +575,8 @@ export class IntegrationsService {
       },
     })
 
-    // Seed default email rules
-    await this.seedDefaultRules(tenantId)
+    // Seed default email rules for this account
+    await this.seedDefaultRules(tenantId, imapAccount.id)
     this.logger.log(`IMAP+SMTP account connected for tenant ${tenantId}: ${data.accountEmail}`)
   }
 
@@ -583,21 +584,21 @@ export class IntegrationsService {
   // EMAIL RULES
   // ─────────────────────────────────────────────
 
-  private async seedDefaultRules(tenantId: string): Promise<void> {
+  private async seedDefaultRules(tenantId: string, connectedAccountId: string): Promise<void> {
     for (const rule of DEFAULT_RULES) {
       await this.prisma.emailAgentRule.upsert({
-        where: { tenantId_emailType: { tenantId, emailType: rule.emailType } },
-        create: { tenantId, ...rule, isActive: true },
+        where: { connectedAccountId_emailType: { connectedAccountId, emailType: rule.emailType } },
+        create: { tenantId, connectedAccountId, ...rule, isActive: true },
         update: {},
       })
     }
   }
 
-  async getEmailRules(tenantId: string) {
-    // Ensure rules exist
-    await this.seedDefaultRules(tenantId)
+  async getEmailRules(tenantId: string, connectedAccountId: string) {
+    // Ensure rules exist for this account
+    await this.seedDefaultRules(tenantId, connectedAccountId)
     return this.prisma.emailAgentRule.findMany({
-      where: { tenantId },
+      where: { tenantId, connectedAccountId },
       orderBy: { emailType: 'asc' },
       include: {
         assignedAgent: { select: { id: true, name: true, role: true, avatar: true } },
@@ -613,7 +614,7 @@ export class IntegrationsService {
     })
   }
 
-  async updateEmailRule(tenantId: string, emailType: string, data: {
+  async updateEmailRule(tenantId: string, connectedAccountId: string, emailType: string, data: {
     mode?: string
     replyTemplate?: string
     confidenceThreshold?: number
@@ -621,9 +622,10 @@ export class IntegrationsService {
     assignedAgentId?: string | null
   }) {
     return this.prisma.emailAgentRule.upsert({
-      where: { tenantId_emailType: { tenantId, emailType } },
+      where: { connectedAccountId_emailType: { connectedAccountId, emailType } },
       create: {
         tenantId,
+        connectedAccountId,
         emailType,
         mode: data.mode ?? 'notify_only',
         replyTemplate: data.replyTemplate,
@@ -725,7 +727,8 @@ export class IntegrationsService {
       const gmail = new GmailAdapter(oauth2)
       const emails = await gmail.listUnread(30)
 
-      const rules = await this.prisma.emailAgentRule.findMany({ where: { tenantId, isActive: true } })
+      await this.seedDefaultRules(tenantId, account.id)
+      const rules = await this.prisma.emailAgentRule.findMany({ where: { connectedAccountId: account.id, isActive: true } })
 
       const tenant = await this.prisma.tenant.findUnique({
         where: { id: tenantId },
@@ -868,7 +871,8 @@ export class IntegrationsService {
         mailer = AccountMailer.fromAccountMetadata(meta, account.accountEmail)
       }
 
-      const rules = await this.prisma.emailAgentRule.findMany({ where: { tenantId, isActive: true } })
+      await this.seedDefaultRules(tenantId, account.id)
+      const rules = await this.prisma.emailAgentRule.findMany({ where: { connectedAccountId: account.id, isActive: true } })
       const tenant = await this.prisma.tenant.findUnique({
         where: { id: tenantId },
         include: { users: { where: { role: { in: ['TENANT_OWNER', 'TENANT_ADMIN'] } } } },

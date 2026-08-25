@@ -273,6 +273,7 @@ export function IntegrationsPanel() {
   const [agents, setAgents] = useState<AgentOption[]>([])
   const [loadingAccounts, setLoadingAccounts] = useState(true)
   const [loadingRules, setLoadingRules] = useState(true)
+  const [selectedRulesAccountId, setSelectedRulesAccountId] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [showScanModal, setShowScanModal] = useState(false)
@@ -299,9 +300,22 @@ export function IntegrationsPanel() {
 
   useEffect(() => {
     fetchAccounts()
-    fetchRules()
     api.get('/integrations/agents').then(r => setAgents(r.data)).catch(() => {})
   }, [])
+
+  // When accounts load, auto-select the first one for rules
+  useEffect(() => {
+    if (accounts.length > 0 && !selectedRulesAccountId) {
+      const firstId = accounts[0].id
+      setSelectedRulesAccountId(firstId)
+      fetchRules(firstId)
+    }
+  }, [accounts])
+
+  // Re-fetch rules when selected account changes
+  useEffect(() => {
+    if (selectedRulesAccountId) fetchRules(selectedRulesAccountId)
+  }, [selectedRulesAccountId])
 
   async function fetchAccounts() {
     setLoadingAccounts(true)
@@ -315,10 +329,10 @@ export function IntegrationsPanel() {
     }
   }
 
-  async function fetchRules() {
+  async function fetchRules(accountId: string) {
     setLoadingRules(true)
     try {
-      const res = await api.get('/integrations/email-rules')
+      const res = await api.get(`/integrations/email-rules?accountId=${accountId}`)
       setRules(res.data)
     } catch {
       toast.error('Failed to load email rules')
@@ -750,15 +764,28 @@ export function IntegrationsPanel() {
       {accounts.length > 0 && (
         <div className="rounded-lg border border-border p-5 space-y-4">
           <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div>
+            <div className="flex-1 min-w-0">
               <h3 className="font-medium">Email Agent Rules</h3>
               <p className="text-xs text-muted-foreground mt-0.5">
                 For each email type, choose what action your agent takes automatically.
               </p>
+              {/* Account selector */}
+              <div className="mt-2 flex items-center gap-2">
+                <span className="text-xs text-muted-foreground shrink-0">Rules for:</span>
+                <select
+                  value={selectedRulesAccountId ?? ''}
+                  onChange={e => setSelectedRulesAccountId(e.target.value)}
+                  className="text-xs rounded-md border border-border bg-background px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  {accounts.map(a => (
+                    <option key={a.id} value={a.id}>{a.accountEmail}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             {/* Set default agent for all rules */}
-            {agents.length > 0 && (
+            {agents.length > 0 && selectedRulesAccountId && (
               <DefaultAgentSetter
                 agents={agents}
                 rules={rules}
@@ -766,11 +793,10 @@ export function IntegrationsPanel() {
                   try {
                     await Promise.all(
                       rules.map(r =>
-                        api.patch(`/integrations/email-rules/${r.emailType}`, { assignedAgentId: agentId })
+                        api.patch(`/integrations/email-rules/${r.emailType}`, { connectedAccountId: selectedRulesAccountId, assignedAgentId: agentId })
                       )
                     )
-                    const res = await api.get('/integrations/email-rules')
-                    setRules(res.data)
+                    await fetchRules(selectedRulesAccountId)
                     toast.success('Default agent applied to all rules')
                   } catch {
                     toast.error('Failed to apply default agent')
@@ -780,11 +806,10 @@ export function IntegrationsPanel() {
                   try {
                     await Promise.all(
                       assignments.map(({ emailType, agentId }) =>
-                        api.patch(`/integrations/email-rules/${emailType}`, { assignedAgentId: agentId })
+                        api.patch(`/integrations/email-rules/${emailType}`, { connectedAccountId: selectedRulesAccountId, assignedAgentId: agentId })
                       )
                     )
-                    const res = await api.get('/integrations/email-rules')
-                    setRules(res.data)
+                    await fetchRules(selectedRulesAccountId)
                     toast.success(`Smart assigned ${assignments.length} rule(s) based on agent roles`)
                   } catch {
                     toast.error('Failed to smart assign agents')
@@ -805,6 +830,7 @@ export function IntegrationsPanel() {
                   key={rule.id}
                   rule={rule}
                   agents={agents}
+                  connectedAccountId={selectedRulesAccountId!}
                   onUpdate={(updated) => {
                     setRules(prev => prev.map(r => r.id === updated.id ? updated : r))
                   }}
@@ -989,10 +1015,12 @@ function DefaultAgentSetter({
 function EmailRuleRow({
   rule,
   agents,
+  connectedAccountId,
   onUpdate,
 }: {
   rule: EmailRule & { assignedAgent?: AgentOption | null; assignedAgentId?: string | null }
   agents: AgentOption[]
+  connectedAccountId: string
   onUpdate: (r: EmailRule) => void
 }) {
   const [saving, setSaving] = useState(false)
@@ -1007,6 +1035,7 @@ function EmailRuleRow({
     setSaving(true)
     try {
       const res = await api.patch(`/integrations/email-rules/${rule.emailType}`, {
+        connectedAccountId,
         mode: next.mode,
         replyTemplate: next.replyTemplate,
         confidenceThreshold: next.confidenceThreshold,

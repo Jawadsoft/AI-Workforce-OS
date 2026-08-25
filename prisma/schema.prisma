@@ -39,6 +39,7 @@ model Tenant {
   connectedAccounts     ConnectedAccount[]
   emailAgentRules       EmailAgentRule[]
   processedEmails       ProcessedEmail[]
+  emailConversations    EmailConversation[]
   stormReports          StormReport[]
   conversationSummaries ConversationSummary[]
   agentMemoryFacts      AgentMemoryFact[]
@@ -546,10 +547,11 @@ model ConnectedAccount {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
-  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   processedEmails ProcessedEmail[]
-  assignedAgent   Agent?           @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
+  assignedAgent   Agent?              @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
   emailRules      EmailAgentRule[]
+  conversations   EmailConversation[]
 
   @@unique([tenantId, provider, accountEmail])
 }
@@ -578,6 +580,7 @@ model ProcessedEmail {
   id                 String   @id @default(cuid())
   tenantId           String
   connectedAccountId String
+  conversationId     String?  // links to EmailConversation
   gmailMessageId     String
   threadId           String?
   fromEmail          String
@@ -595,10 +598,40 @@ model ProcessedEmail {
   errorMessage       String?
   createdAt          DateTime @default(now())
 
-  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connectedAccount ConnectedAccount   @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  conversation     EmailConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
   @@unique([connectedAccountId, gmailMessageId])
+}
+
+// ─────────────────────────────────────────────
+// EMAIL CONVERSATIONS (THREAD TRACKING)
+// ─────────────────────────────────────────────
+
+model EmailConversation {
+  id                 String    @id @default(cuid())
+  tenantId           String
+  connectedAccountId String
+  customerEmail      String
+  customerName       String?
+  subject            String?
+  status             String    @default("open") // open | closed | waiting
+  // RFC Message-ID of the most recent message in the thread (inbound or outbound)
+  lastMessageId      String?
+  // All RFC Message-IDs seen in this thread (inbound + outbound) for References matching
+  allMessageIds      String[]  @default([])
+  assignedAgentId    String?
+  lastReplyAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  messages         ProcessedEmail[]
+
+  @@index([tenantId, customerEmail])
+  @@index([connectedAccountId, customerEmail])
 }
 
 // ─────────────────────────────────────────────

@@ -179,8 +179,13 @@ export class ImapAdapter {
         return m?.[1]?.trim() ?? ''
       }
 
-      // ENVELOPE messageId is often null on some servers — fall back to raw header
-      const messageId: string = env?.messageId || getRawHeader('Message-ID') || `<imap-${msg.uid ?? Date.now()}@local>`
+      // Prefer raw header for Message-ID — ImapFlow envelope strips angle brackets
+      // which are required by RFC 2822 for In-Reply-To / References threading headers.
+      const rawMessageId = getRawHeader('Message-ID')
+      const envelopeMessageId = env?.messageId
+        ? (env.messageId.startsWith('<') ? env.messageId : `<${env.messageId}>`)
+        : ''
+      const messageId: string = rawMessageId || envelopeMessageId || `<imap-${msg.uid ?? Date.now()}@local>`
       const inReplyToRaw = getRawHeader('In-Reply-To')
       const referencesRaw = getRawHeader('References')
 
@@ -251,6 +256,82 @@ export class ImapAdapter {
       this.logger.warn(`markAsRead failed: ${this.extractErrorMessage(err)}`)
     } finally {
       try { client.close() } catch {}
+    }
+  }
+
+  /**
+   * Save a copy of a sent reply to the account's Sent folder via IMAP APPEND.
+   * Without this, email clients cannot reconstruct the full thread.
+   */
+  async saveSent(params: {
+    to: string
+    subject: string
+    htmlBody: string
+    messageId: string    // the Message-ID header of the email that was just sent
+    inReplyTo?: string
+    references?: string[]
+    fromName?: string
+  }): Promise<boolean> {
+    const { to, subject, htmlBody, messageId, inReplyTo, references, fromName } = params
+    if (!to || !to.includes('@')) return false
+
+    const client = this.createClient()
+    client.on('error', (err: Error) => { this.logger.warn(`saveSent IMAP error: ${err.message}`) })
+    try {
+      await client.connect()
+      const mailboxes = await client.list()
+      const sentFolder = mailboxes.find(m =>
+        m.flags.has('\\Sent') ||
+        /^(Sent|Sent Items|Sent Messages|INBOX\.Sent)$/i.test(m.path)
+      )
+      const folder = sentFolder?.path ?? 'Sent'
+      this.logger.log(`saveSent: saving to folder "${folder}" for <${to}>`)
+
+      const boundary = `boundary_${Date.now()}`
+      const plainText = htmlBody.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+      const refChain = [...(references ?? []), ...(inReplyTo ? [inReplyTo] : [])]
+        .filter((v, i, a) => v && a.indexOf(v) === i)
+      const fromDisplay = fromName ? `"${fromName}" <${this.config.user}>` : this.config.user
+      const dateStr = new Date().toUTCString()
+
+      const rawMessage = [
+        `From: ${fromDisplay}`,
+        `To: ${to}`,
+        `Date: ${dateStr}`,
+        `Message-ID: ${messageId}`,
+        `Subject: ${subject}`,
+        `MIME-Version: 1.0`,
+        `Content-Type: multipart/alternative; boundary="${boundary}"`,
+        ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`] : []),
+        ...(refChain.length ? [`References: ${refChain.join(' ')}`] : []),
+        ``,
+        `--${boundary}`,
+        `Content-Type: text/plain; charset=utf-8`,
+        `Content-Transfer-Encoding: 7bit`,
+        ``,
+        plainText,
+        ``,
+        `--${boundary}`,
+        `Content-Type: text/html; charset=utf-8`,
+        `Content-Transfer-Encoding: 7bit`,
+        ``,
+        htmlBody,
+        ``,
+        `--${boundary}--`,
+      ].join('\r\n')
+
+      try {
+        await client.append(folder, Buffer.from(rawMessage), ['\\Seen'])
+      } catch (appendErr: any) {
+        if (!appendErr.message?.includes('BigInt')) throw appendErr
+      }
+      try { await client.logout() } catch {}
+      this.logger.log(`saveSent: ✅ Saved to "${folder}" Message-ID: ${messageId}`)
+      return true
+    } catch (err: any) {
+      this.logger.warn(`saveSent: ❌ failed — ${this.extractErrorMessage(err)}`)
+      try { client.close() } catch {}
+      return false
     }
   }
 

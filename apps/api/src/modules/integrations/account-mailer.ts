@@ -44,35 +44,45 @@ export class AccountMailer {
     })
   }
 
+  /**
+   * Send a reply email and return the exact Message-ID that was used on the wire.
+   * The returned ID must be stored in EmailConversation.allMessageIds so future
+   * customer replies (which reference this ID via In-Reply-To) can be threaded.
+   */
   async sendReply(params: {
     to: string
     subject: string
     html: string
     text?: string
     inReplyTo?: string
-    /** Full prior References chain from the incoming email. The inReplyTo value
-     *  is automatically appended so callers only need to pass the original chain. */
+    /** Full conversation References chain (allMessageIds). inReplyTo is appended automatically. */
     references?: string[]
-  }): Promise<void> {
+    /** Pre-generated Message-ID to use. When omitted nodemailer assigns one. */
+    messageId?: string
+  }): Promise<string> {
     // Guard against malformed addresses
     if (!params.to || params.to.includes('undefined') || !params.to.includes('@')) {
       this.logger.warn(`sendReply skipped — invalid recipient: "${params.to}"`)
-      return
+      return params.messageId ?? ''
     }
     // Build complete References chain: prior chain + immediate parent (deduplicated)
     const refChain = [...(params.references ?? []), ...(params.inReplyTo ? [params.inReplyTo] : [])]
       .filter((v, i, a) => v && a.indexOf(v) === i)
     const transporter = this.buildTransporter()
-    await transporter.sendMail({
+    const info = await transporter.sendMail({
       from: `"${this.config.smtpFromName}" <${this.config.fromEmail}>`,
       to: params.to,
       subject: params.subject.startsWith('Re:') ? params.subject : `Re: ${params.subject}`,
       html: params.html,
       text: params.text,
+      ...(params.messageId ? { messageId: params.messageId } : {}),
       ...(params.inReplyTo ? { inReplyTo: params.inReplyTo } : {}),
       ...(refChain.length ? { references: refChain.join(' ') } : {}),
     })
-    this.logger.log(`Reply sent from ${this.config.fromEmail} to ${params.to}`)
+    // info.messageId is the actual Message-ID accepted by the SMTP server
+    const sentId: string = info.messageId ?? params.messageId ?? ''
+    this.logger.log(`Reply sent from ${this.config.fromEmail} to ${params.to} (Message-ID: ${sentId})`)
+    return sentId
   }
 
   async testSmtp(): Promise<{ success: boolean; error?: string }> {

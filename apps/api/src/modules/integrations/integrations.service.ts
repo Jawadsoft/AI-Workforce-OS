@@ -67,6 +67,21 @@ const DEFAULT_RULES: Array<{ emailType: EmailType; mode: string; confidenceThres
   { emailType: 'urgent_issue',    mode: 'approval_required', confidenceThreshold: 75 },
 ]
 
+/** Strip null bytes (\u0000) that Postgres rejects in text/jsonb columns */
+function sanitize(value: unknown): unknown {
+  if (typeof value === 'string') return value.replace(/\u0000/g, '')
+  if (value instanceof Date) return value           // preserve Date objects
+  if (Array.isArray(value)) return value.map(sanitize)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, sanitize(v)]))
+  }
+  return value
+}
+
+function sanitizeRecord<T extends Record<string, unknown>>(rec: T): T {
+  return sanitize(rec) as T
+}
+
 @Injectable()
 export class IntegrationsService {
   private readonly logger = new Logger(IntegrationsService.name)
@@ -377,6 +392,26 @@ export class IntegrationsService {
           continue
         }
 
+        // Find or create a conversation — this is the authoritative thread record
+        const conversationId = await this.findOrCreateConversation({
+          tenantId,
+          connectedAccountId: account.id,
+          customerEmail: email.from,
+          customerName: email.fromName,
+          subject: email.subject,
+          incomingMessageId: email.threadId!,
+          inReplyTo: email.inReplyTo,
+          references: email.references,
+        })
+
+        // Load the conversation to get the last known Message-ID for reply threading
+        const conversation = await this.prisma.emailConversation.findUnique({ where: { id: conversationId } })
+        // The In-Reply-To for our reply = the Message-ID of the inbound email
+        const replyInReplyTo = email.threadId ?? undefined
+        const replyReferences = conversation?.allMessageIds?.length
+          ? conversation.allMessageIds
+          : (email.references ?? [])
+
         const classification = await classifier.classify(email, staffEmails, companyContext)
         const rule = rules.find(r => r.emailType === classification.type)
         const mode = rule?.mode ?? 'notify_only'
@@ -399,12 +434,13 @@ export class IntegrationsService {
               tenantId,
               imap,
               mailer,
-              email,
+              { ...email, threadId: replyInReplyTo, references: replyReferences },
               classification,
               effectiveMode,
               rule?.replyTemplate ?? null,
               account.accountEmail,
               (account as any).assignedAgentId ?? rule?.assignedAgentId ?? null,
+              conversationId,
             )
           } catch (err: any) {
             errorMessage = err.message
@@ -416,6 +452,7 @@ export class IntegrationsService {
           const processedData = {
             tenantId,
             connectedAccountId: account.id,
+            conversationId,
             gmailMessageId: email.id,
             threadId: email.threadId,
             fromEmail: email.from,
@@ -426,16 +463,19 @@ export class IntegrationsService {
             confidence: classification.confidence,
             extractedData: {
               ...(classification.extractedData as any ?? {}),
-              snippet: email.snippet || email.body?.slice(0, 500) || '',
+              snippet: (email.snippet || email.body?.slice(0, 500) || '').replace(/\u0000/g, ''),
+              inReplyTo: email.inReplyTo ?? null,
+              references: email.references ?? null,
             },
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
             errorMessage,
           }
+          const safeData = sanitizeRecord(processedData)
           await this.prisma.processedEmail.upsert({
             where: { connectedAccountId_gmailMessageId: { connectedAccountId: account.id, gmailMessageId: email.id } },
-            create: processedData,
-            update: processedData,
+            create: safeData,
+            update: safeData,
           })
         }
 
@@ -449,7 +489,7 @@ export class IntegrationsService {
           accountEmail: account.accountEmail,
         })
 
-        this.logger.log(`[O365][${tenantId}] ${email.from} → ${classification.type} (${classification.confidence}%) → ${action}`)
+        this.logger.log(`[O365][${tenantId}] ${email.from} → ${classification.type} (${classification.confidence}%) → ${action} [conv:${conversationId}]`)
       }
       return { items, fetchedCount: emails.length, skippedCount }
     } catch (err: any) {
@@ -815,6 +855,14 @@ export class IntegrationsService {
           this.logger.warn(`[Confirmation] Failed for ${email.from}: ${err.message}`)
         }
 
+        // Find or create conversation for threading context
+        let conversationId: string | null = null
+        try {
+          conversationId = await this.findOrCreateConversation(tenantId, account.id, email)
+        } catch (err: any) {
+          this.logger.warn(`[Gmail][${tenantId}] findOrCreateConversation failed: ${err.message}`)
+        }
+
         let action: string | null = confirmationHandled ? 'confirmation_auto_updated' : null
         let errorMessage: string | null = null
 
@@ -830,6 +878,7 @@ export class IntegrationsService {
               rule?.replyTemplate ?? null,
               // Account-level agent assignment takes priority over rule-level
               (account as any).assignedAgentId ?? rule?.assignedAgentId ?? null,
+              conversationId,
             )
           } catch (err: any) {
             errorMessage = err.message
@@ -854,16 +903,18 @@ export class IntegrationsService {
             confidence: classification.confidence,
             extractedData: {
               ...(classification.extractedData as any ?? {}),
-              snippet: email.snippet || email.body?.slice(0, 500) || '',
+              snippet: (email.snippet || email.body?.slice(0, 500) || '').replace(/\u0000/g, ''),
             },
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
             errorMessage,
+            conversationId: conversationId ?? undefined,
           }
+          const safeData = sanitizeRecord(processedData)
           await this.prisma.processedEmail.upsert({
             where: { connectedAccountId_gmailMessageId: { connectedAccountId: account.id, gmailMessageId: email.id } },
-            create: processedData,
-            update: processedData,
+            create: safeData,
+            update: safeData,
           })
         }
 
@@ -949,6 +1000,24 @@ export class IntegrationsService {
           continue
         }
 
+        // Find or create a conversation — authoritative thread record
+        const conversationId = await this.findOrCreateConversation({
+          tenantId,
+          connectedAccountId: account.id,
+          customerEmail: email.from,
+          customerName: email.fromName,
+          subject: email.subject,
+          incomingMessageId: email.threadId!,
+          inReplyTo: email.inReplyTo,
+          references: email.references,
+        })
+
+        const conversation = await this.prisma.emailConversation.findUnique({ where: { id: conversationId } })
+        const replyInReplyTo = email.threadId ?? undefined
+        const replyReferences = conversation?.allMessageIds?.length
+          ? conversation.allMessageIds
+          : (email.references ?? [])
+
         const classification = await classifier.classify(email, staffEmails, companyContext)
         const rule = rules.find(r => r.emailType === classification.type)
         const mode = rule?.mode ?? 'notify_only'
@@ -972,13 +1041,14 @@ export class IntegrationsService {
               tenantId,
               imap,
               mailer,
-              email,
+              { ...email, threadId: replyInReplyTo, references: replyReferences },
               classification,
               effectiveMode,
               rule?.replyTemplate ?? null,
               account.accountEmail,
               // Account-level agent assignment takes priority over rule-level
               (account as any).assignedAgentId ?? rule?.assignedAgentId ?? null,
+              conversationId,
             )
           } catch (err: any) {
             errorMessage = err.message
@@ -994,6 +1064,7 @@ export class IntegrationsService {
           const processedData = {
             tenantId,
             connectedAccountId: account.id,
+            conversationId,
             gmailMessageId: email.id,
             threadId: email.threadId,
             fromEmail: email.from,
@@ -1004,16 +1075,19 @@ export class IntegrationsService {
             confidence: classification.confidence,
             extractedData: {
               ...(classification.extractedData as any ?? {}),
-              snippet: email.snippet || email.body?.slice(0, 500) || '',
+              snippet: (email.snippet || email.body?.slice(0, 500) || '').replace(/\u0000/g, ''),
+              inReplyTo: email.inReplyTo ?? null,
+              references: email.references ?? null,
             },
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
             errorMessage,
           }
+          const safeData = sanitizeRecord(processedData)
           await this.prisma.processedEmail.upsert({
             where: { connectedAccountId_gmailMessageId: { connectedAccountId: account.id, gmailMessageId: email.id } },
-            create: processedData,
-            update: processedData,
+            create: safeData,
+            update: safeData,
           })
         }
 
@@ -1027,7 +1101,7 @@ export class IntegrationsService {
           accountEmail: account.accountEmail,
         })
 
-        this.logger.log(`[IMAP][${tenantId}] ${email.from} → ${classification.type} (${classification.confidence}%) → ${action}`)
+        this.logger.log(`[IMAP][${tenantId}] ${email.from} → ${classification.type} (${classification.confidence}%) → ${action} [conv:${conversationId}]`)
       }
       return { items, fetchedCount: emails.length, skippedCount }
     } catch (err: any) {
@@ -1052,6 +1126,7 @@ export class IntegrationsService {
     replyTemplate: string | null,
     fromEmail: string,
     assignedAgentId?: string | null,
+    conversationId?: string,
   ): Promise<string> {
     switch (mode) {
       case 'block':
@@ -1071,18 +1146,37 @@ export class IntegrationsService {
         }
         const replyBody = replyTemplate
           ? this.fillTemplate(replyTemplate, email, classification)
-          : await this.generateEmailReply(email, classification, tenantId, assignedAgentId)
+          : await this.generateEmailReply(email, classification, tenantId, assignedAgentId, conversationId)
         const replySubject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || ''}`
+        // In-Reply-To = Message-ID of the inbound email (stored in threadId by IMAP adapter)
         const inReplyTo = email.threadId || undefined
-        const refs = [...(email.references ?? []), ...(inReplyTo ? [inReplyTo] : [])].filter((v: string, i: number, a: string[]) => v && a.indexOf(v) === i)
-        await mailer.sendReply({
+        // References = full conversation chain (allMessageIds) already injected by caller,
+        // deduplicated and with inReplyTo appended
+        const refs = [...new Set([...(email.references ?? []), ...(inReplyTo ? [inReplyTo] : [])])].filter(Boolean)
+        // Pre-generate Message-ID so we control exactly what goes on the wire AND in the DB
+        const outboundMsgId = `<reply-${Date.now()}-${Math.random().toString(36).slice(2)}@ai-workforce>`
+        // sendReply returns the actual Message-ID accepted by the SMTP server
+        const sentMsgId = await mailer.sendReply({
           to: email.from,
           subject: replySubject,
           html: replyBody,
           inReplyTo,
           references: refs.length ? refs : undefined,
+          messageId: outboundMsgId,
         })
+        const trackedMsgId = sentMsgId || outboundMsgId
+        // Save a copy to Sent folder so email clients can reconstruct the thread
+        imap.saveSent({
+          to: email.from,
+          subject: replySubject,
+          htmlBody: replyBody,
+          messageId: trackedMsgId,
+          inReplyTo,
+          references: refs.length ? refs : undefined,
+          fromName: fromEmail,
+        }).catch(() => {})  // non-blocking, best-effort
         await imap.markAsRead(email.id)
+        if (conversationId) await this.recordOutboundMessage(conversationId, trackedMsgId)
         await this.notifyAgentOfEmail(tenantId, email, classification,
           `✅ Auto-reply sent from ${fromEmail}`)
         return 'replied'
@@ -1091,7 +1185,7 @@ export class IntegrationsService {
       case 'auto_draft': {
         const draftBody = replyTemplate
           ? this.fillTemplate(replyTemplate, email, classification)
-          : await this.generateEmailReply(email, classification, tenantId, assignedAgentId)
+          : await this.generateEmailReply(email, classification, tenantId, assignedAgentId, conversationId)
 
         // Save draft directly to Drafts folder via IMAP APPEND
         const saved = await imap.saveDraft(email.from, email.subject, draftBody, email.threadId || undefined, email.references)
@@ -1143,6 +1237,7 @@ export class IntegrationsService {
     mode: string,
     replyTemplate: string | null,
     assignedAgentId?: string | null,
+    conversationId?: string | null,
   ): Promise<string> {
     switch (mode) {
       case 'block':
@@ -1164,9 +1259,11 @@ export class IntegrationsService {
         }
         const replyBody = replyTemplate
           ? this.fillTemplate(replyTemplate, email, classification)
-          : await this.generateEmailReply(email, classification, tenantId, assignedAgentId)
+          : await this.generateEmailReply(email, classification, tenantId, assignedAgentId, conversationId)
         const replySubject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || ''}`
-        await gmail.sendReply(email.from, replySubject, replyBody, email.threadId)
+        // Gmail API returns the sent thread/message ID which we use for tracking
+        const gmailSentId = await gmail.sendReply(email.from, replySubject, replyBody, email.threadId)
+        if (conversationId && gmailSentId) await this.recordOutboundMessage(conversationId, gmailSentId)
         await gmail.markAsRead(email.id)
         await this.notifyAgentOfEmail(tenantId, email, classification,
           `✅ Auto-reply sent via Gmail`)
@@ -1176,7 +1273,7 @@ export class IntegrationsService {
       case 'auto_draft': {
         const replyBody = replyTemplate
           ? this.fillTemplate(replyTemplate, email, classification)
-          : await this.generateEmailReply(email, classification, tenantId, assignedAgentId)
+          : await this.generateEmailReply(email, classification, tenantId, assignedAgentId, conversationId)
         const replySubject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || ''}`
         const draftId = await gmail.createDraft(email.from, replySubject, replyBody, email.threadId)
         await this.notifyAgentOfEmail(tenantId, email, classification, `📝 Draft reply created (Draft ID: ${draftId})`)
@@ -1462,7 +1559,7 @@ Body: ${(email.body ?? email.snippet ?? '').slice(0, 1200)}`
       if (ex.meetingDate) lines.push(`📅 **Meeting Date:** ${ex.meetingDate}`)
       if (extraNote)      lines.push(`\n${extraNote}`)
 
-      const briefing = lines.join('\n')
+      const briefing = lines.join('\n').replace(/\u0000/g, '')
       await this.chat.postEmailBriefing(tenantId, briefing)
     } catch (err: any) {
       this.logger.warn(`notifyAgentOfEmail failed: ${err.message}`)
@@ -1500,6 +1597,7 @@ Body: ${(email.body ?? email.snippet ?? '').slice(0, 1200)}`
     classification: any,
     tenantId: string,
     agentId?: string | null,
+    conversationId?: string | null,
   ): Promise<string> {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } })
     const brain = (tenant?.settings as any)?.brain ?? {}
@@ -1521,6 +1619,25 @@ Body: ${(email.body ?? email.snippet ?? '').slice(0, 1200)}`
       this.logger.warn(`generateEmailReply: could not load agent — ${err.message}`)
     }
 
+    // Load prior conversation messages so the AI has full context
+    let conversationHistory: Array<{ from: string; fromName: string; date: string; body: string }> = []
+    if (conversationId) {
+      try {
+        const prior = await this.prisma.processedEmail.findMany({
+          where: { conversationId },
+          orderBy: { receivedAt: 'asc' },
+          take: 10,
+          select: { fromEmail: true, fromName: true, receivedAt: true, extractedData: true },
+        })
+        conversationHistory = prior.map(p => ({
+          from: p.fromEmail,
+          fromName: p.fromName ?? p.fromEmail,
+          date: p.receivedAt.toUTCString(),
+          body: (p.extractedData as any)?.snippet ?? '',
+        }))
+      } catch {}
+    }
+
     // CRM context lookup (best-effort, non-blocking)
     let crmContext = ''
     try {
@@ -1533,34 +1650,195 @@ Body: ${(email.body ?? email.snippet ?? '').slice(0, 1200)}`
       // CRM lookup failed or timed out — continue without it
     }
 
+    const historyText = conversationHistory.length > 1
+      ? `\nConversation history (oldest first):\n${conversationHistory.map(m =>
+          `On ${m.date}, ${m.fromName} <${m.from}> wrote:\n${m.body}`
+        ).join('\n\n')}\n`
+      : ''
+
     const prompt = `${agentPersona}Write a professional, friendly email reply on behalf of ${companyName}.
 Email type: ${classification.type.replace(/_/g, ' ')}
 From: ${email.fromName || email.from} <${email.from}>
 Subject: ${email.subject}
-Their message: ${email.body?.slice(0, 800)}
-${crmContext}
+Their latest message: ${email.body?.slice(0, 800)}
+${historyText}${crmContext}
 Instructions:
 - Reply naturally as ${agentName} from ${companyName}
 - Be concise and helpful (3-5 sentences max unless more detail is needed)
-- Address their specific question or need
+- Address their specific question or need taking into account the conversation history
 - Sign off as "${agentName}, ${companyName}"
-- Output ONLY the raw HTML email body using <p> tags
+- Output ONLY the new reply text as HTML using <p> tags — do NOT include the quoted history in your output
 - Do NOT wrap output in markdown code fences or backticks
 - Do NOT include \`\`\`html or \`\`\` anywhere in your response`
 
     const raw = await this.ai.chat(prompt, [])
-    // Strip any markdown code fences the LLM may have added despite instructions
-    return raw
+    const replyHtml = raw
       .replace(/^```html\s*/i, '')
       .replace(/^```\s*/i, '')
       .replace(/\s*```$/i, '')
       .trim()
+
+    // Append quoted conversation thread below the reply (standard email format)
+    const quotedThread = this.buildQuotedThread(email, conversationHistory)
+    return replyHtml + quotedThread
+  }
+
+  /**
+   * Build the quoted conversation thread appended below an email reply.
+   * Renders as:
+   *   <hr>
+   *   On [date], [Name] <[email]> wrote:
+   *   <blockquote>[message body]</blockquote>
+   *   <hr>
+   *   On [date], ... (previous messages, newest first after the divider)
+   */
+  private buildQuotedThread(
+    currentEmail: any,
+    priorMessages: Array<{ from: string; fromName: string; date: string; body: string }>,
+  ): string {
+    // Build quoted entries: current email first, then prior messages (newest first)
+    const currentFrom = currentEmail.from ?? currentEmail.fromEmail ?? ''
+    const entries: Array<{ from: string; fromName: string; date: string; body: string }> = [
+      {
+        from: currentFrom,
+        fromName: currentEmail.fromName ?? currentFrom,
+        date: currentEmail.receivedAt ? new Date(currentEmail.receivedAt).toUTCString() : new Date().toUTCString(),
+        body: currentEmail.body ?? (currentEmail.extractedData as any)?.snippet ?? '',
+      },
+      ...[...priorMessages].reverse(),
+    ]
+
+    if (!entries.some(e => e.body)) return ''
+
+    const quoted = entries
+      .filter(e => e.body)
+      .map(e => {
+        const safeBody = e.body
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/\n/g, '<br>')
+        return `
+<hr style="border:none;border-top:1px solid #ccc;margin:16px 0">
+<p style="color:#666;font-size:13px;margin:0 0 4px">
+  On ${e.date}, <strong>${e.fromName}</strong> &lt;${e.from}&gt; wrote:
+</p>
+<blockquote style="border-left:3px solid #ccc;margin:4px 0 0 8px;padding:4px 8px;color:#444;font-size:13px">
+  ${safeBody}
+</blockquote>`
+      })
+      .join('')
+
+    return quoted
   }
 
   private async lookupCrmContext(_tenantId: string, _senderEmail: string): Promise<string> {
     // CRM lookup via external API — placeholder for future integration.
-    // When a CRM connection is configured, this will query leads/contacts by email.
     return ''
+  }
+
+  // ─────────────────────────────────────────────
+  // EMAIL CONVERSATION TRACKING
+  // ─────────────────────────────────────────────
+
+  /**
+   * Find an existing conversation for this inbound email, or create a new one.
+   *
+   * Matching priority (as per RFC threading rules):
+   * 1. In-Reply-To header matches a Message-ID already in allMessageIds
+   * 2. Any References header value matches a Message-ID in allMessageIds
+   * 3. Same customerEmail + connectedAccountId (last open conversation from that sender)
+   *
+   * We deliberately do NOT match by subject alone — subjects can change.
+   */
+  async findOrCreateConversation(params: {
+    tenantId: string
+    connectedAccountId: string
+    customerEmail: string
+    customerName?: string
+    subject?: string
+    incomingMessageId: string   // the Message-ID of the inbound email
+    inReplyTo?: string          // In-Reply-To header value
+    references?: string[]       // References header values
+  }): Promise<string> {
+    const { tenantId, connectedAccountId, customerEmail, customerName, subject, incomingMessageId, inReplyTo, references } = params
+
+    // Build the candidate set of message IDs to look for in allMessageIds
+    const candidates = [...(references ?? []), ...(inReplyTo ? [inReplyTo] : [])].filter(Boolean)
+
+    // 1. Try to find a conversation that has seen one of these message IDs
+    if (candidates.length) {
+      const existing = await this.prisma.emailConversation.findFirst({
+        where: {
+          connectedAccountId,
+          allMessageIds: { hasSome: candidates },
+        },
+        orderBy: { updatedAt: 'desc' },
+      })
+      if (existing) {
+        // Append the new inbound message ID and update metadata
+        await this.prisma.emailConversation.update({
+          where: { id: existing.id },
+          data: {
+            lastMessageId: incomingMessageId,
+            allMessageIds: { push: incomingMessageId },
+            status: 'open',
+            updatedAt: new Date(),
+          },
+        })
+        return existing.id
+      }
+    }
+
+    // 2. Fall back to last open conversation with this sender on this account
+    const byEmail = await this.prisma.emailConversation.findFirst({
+      where: { connectedAccountId, customerEmail: { equals: customerEmail, mode: 'insensitive' }, status: 'open' },
+      orderBy: { updatedAt: 'desc' },
+    })
+    if (byEmail) {
+      await this.prisma.emailConversation.update({
+        where: { id: byEmail.id },
+        data: {
+          lastMessageId: incomingMessageId,
+          allMessageIds: { push: incomingMessageId },
+          updatedAt: new Date(),
+        },
+      })
+      return byEmail.id
+    }
+
+    // 3. Create a brand-new conversation
+    const conv = await this.prisma.emailConversation.create({
+      data: {
+        tenantId,
+        connectedAccountId,
+        customerEmail,
+        customerName: customerName ?? null,
+        subject: subject ?? null,
+        status: 'open',
+        lastMessageId: incomingMessageId,
+        allMessageIds: [incomingMessageId],
+      },
+    })
+    return conv.id
+  }
+
+  /**
+   * After we send a reply, record our outbound Message-ID in the conversation
+   * so that any subsequent customer reply will match it.
+   */
+  async recordOutboundMessage(conversationId: string, outboundMessageId: string): Promise<void> {
+    try {
+      await this.prisma.emailConversation.update({
+        where: { id: conversationId },
+        data: {
+          lastMessageId: outboundMessageId,
+          lastReplyAt: new Date(),
+          allMessageIds: { push: outboundMessageId },
+          updatedAt: new Date(),
+        },
+      })
+    } catch {
+      // Non-critical — don't crash the scan if this fails
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -1623,22 +1901,63 @@ Instructions:
       ? (email.subject ?? 'Re: (no subject)')
       : `Re: ${email.subject || '(no subject)'}`
 
-    const html = `<div style="font-family:sans-serif;white-space:pre-wrap">${body
+    const safeBody = body
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>')}</div>`
+      .replace(/\n/g, '<br>')
+
+    // Load conversation history so we can append quoted thread
+    let conversationHistory: Array<{ from: string; fromName: string; date: string; body: string }> = []
+    if (email.conversationId) {
+      try {
+        const prior = await this.prisma.processedEmail.findMany({
+          where: { conversationId: email.conversationId },
+          orderBy: { receivedAt: 'asc' },
+          take: 10,
+          select: { fromEmail: true, fromName: true, receivedAt: true, extractedData: true },
+        })
+        conversationHistory = prior.map(p => ({
+          from: p.fromEmail,
+          fromName: p.fromName ?? p.fromEmail,
+          date: p.receivedAt.toUTCString(),
+          body: (p.extractedData as any)?.snippet ?? '',
+        }))
+      } catch {}
+    }
+
+    const quotedThread = this.buildQuotedThread(email, conversationHistory)
+    const html = `<div style="font-family:sans-serif;white-space:pre-wrap">${safeBody}</div>${quotedThread}`
+
+    // Build threading headers — prefer the full conversation chain, fallback to extractedData
+    const inReplyTo = email.threadId ?? undefined
+    let refsChain: string[] = []
+    if (email.conversationId) {
+      const conv = await this.prisma.emailConversation.findUnique({ where: { id: email.conversationId } })
+      refsChain = conv?.allMessageIds ?? []
+    }
+    if (!refsChain.length) {
+      const ed = (email.extractedData as any) ?? {}
+      const priorRefs: string[] = Array.isArray(ed.references) ? ed.references : []
+      refsChain = [...priorRefs, ...(inReplyTo ? [inReplyTo] : [])]
+        .filter((v: string, i: number, a: string[]) => v && a.indexOf(v) === i)
+    }
 
     // Use the connected account's own mailer so the reply comes from the right address
     // and threading headers (In-Reply-To / References) are correctly set
+    // Pre-generate Message-ID — passed to SMTP so the wire ID matches what we store
+    const pregenMsgId = `<manual-${Date.now()}-${Math.random().toString(36).slice(2)}@ai-workforce>`
+    let sentMsgId = pregenMsgId
+
     if (account.provider === 'google') {
-      // Gmail — use the Gmail API to reply in the thread
+      // Gmail — use the Gmail API to reply in the thread; returns the Gmail message ID
       const oauth2 = this.getGoogleOAuthClient()
       const accessToken = decrypt(account.encryptedAccessToken)
       const refreshToken = account.encryptedRefreshToken ? decrypt(account.encryptedRefreshToken) : undefined
       oauth2.setCredentials({ access_token: accessToken, refresh_token: refreshToken, expiry_date: account.expiresAt?.getTime() })
       const gmail = new GmailAdapter(oauth2)
-      await gmail.sendReply(email.fromEmail, subject, html, email.threadId ?? undefined)
+      const gmailMsgId = await gmail.sendReply(email.fromEmail, subject, html, email.threadId ?? undefined)
+      if (gmailMsgId) sentMsgId = gmailMsgId
     } else if (account.provider === 'microsoft') {
       // Office 365 — use OAuth2 SMTP with threading headers
       const accessToken = await this.refreshMicrosoftToken(account)
@@ -1652,13 +1971,15 @@ Instructions:
         fromEmail: account.accountEmail,
         accessToken,
       })
-      await mailer.sendReply({
+      const smtpMsgId = await mailer.sendReply({
         to: email.fromEmail,
         subject,
         html,
-        inReplyTo: email.threadId ?? undefined,
-        references: email.threadId ? [email.threadId] : undefined,
+        inReplyTo,
+        references: refsChain.length ? refsChain : undefined,
+        messageId: pregenMsgId,
       })
+      if (smtpMsgId) sentMsgId = smtpMsgId
     } else {
       // IMAP — use account's SMTP credentials with threading headers
       const meta = account.metadata as any
@@ -1666,13 +1987,21 @@ Instructions:
         throw new BadRequestException('SMTP is not configured for this account — edit the account and add SMTP settings.')
       }
       const mailer = AccountMailer.fromAccountMetadata(meta, account.accountEmail)
-      await mailer.sendReply({
+      const smtpMsgId = await mailer.sendReply({
         to: email.fromEmail,
         subject,
         html,
-        inReplyTo: email.threadId ?? undefined,
-        references: email.threadId ? [email.threadId] : undefined,
+        inReplyTo,
+        references: refsChain.length ? refsChain : undefined,
+        messageId: pregenMsgId,
       })
+      if (smtpMsgId) sentMsgId = smtpMsgId
+    }
+
+    // Store the exact Message-ID that went on the wire — future customer replies
+    // will reference this ID in their In-Reply-To header
+    if (email.conversationId) {
+      await this.recordOutboundMessage(email.conversationId, sentMsgId)
     }
 
     await this.prisma.processedEmail.update({

@@ -193,16 +193,30 @@ export class IntegrationsService {
       client_id:     this.config.get('MICROSOFT_CLIENT_ID')!,
       response_type: 'code',
       redirect_uri:  this.config.get('MICROSOFT_REDIRECT_URI')!,
+      // openid + email + profile give us id_token claims (email, preferred_username, name)
+      // without needing a separate Graph API call
       scope: [
+        'openid',
+        'email',
+        'profile',
+        'offline_access',
         'https://outlook.office.com/IMAP.AccessAsUser.All',
         'https://outlook.office.com/SMTP.Send',
-        'offline_access',
-        'User.Read',
       ].join(' '),
       response_mode: 'query',
       state: this.buildOAuthState(tenantId),
     })
     return `https://login.microsoftonline.com/${this.msftTenant}/oauth2/v2.0/authorize?${params}`
+  }
+
+  /** Decode a JWT payload without verifying signature (claims are trusted from Microsoft). */
+  private decodeJwtPayload(token: string): Record<string, any> {
+    try {
+      const part = token.split('.')[1]
+      return JSON.parse(Buffer.from(part, 'base64url').toString())
+    } catch {
+      return {}
+    }
   }
 
   async handleMicrosoftCallback(code: string, rawState: string): Promise<void> {
@@ -222,12 +236,13 @@ export class IntegrationsService {
     const tokens = await tokenRes.json() as any
     if (tokens.error) throw new BadRequestException(tokens.error_description ?? tokens.error)
 
-    const profileRes = await fetch('https://graph.microsoft.com/v1.0/me', {
-      headers: { Authorization: `Bearer ${tokens.access_token}` },
-    })
-    const profile = await profileRes.json() as any
-    const accountEmail: string = profile.mail || profile.userPrincipalName
-    if (!accountEmail) throw new BadRequestException('Could not get email from Microsoft account')
+    // Extract identity from id_token claims — avoids a separate Graph API call
+    // and works regardless of which resource the access_token is scoped to.
+    const claims = tokens.id_token ? this.decodeJwtPayload(tokens.id_token) : {}
+    const accountEmail: string = claims['email'] || claims['preferred_username'] || claims['upn'] || ''
+    const displayName: string  = claims['name'] || accountEmail
+
+    if (!accountEmail) throw new BadRequestException('Could not get email from Microsoft account — ensure the app has openid+email+profile scopes')
 
     const expiresAt = new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000)
 
@@ -237,7 +252,7 @@ export class IntegrationsService {
         tenantId,
         provider: 'microsoft',
         accountEmail,
-        accountName: profile.displayName ?? accountEmail,
+        accountName: displayName,
         encryptedAccessToken:  encrypt(tokens.access_token),
         encryptedRefreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : '',
         scopes:    tokens.scope?.split(' ') ?? [],
@@ -254,7 +269,7 @@ export class IntegrationsService {
         },
       },
       update: {
-        accountName: profile.displayName ?? accountEmail,
+        accountName: displayName,
         encryptedAccessToken: encrypt(tokens.access_token),
         ...(tokens.refresh_token ? { encryptedRefreshToken: encrypt(tokens.refresh_token) } : {}),
         scopes:    tokens.scope?.split(' ') ?? [],

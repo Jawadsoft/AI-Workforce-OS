@@ -31,7 +31,14 @@ CREATE INDEX IF NOT EXISTS "EmailConversation_connectedAccountId_customerEmail_i
 ALTER TABLE "ProcessedEmail"
   ADD COLUMN IF NOT EXISTS "conversationId" TEXT;
 
-ALTER TABLE "ProcessedEmail"
-  ADD CONSTRAINT "ProcessedEmail_conversationId_fkey"
-  FOREIGN KEY ("conversationId") REFERENCES "EmailConversation"("id")
-  ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'ProcessedEmail_conversationId_fkey'
+  ) THEN
+    ALTER TABLE "ProcessedEmail"
+      ADD CONSTRAINT "ProcessedEmail_conversationId_fkey"
+      FOREIGN KEY ("conversationId") REFERENCES "EmailConversation"("id")
+      ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;

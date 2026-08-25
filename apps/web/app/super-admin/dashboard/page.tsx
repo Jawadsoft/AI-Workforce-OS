@@ -136,6 +136,7 @@ const ALL_FEATURE_FLAGS = [
   { key: 'calendar_integration', label: 'Calendar Integration',     desc: 'Google/Outlook real calendar booking' },
   { key: 'sms_tools',            label: 'SMS Tool Access',          desc: 'Full tool suite on SMS/WhatsApp channels' },
   { key: 'agent_analytics',      label: 'Agent Analytics Queries',  desc: 'Agents can answer analytics questions' },
+  { key: 'conference',           label: 'Conference / War Room',    desc: 'Multi-agent live conference sessions' },
 ]
 
 // ── Glassmorphism style helpers ───────────────────────────────────

@@ -5,6 +5,8 @@ import type { Response } from 'express'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { CurrentTenant, CurrentUser } from '../../common/decorators/tenant.decorator'
 import { ConferenceService } from './conference.service'
+import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
+import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
 
 class CreateConferenceDto {
   @IsOptional() @IsArray() @IsString({ each: true }) participantAgentIds?: string[]
@@ -38,7 +40,10 @@ class BargeInDto {
 @UseGuards(JwtAuthGuard)
 @Controller('conference')
 export class ConferenceController {
-  constructor(private readonly service: ConferenceService) {}
+  constructor(
+    private readonly service: ConferenceService,
+    private readonly featureFlags: FeatureFlagsService,
+  ) {}
 
   @Get('agents')
   @ApiOperation({ summary: 'List ACTIVE agents available for a conference' })
@@ -57,11 +62,12 @@ export class ConferenceController {
 
   @Post('sessions')
   @ApiOperation({ summary: 'Create a conference session (default meetingType=MANAGEMENT)' })
-  create(
+  async create(
     @CurrentTenant() tenantId: string,
     @CurrentUser() user: any,
     @Body() dto: CreateConferenceDto,
   ) {
+    await this.featureFlags.requireFeature(tenantId, FEATURES.CONFERENCE)
     return this.service.createSession(tenantId, user.id, dto)
   }
 

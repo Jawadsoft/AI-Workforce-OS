@@ -19,6 +19,7 @@ export const FEATURES = {
   CALENDAR_INTEGRATION: 'calendar_integration',
   SMS_TOOLS:            'sms_tools',
   AGENT_ANALYTICS:      'agent_analytics',
+  CONFERENCE:           'conference',
 } as const
 
 export type FeatureKey = typeof FEATURES[keyof typeof FEATURES]

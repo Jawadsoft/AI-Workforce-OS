@@ -5,6 +5,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { cn, resolveAvatarUrl } from '@/lib/utils'
 import { useSpeech } from '@/hooks/use-speech'
+import { useFeatures, FEATURES } from '@/hooks/use-features'
+import { Lock } from 'lucide-react'
 import {
   Loader2,
   Mic,
@@ -87,6 +89,7 @@ function clientTurnId() {
 }
 
 export function ConferencePage() {
+  const { isEnabled, isLoading: featuresLoading } = useFeatures()
   const qc = useQueryClient()
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -439,6 +442,20 @@ export function ConferencePage() {
     if (session?.participants?.length) return session.participants
     return agents.filter((a) => selectedIds.includes(a.id))
   }, [session, agents, selectedIds])
+
+  if (!featuresLoading && !isEnabled(FEATURES.CONFERENCE)) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="text-center space-y-4 max-w-sm">
+          <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto">
+            <Lock className="w-8 h-8 text-primary" />
+          </div>
+          <h2 className="text-xl font-bold">Conference / War Room</h2>
+          <p className="text-muted-foreground text-sm">This feature is not enabled for your account. Contact your administrator to enable it.</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">

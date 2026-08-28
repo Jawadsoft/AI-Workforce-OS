@@ -1,0 +1,862 @@
+{
+  "exportedAt": "2026-08-28T15:33:03.622Z",
+  "users": [
+    {
+      "id": "cmqms86gr0002jts36hgym81d",
+      "email": "superadmin@platform.com",
+      "name": "Platform Admin",
+      "role": "SUPER_ADMIN",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmqms864c0000jts3b9tokup2",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmtcx8h3y003rwcfvsekjbvna",
+      "email": "royyam@xtremecleaner.co.uk",
+      "name": "Royyam",
+      "role": "USER",
+      "designation": "Control Room Operative",
+      "department": "Operations",
+      "phone": "",
+      "managerId": "cmtcx29jy0025wcfvyh6adz0l",
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "_managerEmail": "waleed@xtremecleaner.co.uk"
+    },
+    {
+      "id": "cmqp0243v0002gqfmrzc2j0i2",
+      "email": "info@xtremecleaner.co.uk",
+      "name": "Syed Jawad",
+      "role": "TENANT_OWNER",
+      "designation": "TENANT_OWNER",
+      "department": null,
+      "phone": null,
+      "managerId": "cmtcxam38003vwcfv7z6czhp6",
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "_managerEmail": "jawad@xtremecleaner.co.uk"
+    },
+    {
+      "id": "cmtcxam38003vwcfv7z6czhp6",
+      "email": "jawad@xtremecleaner.co.uk",
+      "name": "Syed Jawad Ikram",
+      "role": "MANAGER",
+      "designation": "CEO",
+      "department": "",
+      "phone": "+447775232926",
+      "managerId": null,
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmtcx605u0027wcfvo2azcmox",
+      "email": "zaki@xtremecleaner.co.uk",
+      "name": "Zaki",
+      "role": "USER",
+      "designation": "Control room Operative",
+      "department": "Operations",
+      "phone": "",
+      "managerId": "cmtcx29jy0025wcfvyh6adz0l",
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "_managerEmail": "waleed@xtremecleaner.co.uk"
+    },
+    {
+      "id": "cmqmsi0i90002828ng7dcm918",
+      "email": "curtis@stormbuddi.co",
+      "name": "Curtis",
+      "role": "TENANT_OWNER",
+      "designation": null,
+      "department": null,
+      "phone": "+44 7775 232926",
+      "managerId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmqv61it20009d4qiawktf5hh",
+      "email": "sa@platform.com",
+      "name": "Super Admin",
+      "role": "SUPER_ADMIN",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmqms864c0000jts3b9tokup2",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmsd2r34w0001110x5d4ko0lj",
+      "email": "accounts@xtremecleaner.co.uk",
+      "name": "test jawad",
+      "role": "MANAGER",
+      "designation": null,
+      "department": null,
+      "phone": "+447775232926",
+      "managerId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmsekr1xu000143opfpxzp870",
+      "email": "info@stormbuddy.co",
+      "name": "Curtis Lacy",
+      "role": "SCOPED_ADMIN",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmqms864c0000jts3b9tokup2",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmt78gffz00029tn0w6acfo49",
+      "email": "qa_runner_1787575763861@test.com",
+      "name": "QA User A",
+      "role": "TENANT_OWNER",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmt78geyu00009tn0w4reddqo",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmt78leq8002p9tn0qk64m7eq",
+      "email": "qa_new_1787575996262@test.com",
+      "name": "QA New User",
+      "role": "TENANT_OWNER",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmt78lebu002n9tn0p3u1ieyx",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmt78m00p002s9tn09pabl8sv",
+      "email": "qa_new_1787576023782@test.com",
+      "name": "QA New User",
+      "role": "TENANT_OWNER",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmt78lzki002q9tn0rigy1nhy",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmt78qejt00499tn03u4vbgss",
+      "email": "qa_new_1787576228981@test.com",
+      "name": "QA New User",
+      "role": "TENANT_OWNER",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmt78qdy400479tn0s0m32aed",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmt78x08m0002y6kmcys3we8r",
+      "email": "qa_new_1787576536765@test.com",
+      "name": "QA New User",
+      "role": "TENANT_OWNER",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmt78wzrl0000y6kmx65i370t",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmt78x0sw0005y6kmh7rqe68s",
+      "email": "qa_ind_1787576536765@test.com",
+      "name": "QA Industry User",
+      "role": "TENANT_OWNER",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmt78x09l0003y6kma5e5feqt",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmt7atib50002wjqm5jhcek82",
+      "email": "xss.1787579733102@qa.test",
+      "name": "<script>alert(1)</script>",
+      "role": "TENANT_OWNER",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmt7athmr0000wjqmv9oej327",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmt7b3fqr0064wjqmzohabco3",
+      "email": "xss.1787580196085@qa.test",
+      "name": "<script>alert(1)</script>",
+      "role": "TENANT_OWNER",
+      "designation": null,
+      "department": null,
+      "phone": null,
+      "managerId": null,
+      "tenantId": "cmt7b3ev00062wjqmj692iuld",
+      "_managerEmail": null
+    },
+    {
+      "id": "cmtcx29jy0025wcfvyh6adz0l",
+      "email": "waleed@xtremecleaner.co.uk",
+      "name": "Waleed Nizam",
+      "role": "USER",
+      "designation": "Control Room Manager",
+      "department": "Operation",
+      "phone": "+447775232926",
+      "managerId": "cmtcxam38003vwcfv7z6czhp6",
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "_managerEmail": "jawad@xtremecleaner.co.uk"
+    },
+    {
+      "id": "cmtcxo54b001l104zjx5fblqw",
+      "email": "brian2@xtremecleaner.co.uk",
+      "name": "Brian Smith",
+      "role": "USER",
+      "designation": "Key Account Manager",
+      "department": "Operation",
+      "phone": null,
+      "managerId": "cmtcxam38003vwcfv7z6czhp6",
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "_managerEmail": "jawad@xtremecleaner.co.uk"
+    },
+    {
+      "id": "cmtcz1rpa001hijlnyh2ka37h",
+      "email": "ap@xtremecleaner.co.uk",
+      "name": "Hamza Asim",
+      "role": "USER",
+      "designation": "Accounts Executive",
+      "department": "Accounts",
+      "phone": null,
+      "managerId": "cmtcxam38003vwcfv7z6czhp6",
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "_managerEmail": "jawad@xtremecleaner.co.uk"
+    },
+    {
+      "id": "cmtcx9c11003twcfvxuvvxkpy",
+      "email": "saqib@xtremecleaner.co.uk",
+      "name": "Saqib Raza",
+      "role": "USER",
+      "designation": "Leads Manager",
+      "department": "Business Development",
+      "phone": "",
+      "managerId": "cmtcx6vmx003pwcfvlg53g366",
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "_managerEmail": "razi@xtremecleaner.co.uk"
+    },
+    {
+      "id": "cmtcx6vmx003pwcfvlg53g366",
+      "email": "razi@xtremecleaner.co.uk",
+      "name": "Razi Hassan",
+      "role": "USER",
+      "designation": "Business Development Manager",
+      "department": "Sales and Marketing",
+      "phone": "",
+      "managerId": "cmtcxo54b001l104zjx5fblqw",
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "_managerEmail": "brian2@xtremecleaner.co.uk"
+    }
+  ],
+  "agents": [
+    {
+      "id": "cmqp2sc1m00011hzdlkdprpkj",
+      "name": "Alex — Operations Controller",
+      "role": "Operations Controller",
+      "supervisorUserId": "cmtcx29jy0025wcfvyh6adz0l",
+      "tenantId": "cmqp023tf0000gqfmolqztufz"
+    },
+    {
+      "id": "cmqp2sc2600031hzdu4vfm5e6",
+      "name": "Will — Sales Executive",
+      "role": "Sales Executive",
+      "supervisorUserId": "cmtcx6vmx003pwcfvlg53g366",
+      "tenantId": "cmqp023tf0000gqfmolqztufz"
+    },
+    {
+      "id": "cmqp3y3zj000113gf7421jq1c",
+      "name": "Jake — Handyman Services Coordinator",
+      "role": "Handyman Services Coordinator",
+      "supervisorUserId": "cmtcx29jy0025wcfvyh6adz0l",
+      "tenantId": "cmqp023tf0000gqfmolqztufz"
+    },
+    {
+      "id": "cmqp2sc2f00091hzdvm1zn41z",
+      "name": "Diana — Business Analyst",
+      "role": "Business Analyst",
+      "supervisorUserId": "cmtcx6vmx003pwcfvlg53g366",
+      "tenantId": "cmqp023tf0000gqfmolqztufz"
+    },
+    {
+      "id": "cmqp2sc2d00071hzdk9fy5yes",
+      "name": "Rachel — Finance Manager",
+      "role": "Finance Manager",
+      "supervisorUserId": "cmtcz1rpa001hijlnyh2ka37h",
+      "tenantId": "cmqp023tf0000gqfmolqztufz"
+    },
+    {
+      "id": "cmqp2sc2j000b1hzd5imf9t80",
+      "name": "Marcus — CEO Agent",
+      "role": "CEO Agent",
+      "supervisorUserId": "cmtcxam38003vwcfv7z6czhp6",
+      "tenantId": "cmqp023tf0000gqfmolqztufz"
+    },
+    {
+      "id": "cmqp2sc2900051hzdueg8hb37",
+      "name": "Sophie — HR & Recruitment Specialist",
+      "role": "HR & Recruitment Specialist",
+      "supervisorUserId": "cmtcx29jy0025wcfvyh6adz0l",
+      "tenantId": "cmqp023tf0000gqfmolqztufz"
+    },
+    {
+      "id": "cmt78x53e0009y6kmn8007iiy",
+      "name": "Nora — Customer Intake Specialist",
+      "role": "Customer Intake Specialist",
+      "supervisorUserId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97"
+    },
+    {
+      "id": "cmt78x53e000by6kmn9kauq0d",
+      "name": "Will — Sales Assistant",
+      "role": "Sales Assistant",
+      "supervisorUserId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97"
+    },
+    {
+      "id": "cmt78x53f000hy6km500dhc6r",
+      "name": "Jared — Field Inspector",
+      "role": "Field Inspector",
+      "supervisorUserId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97"
+    },
+    {
+      "id": "cmt78x53f000fy6km8brjlkm4",
+      "name": "Cris — Estimator",
+      "role": "Estimator",
+      "supervisorUserId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97"
+    },
+    {
+      "id": "cmt78x53f000gy6kmrx740xfg",
+      "name": "Kevin — Insurance Specialist",
+      "role": "Insurance Specialist",
+      "supervisorUserId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97"
+    },
+    {
+      "id": "cmt78x56e000jy6km9qpihrxg",
+      "name": "Arturo — Storm Analyst",
+      "role": "Storm Analyst",
+      "supervisorUserId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97"
+    },
+    {
+      "id": "cmt78x56k000ly6kmar0ybhvr",
+      "name": "Charlie — Lead Qualification Specialist",
+      "role": "Lead Qualification Specialist",
+      "supervisorUserId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97"
+    },
+    {
+      "id": "cmt78x56x000ny6kmfaq8xloi",
+      "name": "Hanna — Executive Assistant",
+      "role": "Executive Assistant",
+      "supervisorUserId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97"
+    },
+    {
+      "id": "cmt78x5a9000py6km5h5p6hob",
+      "name": "QA Agent (Updated)",
+      "role": "Sales Assistant",
+      "supervisorUserId": null,
+      "tenantId": "cmqmsi04t0000828n6qa1gw97"
+    }
+  ],
+  "hierarchies": [
+    {
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "tenantName": "Xtreme professional Cleaning Ltd",
+      "layout": {
+        "edges": [
+          {
+            "id": "e-cmtcxam38003vwcfv7z6czhp6-cmtcx29jy0025wcfvyh6adz0l",
+            "type": "reports-to",
+            "source": "cmtcxam38003vwcfv7z6czhp6",
+            "target": "cmtcx29jy0025wcfvyh6adz0l",
+            "animated": false,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcx29jy0025wcfvyh6adz0l-cmtcx605u0027wcfvo2azcmox",
+            "type": "reports-to",
+            "source": "cmtcx29jy0025wcfvyh6adz0l",
+            "target": "cmtcx605u0027wcfvo2azcmox",
+            "animated": false,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcx29jy0025wcfvyh6adz0l-cmtcx8h3y003rwcfvsekjbvna",
+            "type": "reports-to",
+            "source": "cmtcx29jy0025wcfvyh6adz0l",
+            "target": "cmtcx8h3y003rwcfvsekjbvna",
+            "animated": false,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcxam38003vwcfv7z6czhp6-cmtcz1rpa001hijlnyh2ka37h",
+            "type": "reports-to",
+            "source": "cmtcxam38003vwcfv7z6czhp6",
+            "target": "cmtcz1rpa001hijlnyh2ka37h",
+            "animated": false,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcx29jy0025wcfvyh6adz0l-cmqp2sc1m00011hzdlkdprpkj",
+            "type": "supervises",
+            "source": "cmtcx29jy0025wcfvyh6adz0l",
+            "target": "cmqp2sc1m00011hzdlkdprpkj",
+            "animated": true,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcz1rpa001hijlnyh2ka37h-cmqp2sc2d00071hzdk9fy5yes",
+            "type": "supervises",
+            "source": "cmtcz1rpa001hijlnyh2ka37h",
+            "target": "cmqp2sc2d00071hzdk9fy5yes",
+            "animated": true,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcx29jy0025wcfvyh6adz0l-cmqp3y3zj000113gf7421jq1c",
+            "type": "supervises",
+            "source": "cmtcx29jy0025wcfvyh6adz0l",
+            "target": "cmqp3y3zj000113gf7421jq1c",
+            "animated": true,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcxam38003vwcfv7z6czhp6-cmqp0243v0002gqfmrzc2j0i2",
+            "type": "reports-to",
+            "source": "cmtcxam38003vwcfv7z6czhp6",
+            "target": "cmqp0243v0002gqfmrzc2j0i2",
+            "animated": false,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcxam38003vwcfv7z6czhp6-cmqp2sc2j000b1hzd5imf9t80",
+            "type": "supervises",
+            "source": "cmtcxam38003vwcfv7z6czhp6",
+            "target": "cmqp2sc2j000b1hzd5imf9t80",
+            "animated": true,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcxam38003vwcfv7z6czhp6-cmtcxo54b001l104zjx5fblqw",
+            "type": "reports-to",
+            "source": "cmtcxam38003vwcfv7z6czhp6",
+            "target": "cmtcxo54b001l104zjx5fblqw",
+            "animated": false,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcxo54b001l104zjx5fblqw-cmtcx6vmx003pwcfvlg53g366",
+            "type": "reports-to",
+            "source": "cmtcxo54b001l104zjx5fblqw",
+            "target": "cmtcx6vmx003pwcfvlg53g366",
+            "animated": false,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcx6vmx003pwcfvlg53g366-cmtcx9c11003twcfvxuvvxkpy",
+            "type": "reports-to",
+            "source": "cmtcx6vmx003pwcfvlg53g366",
+            "target": "cmtcx9c11003twcfvxuvvxkpy",
+            "animated": false,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcx6vmx003pwcfvlg53g366-cmqp2sc2600031hzdu4vfm5e6",
+            "type": "supervises",
+            "source": "cmtcx6vmx003pwcfvlg53g366",
+            "target": "cmqp2sc2600031hzdu4vfm5e6",
+            "animated": true,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcx6vmx003pwcfvlg53g366-cmqp2sc2f00091hzdvm1zn41z",
+            "type": "supervises",
+            "source": "cmtcx6vmx003pwcfvlg53g366",
+            "target": "cmqp2sc2f00091hzdvm1zn41z",
+            "animated": true,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          },
+          {
+            "id": "e-cmtcx29jy0025wcfvyh6adz0l-cmqp2sc2900051hzdueg8hb37",
+            "type": "supervises",
+            "source": "cmtcx29jy0025wcfvyh6adz0l",
+            "target": "cmqp2sc2900051hzdueg8hb37",
+            "animated": true,
+            "markerEnd": {
+              "type": "arrowclosed",
+              "width": 14,
+              "height": 14
+            }
+          }
+        ],
+        "nodes": [
+          {
+            "id": "cmtcxam38003vwcfv7z6czhp6",
+            "data": {
+              "role": "MANAGER",
+              "type": "staff",
+              "label": "Syed Jawad Ikram",
+              "department": "",
+              "designation": "CEO"
+            },
+            "type": "staff",
+            "position": {
+              "x": 780,
+              "y": 0
+            }
+          },
+          {
+            "id": "cmtcx605u0027wcfvo2azcmox",
+            "data": {
+              "role": "USER",
+              "type": "staff",
+              "label": "Zaki",
+              "managerId": "cmtcx29jy0025wcfvyh6adz0l",
+              "department": "Operations",
+              "designation": "Control room Operative"
+            },
+            "type": "staff",
+            "position": {
+              "x": 2210,
+              "y": 360
+            }
+          },
+          {
+            "id": "cmtcx8h3y003rwcfvsekjbvna",
+            "data": {
+              "role": "USER",
+              "type": "staff",
+              "label": "Royyam",
+              "managerId": "cmtcx29jy0025wcfvyh6adz0l",
+              "department": "Operations",
+              "designation": "Control Room Operative"
+            },
+            "type": "staff",
+            "position": {
+              "x": 1950,
+              "y": 360
+            }
+          },
+          {
+            "id": "cmtcx9c11003twcfvxuvvxkpy",
+            "data": {
+              "role": "USER",
+              "type": "staff",
+              "label": "Saqib Raza",
+              "managerId": "cmtcx6vmx003pwcfvlg53g366",
+              "department": "Business Development",
+              "designation": "Leads Manager"
+            },
+            "type": "staff",
+            "position": {
+              "x": 0,
+              "y": 540
+            }
+          },
+          {
+            "id": "cmtcx6vmx003pwcfvlg53g366",
+            "data": {
+              "role": "USER",
+              "type": "staff",
+              "label": "Razi Hassan",
+              "managerId": "cmtcxo54b001l104zjx5fblqw",
+              "department": "Sales and Marketing",
+              "designation": "Business Development Manager"
+            },
+            "type": "staff",
+            "position": {
+              "x": 130,
+              "y": 360
+            }
+          },
+          {
+            "id": "cmtcxo54b001l104zjx5fblqw",
+            "data": {
+              "role": "USER",
+              "type": "staff",
+              "label": "Brian Smith",
+              "managerId": "cmtcxam38003vwcfv7z6czhp6",
+              "department": "Operation",
+              "designation": "Key Account Manager"
+            },
+            "type": "staff",
+            "position": {
+              "x": 130,
+              "y": 180
+            }
+          },
+          {
+            "id": "cmqp0243v0002gqfmrzc2j0i2",
+            "data": {
+              "role": "TENANT_OWNER",
+              "type": "staff",
+              "label": "Syed Jawad",
+              "managerId": "cmtcxam38003vwcfv7z6czhp6",
+              "designation": "TENANT_OWNER"
+            },
+            "type": "staff",
+            "position": {
+              "x": 650,
+              "y": 180
+            }
+          },
+          {
+            "id": "cmtcz1rpa001hijlnyh2ka37h",
+            "data": {
+              "role": "USER",
+              "type": "staff",
+              "label": "Hamza Asim",
+              "managerId": "cmtcxam38003vwcfv7z6czhp6",
+              "department": "Accounts",
+              "designation": "Accounts Executive"
+            },
+            "type": "staff",
+            "position": {
+              "x": 910,
+              "y": 180
+            }
+          },
+          {
+            "id": "cmtcx29jy0025wcfvyh6adz0l",
+            "data": {
+              "role": "USER",
+              "type": "staff",
+              "label": "Waleed Nizam",
+              "managerId": "cmtcxam38003vwcfv7z6czhp6",
+              "department": "Operation",
+              "designation": "Control Room Manager"
+            },
+            "type": "staff",
+            "position": {
+              "x": 1820,
+              "y": 180
+            }
+          },
+          {
+            "id": "cmqp2sc2600031hzdu4vfm5e6",
+            "data": {
+              "role": "Sales Executive",
+              "type": "agent",
+              "label": "Will — Sales Executive",
+              "avatar": "https://res.cloudinary.com/dkvz1pvre/image/upload/v1782473965/ai-workforce/avatars/will.jpg",
+              "designation": "Sales Executive",
+              "supervisorUserId": "cmtcx6vmx003pwcfvlg53g366"
+            },
+            "type": "agent",
+            "position": {
+              "x": 260,
+              "y": 540
+            }
+          },
+          {
+            "id": "cmqp2sc1m00011hzdlkdprpkj",
+            "data": {
+              "role": "Operations Controller",
+              "type": "agent",
+              "label": "Alex — Operations Controller",
+              "designation": "Operations Controller",
+              "supervisorUserId": "cmtcx29jy0025wcfvyh6adz0l"
+            },
+            "type": "agent",
+            "position": {
+              "x": 1690,
+              "y": 360
+            }
+          },
+          {
+            "id": "cmqp2sc2900051hzdueg8hb37",
+            "data": {
+              "role": "HR & Recruitment Specialist",
+              "type": "agent",
+              "label": "Sophie — HR & Recruitment Specialist",
+              "designation": "HR & Recruitment Specialist",
+              "supervisorUserId": "cmtcx29jy0025wcfvyh6adz0l"
+            },
+            "type": "agent",
+            "position": {
+              "x": 1170,
+              "y": 360
+            }
+          },
+          {
+            "id": "cmqp2sc2d00071hzdk9fy5yes",
+            "data": {
+              "role": "Finance Manager",
+              "type": "agent",
+              "label": "Rachel — Finance Manager",
+              "designation": "Finance Manager",
+              "supervisorUserId": "cmtcz1rpa001hijlnyh2ka37h"
+            },
+            "type": "agent",
+            "position": {
+              "x": 910,
+              "y": 360
+            }
+          },
+          {
+            "id": "cmqp3y3zj000113gf7421jq1c",
+            "data": {
+              "role": "Handyman Services Coordinator",
+              "type": "agent",
+              "label": "Jake — Handyman Services Coordinator",
+              "designation": "Handyman Services Coordinator",
+              "supervisorUserId": "cmtcx29jy0025wcfvyh6adz0l"
+            },
+            "type": "agent",
+            "position": {
+              "x": 1430,
+              "y": 360
+            }
+          },
+          {
+            "id": "cmqp2sc2f00091hzdvm1zn41z",
+            "data": {
+              "role": "Business Analyst",
+              "type": "agent",
+              "label": "Diana — Business Analyst",
+              "designation": "Business Analyst",
+              "supervisorUserId": "cmtcx6vmx003pwcfvlg53g366"
+            },
+            "type": "agent",
+            "position": {
+              "x": 520,
+              "y": 540
+            }
+          },
+          {
+            "id": "cmqp2sc2j000b1hzd5imf9t80",
+            "data": {
+              "role": "CEO Agent",
+              "type": "agent",
+              "label": "Marcus — CEO Agent",
+              "designation": "CEO Agent",
+              "supervisorUserId": "cmtcxam38003vwcfv7z6czhp6"
+            },
+            "type": "agent",
+            "position": {
+              "x": 390,
+              "y": 180
+            }
+          }
+        ]
+      },
+      "updatedAt": "2026-08-28T13:52:07.328Z"
+    }
+  ],
+  "escalationRules": [
+    {
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "agentId": "cmqp2sc2900051hzdueg8hb37",
+      "agentName": "Sophie — HR & Recruitment Specialist",
+      "agentRole": "HR & Recruitment Specialist",
+      "trigger": "out_of_hours",
+      "triggerLabel": "Out of hours query",
+      "action": "notify",
+      "targetUserEmail": "jawad@xtremecleaner.co.uk",
+      "targetAgentId": null,
+      "urgency": "URGENT"
+    },
+    {
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "agentId": "cmqp3y3zj000113gf7421jq1c",
+      "agentName": "Jake — Handyman Services Coordinator",
+      "agentRole": "Handyman Services Coordinator",
+      "trigger": "complaint_received",
+      "triggerLabel": "Customer complaint received",
+      "action": "notify",
+      "targetUserEmail": "waleed@xtremecleaner.co.uk",
+      "targetAgentId": null,
+      "urgency": "URGENT"
+    },
+    {
+      "tenantId": "cmqp023tf0000gqfmolqztufz",
+      "agentId": "cmqp2sc2j000b1hzd5imf9t80",
+      "agentName": "Marcus — CEO Agent",
+      "agentRole": "CEO Agent",
+      "trigger": "strategic_decision_needed",
+      "triggerLabel": "Strategic decision needed",
+      "action": "notify",
+      "targetUserEmail": "jawad@xtremecleaner.co.uk",
+      "targetAgentId": null,
+      "urgency": "URGENT"
+    }
+  ]
+}

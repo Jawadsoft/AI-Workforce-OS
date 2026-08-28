@@ -21,7 +21,10 @@ class NodeUpdateDto {
 }
 
 class EscalationRuleDto {
+  @IsOptional() @IsString() id?: string
   @IsString() agentId: string
+  @IsOptional() @IsString() agentName?: string
+  @IsOptional() @IsString() agentRole?: string
   @IsString() trigger: string
   @IsString() triggerLabel: string
   @IsOptional() @IsString() action?: string

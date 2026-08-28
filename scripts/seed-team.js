@@ -63,7 +63,7 @@ async function main() {
     const exportedTenant = data.hierarchies.find(h => h.tenantId === localTenantId)
     if (exportedTenant?.tenantName) {
       const byName = await p.tenant.findFirst({
-        where: { name: exportedTenant.tenantName },
+        where: { name: { equals: exportedTenant.tenantName, mode: 'insensitive' } },
         select: { id: true, name: true },
       })
       if (byName) { localTenantToServer.set(localTenantId, byName); continue }

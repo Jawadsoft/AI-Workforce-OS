@@ -31,7 +31,7 @@ export function HierarchySidebar({
     if (!node) return
     setDesignation((node.data.designation as string) ?? '')
     setDepartment((node.data.department as string) ?? '')
-    setPhone('')
+    setPhone((node.data.phone as string) ?? '')
     if (node.data.type === 'agent') {
       setAgentRules(escalationRules.filter(r => r.agentId === node.id))
     }
@@ -62,7 +62,7 @@ export function HierarchySidebar({
   }
 
   const save = () => {
-    onUpdateNode(node.id, { designation, department })
+    onUpdateNode(node.id, { designation, department, ...(phone ? { phone } : {}) })
     if (isAgent) {
       const other = escalationRules.filter(r => r.agentId !== node.id)
       onUpdateEscalations([...other, ...agentRules])
@@ -147,13 +147,35 @@ export function HierarchySidebar({
                   </button>
                 </div>
                 <div>
-                  <label className="text-[10px] font-medium">Trigger label</label>
-                  <input
+                  <label className="text-[10px] font-medium">Trigger</label>
+                  <select
                     value={rule.triggerLabel}
-                    onChange={e => updateRule(idx, { triggerLabel: e.target.value, trigger: e.target.value.toLowerCase().replace(/\s+/g, '_') })}
-                    placeholder="e.g. Quote over $5,000"
-                    className="w-full mt-0.5 text-xs rounded border border-border bg-background px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring"
-                  />
+                    onChange={e => {
+                      const val = e.target.value
+                      updateRule(idx, { triggerLabel: val, trigger: val.toLowerCase().replace(/[^a-z0-9]+/g, '_') })
+                    }}
+                    className="w-full mt-0.5 text-xs rounded border border-border bg-background px-2 py-1.5 focus:outline-none"
+                  >
+                    <option value="">— choose trigger —</option>
+                    <option value="Property damage reported">Property damage reported</option>
+                    <option value="Urgent repair request">Urgent repair request</option>
+                    <option value="Customer complaint">Customer complaint</option>
+                    <option value="Quote over £500">Quote over £500</option>
+                    <option value="Safety hazard reported">Safety hazard reported</option>
+                    <option value="Customer requests manager">Customer requests manager</option>
+                    <option value="Scheduling conflict">Scheduling conflict</option>
+                    <option value="Legal or billing dispute">Legal or billing dispute</option>
+                    <option value="Staff performance issue">Staff performance issue</option>
+                    <option value="New lead high value">New lead high value</option>
+                    <option value="Custom…">Custom…</option>
+                  </select>
+                  {rule.triggerLabel === 'Custom…' && (
+                    <input
+                      placeholder="Type custom trigger…"
+                      className="w-full mt-1 text-xs rounded border border-border bg-background px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring"
+                      onChange={e => updateRule(idx, { triggerLabel: e.target.value, trigger: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '_') })}
+                    />
+                  )}
                 </div>
                 <div>
                   <label className="text-[10px] font-medium">Contact staff member</label>

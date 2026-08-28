@@ -9,6 +9,7 @@ export interface HierarchyNodeData extends Record<string, unknown> {
   label: string
   designation?: string
   department?: string
+  phone?: string
   avatar?: string
   role?: string
   managerId?: string

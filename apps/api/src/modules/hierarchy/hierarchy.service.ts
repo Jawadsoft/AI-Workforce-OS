@@ -292,26 +292,31 @@ export class HierarchyService {
       }
     }
 
-    lines.push('\nWHEN TO USE contact_human (MANDATORY — do NOT skip these):')
-    lines.push('- Property damage, structural issues, flooding, fire, or any safety hazard → ALWAYS contact human immediately.')
-    lines.push('- Urgent repair requests that require a physical site visit → contact the relevant supervisor.')
-    lines.push('- Customer complaints about service quality or staff conduct → escalate to manager.')
-    lines.push('- Any financial decision over £500 / $500 → requires human approval before acting.')
-    lines.push('- Legal threats, complaints about billing, or refund requests → escalate to manager.')
-    lines.push('- A customer explicitly asks to speak to a human or manager → use contact_human at once.')
-    lines.push('- Scheduling conflicts, resource shortages, or issues you cannot resolve yourself → contact supervisor.')
-    lines.push('- If in doubt about whether to escalate — escalate. Never act alone on high-stakes issues.')
+    lines.push('\n⚠️  HARD ESCALATION RULES — YOU MUST CALL contact_human BEFORE ANY OTHER RESPONSE:')
+    lines.push('These are NON-NEGOTIABLE. Do NOT schedule, promise, or advise anything before calling contact_human first.')
+    lines.push('')
+    lines.push('ESCALATE IMMEDIATELY (call contact_human as your FIRST tool call) when:')
+    lines.push('  1. Any mention of DAMAGE — flooring damage, wall damage, broken items, property damage, scratched surfaces → call contact_human NOW.')
+    lines.push('  2. Any SAFETY risk — flooding, chemical spill, fire hazard, injury, slip/trip risk → call contact_human NOW.')
+    lines.push('  3. Customer explicitly requests a MANAGER or HUMAN → call contact_human NOW, do not deflect.')
+    lines.push('  4. Any FINANCIAL decision over £200 / $200 → get human approval via contact_human first.')
+    lines.push('  5. Legal threats, refund demands, or billing disputes → call contact_human NOW.')
+    lines.push('  6. URGENT repairs requiring physical site visit → call contact_human NOW.')
+    lines.push('')
+    lines.push('WRONG ❌: "I will arrange an inspection for you…" (you acted without escalating first)')
+    lines.push('CORRECT ✅: Call contact_human → then tell the customer "I have notified [name] and they will follow up."')
+    lines.push('')
+    lines.push('If in ANY doubt — call contact_human. Never act alone on high-stakes issues.')
 
     if (!agent.escalationRules.length) {
-      lines.push('\n(No specific escalation rules configured — use your judgement based on the WHEN TO USE rules above and the staff list.)')
+      lines.push('\n(No specific escalation rules configured — apply the hard rules above for ALL escalation scenarios.)')
     }
 
-    lines.push('\nCRITICAL RULES for contact_human:')
-    lines.push('- You MUST pass the exact userId string shown above (e.g. userId:"cmtcx29jy0025wcfvyh6adz0l").')
-    lines.push('- Do NOT guess, shorten, or modify the userId — copy it exactly.')
-    lines.push('- Always respect the reporting hierarchy: escalate to your direct supervisor first.')
-    lines.push('- You MUST call contact_human BEFORE telling the customer you are handling it yourself.')
-    lines.push('- Never fabricate a userId. If you cannot find a matching userId, say so and ask the user.')
+    lines.push('\nCRITICAL RULES for contact_human tool call:')
+    lines.push('- Pass the exact userId string from the staff list above (e.g. userId:"cmtcx29jy0025wcfvyh6adz0l").')
+    lines.push('- Do NOT guess, shorten, or modify the userId — copy it exactly character for character.')
+    lines.push('- Escalate to your direct supervisor first unless a specific rule says otherwise.')
+    lines.push('- Never fabricate a userId. If unsure, pick the closest matching staff member by role.')
 
     return lines.join('\n')
   }

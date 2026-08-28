@@ -1296,6 +1296,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     ])
 
     // ── Build enriched system prompt ──────────────────────────────
+    this.logger.log(`[HierarchyContext] agent=${conv.agent.name} chars=${hierarchyContext.length} hasRules=${hierarchyContext.includes('Escalation rules')}`)
     let enrichedSystemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext + memoryContext, false, ticketsBlock, teamRoster, conv.channel ?? '', hierarchyContext)
     if (journey?.addendum) enrichedSystemPrompt += journey.addendum
     if (conv.channel === 'WHATSAPP' || conv.channel === 'SMS') {
@@ -3231,6 +3232,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       `registry=${registryDocs.length} injectedChars=${scope.scopedDocuments.reduce((n, d) => n + d.text.length, 0)}`,
     )
 
+    this.logger.log(`[HierarchyContext] stream agent=${conv.agent.name} chars=${streamHierarchyContext.length} hasRules=${streamHierarchyContext.includes('Escalation rules')}`)
     let systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag + attachmentContextBlock, false, streamTicketsBlock, streamTeamRoster, conv.channel ?? '', streamHierarchyContext)
     if (streamJourney?.addendum) systemPrompt += streamJourney.addendum
     if (conv.channel === 'WHATSAPP' || conv.channel === 'SMS') {
@@ -5613,7 +5615,8 @@ When chatting with the business owner/manager directly (in the internal chat thr
       ? `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n${hierarchyContext}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
       : ''
 
-    return `${header}${brainContext}${internalToolsSection}${teamCoordinationSection}${roleHandoffSection}${widgetSessionSection}${ticketsBlock}${crmContextBlock}${ragContext}${knowledgeSection}${hierarchySection}${footer}`
+    // Hierarchy goes BEFORE brainContext so escalation rules take top priority
+    return `${header}${hierarchySection}${brainContext}${internalToolsSection}${teamCoordinationSection}${roleHandoffSection}${widgetSessionSection}${ticketsBlock}${crmContextBlock}${ragContext}${knowledgeSection}${footer}`
   }
 
   // ── ElevenLabs TTS ───────────────────────────────────────────────────────

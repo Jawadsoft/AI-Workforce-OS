@@ -858,7 +858,16 @@ export class IntegrationsService {
         // Find or create conversation for threading context
         let conversationId: string | null = null
         try {
-          conversationId = await this.findOrCreateConversation(tenantId, account.id, email)
+          conversationId = await this.findOrCreateConversation({
+            tenantId,
+            connectedAccountId: account.id,
+            customerEmail: email.from,
+            customerName: email.fromName,
+            subject: email.subject,
+            incomingMessageId: email.threadId ?? email.id,
+            inReplyTo: email.inReplyTo,
+            references: email.references,
+          })
         } catch (err: any) {
           this.logger.warn(`[Gmail][${tenantId}] findOrCreateConversation failed: ${err.message}`)
         }
@@ -2008,7 +2017,7 @@ Instructions:
     // Use the connected account's own mailer so the reply comes from the right address
     // and threading headers (In-Reply-To / References) are correctly set
     // Pre-generate Message-ID using the real sending domain so SMTP servers don't rewrite it
-    const replyDomain = account.email?.split('@')[1] ?? 'mail.local'
+    const replyDomain = account.accountEmail?.split('@')[1] ?? 'mail.local'
     const pregenMsgId = `<manual-${Date.now()}-${Math.random().toString(36).slice(2)}@${replyDomain}>`
     let sentMsgId = pregenMsgId
 

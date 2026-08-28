@@ -144,6 +144,84 @@ export class CommunicationsService {
     }
   }
 
+  /**
+   * Checks if an inbound message comes from a staff member's phone who received
+   * an escalation. If so, routes their reply back into the agent conversation
+   * and returns a TwiML-ready response so the normal customer-agent flow is skipped.
+   */
+  private async detectAndRouteStaffReply(
+    tenantId: string,
+    fromPhone: string,
+    body: string,
+    channel: string,
+    twilioSid: string,
+  ): Promise<{ reply: string; sentViaApi: boolean } | null> {
+    if (!fromPhone || !body.trim()) return null
+
+    // Match the phone to a staff user in this tenant
+    const staffUser = await this.prisma.user.findFirst({
+      where: {
+        tenantId,
+        isActive: true,
+        phone: { contains: fromPhone.replace(/\D/g, '').slice(-9) },
+      },
+      select: { id: true, name: true, designation: true },
+    })
+    if (!staffUser) return null
+
+    // Find the most recent open escalation ticket that targeted this staff member
+    const ticket = await this.prisma.activityTicket.findFirst({
+      where: {
+        tenantId,
+        status: 'OPEN',
+        metadata: { path: ['targetUserId'], equals: staffUser.id },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, assignedAgentId: true, metadata: true },
+    })
+    if (!ticket || !ticket.assignedAgentId) return null
+
+    const meta = (ticket.metadata ?? {}) as Record<string, any>
+    const conversationId = meta.conversationId as string | undefined
+    if (!conversationId) return null
+
+    // Log the inbound reply
+    await this.twilio.logInbound({
+      tenantId,
+      channel: channel as 'SMS' | 'WHATSAPP',
+      from: fromPhone,
+      to: '',
+      body,
+      twilioSid,
+      agentId: ticket.assignedAgentId,
+      conversationId,
+    })
+    this.markWebhookHandled(twilioSid)
+
+    // Post staff member's reply into the agent's conversation as a user message
+    try {
+      const staffLabel = `[Staff reply from ${staffUser.name}${staffUser.designation ? ` — ${staffUser.designation}` : ''}]: ${body}`
+      await this.chat.sendMessage(tenantId, conversationId, staffLabel)
+      this.logger.log(`[StaffReply] ${staffUser.name} → conversation ${conversationId.slice(-6)}`)
+    } catch (err) {
+      this.logger.warn(`[StaffReply] Failed to route reply: ${err}`)
+    }
+
+    // Close the escalation ticket
+    await this.prisma.activityTicket.update({
+      where: { id: ticket.id },
+      data: { status: 'COMPLETED' },
+    })
+
+    const ackMessage = `✅ Got it, ${staffUser.name}. Your reply has been forwarded to the agent.`
+    try {
+      await this.twilio.sendWhatsApp({ tenantId, to: fromPhone, body: ackMessage, agentId: ticket.assignedAgentId, conversationId })
+      return { reply: ackMessage, sentViaApi: true }
+    } catch {
+      return { reply: ackMessage, sentViaApi: false }
+    }
+  }
+
   private async handleInboundMessage(params: {
     tenantId: string
     from: string
@@ -184,6 +262,12 @@ export class CommunicationsService {
       this.logger.warn(`Duplicate ${channel} webhook ignored sid=${twilioSid}`)
       return { reply: '', sentViaApi: true }
     }
+
+    // ── Staff escalation reply detection ────────────────────────────
+    // If the sender's phone matches a staff member, route their reply back
+    // to the agent conversation that contacted them, not as a new customer message.
+    const staffReply = await this.detectAndRouteStaffReply(tenantId, from, params.body || '', channel, twilioSid)
+    if (staffReply) return staffReply
 
     let body: string
     let voiceNoteFailed = false

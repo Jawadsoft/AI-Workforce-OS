@@ -167,12 +167,12 @@ export class TenantsService {
   async getTeamMembers(tenantId: string) {
     return this.prisma.user.findMany({
       where: { tenantId },
-      select: { id: true, name: true, email: true, role: true, isActive: true, createdAt: true, avatar: true },
+      select: { id: true, name: true, email: true, role: true, isActive: true, createdAt: true, avatar: true, designation: true, department: true, phone: true },
       orderBy: { createdAt: 'asc' },
     })
   }
 
-  async inviteMember(tenantId: string, data: { name: string; email: string; role: string; inviterName?: string }) {
+  async inviteMember(tenantId: string, data: { name: string; email: string; role: string; inviterName?: string; designation?: string; department?: string; phone?: string }) {
     const name = (data.name ?? '').trim()
     const email = (data.email ?? '').trim().toLowerCase()
     const role = (data.role ?? 'USER').trim().toUpperCase()
@@ -228,8 +228,11 @@ export class TenantsService {
         password: hashed,
         role: role as any,
         isActive: true,
+        designation: data.designation ?? null,
+        department: data.department ?? null,
+        phone: data.phone ?? null,
       },
-      select: { id: true, name: true, email: true, role: true, createdAt: true },
+      select: { id: true, name: true, email: true, role: true, createdAt: true, designation: true, department: true, phone: true },
     })
 
     await this.sendInviteEmail(tenantId, {
@@ -281,6 +284,20 @@ export class TenantsService {
     const user = await this.prisma.user.findFirst({ where: { id: userId, tenantId } })
     if (!user) throw new NotFoundException('User not found')
     return this.prisma.user.update({ where: { id: userId }, data: { role: role as any }, select: { id: true, name: true, email: true, role: true } })
+  }
+
+  async updateMemberProfile(tenantId: string, userId: string, data: { designation?: string; department?: string; phone?: string }) {
+    const user = await this.prisma.user.findFirst({ where: { id: userId, tenantId } })
+    if (!user) throw new NotFoundException('User not found')
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        designation: data.designation ?? undefined,
+        department: data.department ?? undefined,
+        phone: data.phone ?? undefined,
+      },
+      select: { id: true, name: true, email: true, role: true, designation: true, department: true, phone: true },
+    })
   }
 
   async removeMember(tenantId: string, userId: string, currentUserId: string) {

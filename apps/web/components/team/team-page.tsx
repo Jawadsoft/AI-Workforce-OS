@@ -3,11 +3,12 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Users, Plus, Trash2, ShieldCheck, X, Loader2, Copy, Check } from 'lucide-react'
+import { Users, Plus, Trash2, ShieldCheck, X, Loader2, Copy, Check, GitBranch, Pencil, Phone, Building2, Briefcase } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { ROLE_DESCRIPTIONS, ROLE_LABELS as SHARED_ROLE_LABELS } from '@/lib/roles'
+import { HierarchyCanvas } from './hierarchy/hierarchy-canvas'
 
 const ROLES = ['TENANT_ADMIN', 'MANAGER', 'USER', 'VIEWER']
 
@@ -26,10 +27,13 @@ const ROLE_COLORS: Record<string, string> = {
 
 export function TeamPage() {
   const qc = useQueryClient()
+  const [activeTab, setActiveTab] = useState<'members' | 'hierarchy'>('members')
   const [showInvite, setShowInvite] = useState(false)
-  const [form, setForm] = useState({ name: '', email: '', role: 'USER' })
+  const [form, setForm] = useState({ name: '', email: '', role: 'USER', designation: '', department: '', phone: '' })
   const [tempPw, setTempPw] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [editingProfile, setEditingProfile] = useState<string | null>(null)
+  const [profileForm, setProfileForm] = useState({ designation: '', department: '', phone: '' })
 
   const { data: members = [], isLoading } = useQuery({
     queryKey: ['team'],
@@ -38,15 +42,18 @@ export function TeamPage() {
 
   const inviteMutation = useMutation({
     mutationFn: () => api.post('/tenants/team/invite', {
-      ...form,
       name: form.name.trim(),
       email: form.email.trim().toLowerCase(),
+      role: form.role,
+      designation: form.designation.trim() || undefined,
+      department: form.department.trim() || undefined,
+      phone: form.phone.trim() || undefined,
     }),
     onSuccess: (res) => {
       const payload = res.data?.data ?? res.data
       qc.invalidateQueries({ queryKey: ['team'] })
       setTempPw(payload.tempPassword)
-      setForm({ name: '', email: '', role: 'USER' })
+      setForm({ name: '', email: '', role: 'USER', designation: '', department: '', phone: '' })
       toast.success(
         payload.reactivated
           ? `${payload.name} was reactivated on the team`
@@ -70,6 +77,26 @@ export function TeamPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['team'] }); toast.success('Member removed') },
   })
 
+  const profileMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: typeof profileForm }) =>
+      api.patch(`/tenants/team/${id}/profile`, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['team'] })
+      setEditingProfile(null)
+      toast.success('Profile updated')
+    },
+    onError: () => toast.error('Failed to update profile'),
+  })
+
+  const openEdit = (member: any) => {
+    setProfileForm({
+      designation: member.designation ?? '',
+      department: member.department ?? '',
+      phone: member.phone ?? '',
+    })
+    setEditingProfile(member.id)
+  }
+
   const copyPw = () => {
     if (!tempPw) return
     navigator.clipboard.writeText(tempPw)
@@ -85,12 +112,47 @@ export function TeamPage() {
           <h1 className="text-2xl font-bold flex items-center gap-2"><Users className="w-6 h-6" /> Team</h1>
           <p className="text-muted-foreground mt-1">Manage who has access to your AI Workforce OS.</p>
         </div>
-        <button onClick={() => { setShowInvite(true); setTempPw(null) }}
-          className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors">
-          <Plus className="w-4 h-4" /> Invite Member
+        {activeTab === 'members' && (
+          <button onClick={() => { setShowInvite(true); setTempPw(null) }}
+            className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:bg-primary/90 transition-colors">
+            <Plus className="w-4 h-4" /> Invite Member
+          </button>
+        )}
+      </div>
+
+      {/* Tab bar */}
+      <div className="flex gap-1 border-b border-border -mb-2">
+        <button
+          onClick={() => setActiveTab('members')}
+          className={cn(
+            'flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors',
+            activeTab === 'members'
+              ? 'border-primary text-primary'
+              : 'border-transparent text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <Users className="w-4 h-4" /> Members
+        </button>
+        <button
+          onClick={() => setActiveTab('hierarchy')}
+          className={cn(
+            'flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors',
+            activeTab === 'hierarchy'
+              ? 'border-primary text-primary'
+              : 'border-transparent text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <GitBranch className="w-4 h-4" /> Org Hierarchy
         </button>
       </div>
 
+      {/* Hierarchy canvas */}
+      {activeTab === 'hierarchy' && (
+        <HierarchyCanvas members={members as any[]} />
+      )}
+
+      {activeTab === 'members' && (
+        <>
       {/* Invite modal */}
       {showInvite && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -122,21 +184,21 @@ export function TeamPage() {
               </div>
             ) : (
               /* Invite form */
-              <div className="space-y-3">
+              <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
                 <div>
-                  <label className="text-sm font-medium">Full Name</label>
+                  <label className="text-sm font-medium">Full Name <span className="text-destructive">*</span></label>
                   <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                     placeholder="Jane Smith"
                     className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
                 </div>
                 <div>
-                  <label className="text-sm font-medium">Email</label>
+                  <label className="text-sm font-medium">Email <span className="text-destructive">*</span></label>
                   <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
                     placeholder="jane@company.com"
                     className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
                 </div>
                 <div>
-                  <label className="text-sm font-medium">Role</label>
+                  <label className="text-sm font-medium">Role <span className="text-destructive">*</span></label>
                   <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}
                     className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none">
                     {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
@@ -150,6 +212,30 @@ export function TeamPage() {
                     ))}
                   </ul>
                 </div>
+
+                {/* Optional profile fields */}
+                <div className="border-t border-border pt-3 space-y-3">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Profile Details <span className="normal-case font-normal">(optional — used in org hierarchy)</span></p>
+                  <div>
+                    <label className="text-sm font-medium flex items-center gap-1.5"><Briefcase className="w-3.5 h-3.5" /> Job Designation</label>
+                    <input value={form.designation} onChange={e => setForm(f => ({ ...f, designation: e.target.value }))}
+                      placeholder="e.g. Sales Manager, Field Technician"
+                      className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5" /> Department</label>
+                    <input value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))}
+                      placeholder="e.g. Operations, Sales, Admin"
+                      className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium flex items-center gap-1.5"><Phone className="w-3.5 h-3.5" /> Phone</label>
+                    <input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
+                      placeholder="+1 555 000 0000"
+                      className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
+                  </div>
+                </div>
+
                 <div className="flex justify-end gap-2 pt-1">
                   <button onClick={() => setShowInvite(false)} className="px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors">Cancel</button>
                   <button onClick={() => inviteMutation.mutate()} disabled={!form.name || !form.email || inviteMutation.isPending}
@@ -160,6 +246,49 @@ export function TeamPage() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Edit profile modal */}
+      {editingProfile && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-sm bg-card rounded-xl border border-border p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Edit Profile Details</h2>
+              <button onClick={() => setEditingProfile(null)} className="p-1 hover:bg-accent rounded"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-sm font-medium flex items-center gap-1.5"><Briefcase className="w-3.5 h-3.5" /> Job Designation</label>
+                <input value={profileForm.designation} onChange={e => setProfileForm(f => ({ ...f, designation: e.target.value }))}
+                  placeholder="e.g. Sales Manager, Field Technician"
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-sm font-medium flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5" /> Department</label>
+                <input value={profileForm.department} onChange={e => setProfileForm(f => ({ ...f, department: e.target.value }))}
+                  placeholder="e.g. Operations, Sales, Admin"
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-sm font-medium flex items-center gap-1.5"><Phone className="w-3.5 h-3.5" /> Phone</label>
+                <input value={profileForm.phone} onChange={e => setProfileForm(f => ({ ...f, phone: e.target.value }))}
+                  placeholder="+1 555 000 0000"
+                  className="w-full mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setEditingProfile(null)} className="px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors">Cancel</button>
+              <button
+                onClick={() => profileMutation.mutate({ id: editingProfile, data: profileForm })}
+                disabled={profileMutation.isPending}
+                className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                {profileMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                {profileMutation.isPending ? 'Saving...' : 'Save'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -182,6 +311,26 @@ export function TeamPage() {
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground truncate">{member.email}</p>
+                {/* Designation / department / phone pills */}
+                {(member.designation || member.department || member.phone) && (
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                    {member.designation && (
+                      <span className="inline-flex items-center gap-1 text-[10px] bg-muted px-1.5 py-0.5 rounded-full text-muted-foreground">
+                        <Briefcase className="w-2.5 h-2.5" />{member.designation}
+                      </span>
+                    )}
+                    {member.department && (
+                      <span className="inline-flex items-center gap-1 text-[10px] bg-muted px-1.5 py-0.5 rounded-full text-muted-foreground">
+                        <Building2 className="w-2.5 h-2.5" />{member.department}
+                      </span>
+                    )}
+                    {member.phone && (
+                      <span className="inline-flex items-center gap-1 text-[10px] bg-muted px-1.5 py-0.5 rounded-full text-muted-foreground">
+                        <Phone className="w-2.5 h-2.5" />{member.phone}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {['TENANT_OWNER', 'SUPER_ADMIN'].includes(member.role) ? (
@@ -197,6 +346,14 @@ export function TeamPage() {
                     {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
                   </select>
                 )}
+                {/* Edit profile button */}
+                <button
+                  onClick={() => openEdit(member)}
+                  title="Edit designation & department"
+                  className="p-1.5 hover:bg-accent text-muted-foreground hover:text-foreground rounded-md transition-colors"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
                 {!['TENANT_OWNER', 'SUPER_ADMIN'].includes(member.role) && (
                   <button
                     onClick={() => { if (confirm(`Remove ${member.name} from the team?`)) removeMutation.mutate(member.id) }}
@@ -209,6 +366,8 @@ export function TeamPage() {
             </div>
           ))}
         </div>
+      )}
+        </>
       )}
     </div>
   )

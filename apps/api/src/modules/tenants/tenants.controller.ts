@@ -30,6 +30,15 @@ class InviteMemberDto {
   @IsEmail() email: string
   @IsIn(['TENANT_ADMIN', 'MANAGER', 'USER', 'VIEWER'])
   role: string
+  @IsOptional() @IsString() designation?: string
+  @IsOptional() @IsString() department?: string
+  @IsOptional() @IsString() phone?: string
+}
+
+class UpdateMemberProfileDto {
+  @IsOptional() @IsString() designation?: string
+  @IsOptional() @IsString() department?: string
+  @IsOptional() @IsString() phone?: string
 }
 
 @ApiTags('Tenants')
@@ -137,6 +146,14 @@ export class TenantsController {
   @ApiOperation({ summary: 'Change a member role' })
   updateRole(@CurrentTenant() tenantId: string, @Param('id') id: string, @Body() dto: { role: string }) {
     return this.service.updateMemberRole(tenantId, id, dto.role)
+  }
+
+  @Patch('team/:id/profile')
+  @UseGuards(RolesGuard)
+  @Roles('TENANT_ADMIN', 'MANAGER')
+  @ApiOperation({ summary: 'Update member designation, department, and phone' })
+  updateProfile(@CurrentTenant() tenantId: string, @Param('id') id: string, @Body() dto: UpdateMemberProfileDto) {
+    return this.service.updateMemberProfile(tenantId, id, dto)
   }
 
   @Delete('team/:id')

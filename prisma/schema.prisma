@@ -49,6 +49,8 @@ model Tenant {
   socialPosts           SocialPost[]
   socialInteractions    SocialInteraction[]
   assignedAdmins        SuperAdminTenantAccess[]
+  hierarchy             TenantHierarchy?
+  escalationRules       AgentEscalationRule[]
 }
 
 // ─────────────────────────────────────────────
@@ -70,6 +72,13 @@ model User {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  // ── Org hierarchy fields ──────────────────────────
+  designation      String?  // job title e.g. "Sales Manager", "Field Technician"
+  department       String?  // e.g. "Sales", "Operations", "Admin"
+  managerId        String?  // self-referencing: who this person reports to
+  phone            String?  // for agents to contact this person
+  nodePosition     Json?    // { x: number, y: number } for canvas drag position
+
   tenant           Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   messages         Message[]
   tasks            Task[]                   @relation("TaskAssignee")
@@ -79,6 +88,10 @@ model User {
   createdByAdmin   User?                    @relation("SubAdminCreator", fields: [createdByAdminId], references: [id])
   createdSubAdmins User[]                   @relation("SubAdminCreator")
   managedTenants   SuperAdminTenantAccess[] @relation("AdminTenantAssignments")
+  manager          User?                    @relation("OrgHierarchy", fields: [managerId], references: [id])
+  directReports    User[]                   @relation("OrgHierarchy")
+  supervisedAgents Agent[]                  @relation("AgentSupervisor")
+  escalationRules  AgentEscalationRule[]    @relation("EscalationTarget")
 }
 
 // ─────────────────────────────────────────────
@@ -122,6 +135,10 @@ model Agent {
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
+  // ── Org hierarchy fields ──────────────────────────
+  supervisorUserId   String?  // which human user supervises this agent
+  hierarchyPosition  Json?    // { x: number, y: number } canvas position
+
   tenant                Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   conversations         Conversation[]
   tasks                 Task[]
@@ -135,6 +152,43 @@ model Agent {
   conversationSummaries ConversationSummary[]
   memoryFacts           AgentMemoryFact[]
   messageChunks         MessageChunk[]
+  supervisor            User?                 @relation("AgentSupervisor", fields: [supervisorUserId], references: [id])
+  escalationRules       AgentEscalationRule[] @relation("AgentEscalations")
+}
+
+// ─────────────────────────────────────────────
+// ORG HIERARCHY
+// ─────────────────────────────────────────────
+
+// Stores the full ReactFlow canvas snapshot (nodes + edges positions)
+model TenantHierarchy {
+  id        String   @id @default(cuid())
+  tenantId  String   @unique
+  layout    Json     @default("{}")
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+// Per-agent escalation rules: "when X happens, contact Y"
+model AgentEscalationRule {
+  id              String   @id @default(cuid())
+  tenantId        String
+  agentId         String
+  trigger         String   // e.g. "quote > 5000", "complaint", "vip", "after_hours"
+  triggerLabel    String   // human-readable: "Quote over $5,000"
+  action          String   @default("notify") // "notify" | "handoff"
+  targetUserId    String?  // human to notify/escalate to
+  targetAgentId   String?  // agent to hand off to
+  urgency         String   @default("NORMAL") // "URGENT" | "NORMAL"
+  createdAt       DateTime @default(now())
+
+  tenant      Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent       Agent   @relation("AgentEscalations", fields: [agentId], references: [id], onDelete: Cascade)
+  targetUser  User?   @relation("EscalationTarget", fields: [targetUserId], references: [id])
+
+  @@index([agentId])
+  @@index([tenantId])
 }
 
 model AgentTemplate {

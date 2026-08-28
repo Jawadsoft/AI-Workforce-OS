@@ -14,6 +14,8 @@ import { SocialModule } from '../social/social.module'
 import { InspectionModule } from '../inspection/inspection.module'
 import { CloudinaryModule } from '../../common/cloudinary/cloudinary.module'
 import { RealtimeModule } from '../../realtime/realtime.module'
+import { TwilioModule } from '../communications/twilio.module'
+import { HierarchyModule } from '../hierarchy/hierarchy.module'
 
 // PublicChatModule is @Global() so PublicChatService is available everywhere
 // without importing the module here — importing it would create a circular
@@ -23,7 +25,7 @@ import { RealtimeModule } from '../../realtime/realtime.module'
     BullModule.registerQueue({ name: 'knowledge-processing' }, { name: 'message-embedding' }),
     AIModule, CrmModule, BrainModule, KnowledgeModule, TasksModule,
     DocumentsModule, StormModule, MemoryModule, SocialModule, InspectionModule, CloudinaryModule,
-    RealtimeModule,
+    RealtimeModule, TwilioModule, HierarchyModule,
   ],
   providers: [ChatService],
   controllers: [ChatController],

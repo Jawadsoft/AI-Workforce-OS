@@ -19,6 +19,8 @@ import { ImageAnnotationService } from '../inspection/image-annotation.service'
 import { CloudinaryService } from '../../common/cloudinary/cloudinary.service'
 import { RealtimeGateway } from '../../realtime/realtime.gateway'
 import { AutonomyService } from '../../common/autonomy/autonomy.service'
+import { TwilioService } from '../communications/twilio.service'
+import { HierarchyService } from '../hierarchy/hierarchy.service'
 import { computeNextOccurrence, DEFAULT_US_TIMEZONE } from '../../common/utils/schedule-time.util'
 import {
   makeConversationDocument,
@@ -543,6 +545,20 @@ const CRM_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'contact_human',
+    description: 'Contact a specific human staff member from the org hierarchy — to escalate, request a decision, or notify them about something. Use when your escalation rules say to notify someone, when a situation is outside your authority, or when a human must approve or action something.',
+    parameters: {
+      type: 'object',
+      properties: {
+        userId: { type: 'string', description: 'The userId of the human staff member to contact (from your org hierarchy context)' },
+        message: { type: 'string', description: 'Clear, concise message explaining the situation and what you need from them. Include relevant context: customer name, issue type, urgency.' },
+        urgency: { type: 'string', enum: ['NORMAL', 'URGENT'], description: 'URGENT for time-sensitive decisions; NORMAL for routine escalations' },
+        reason: { type: 'string', enum: ['ESCALATION', 'APPROVAL_NEEDED', 'NOTIFICATION', 'HANDOFF'], description: 'Why you are contacting this person' },
+      },
+      required: ['userId', 'message', 'urgency', 'reason'],
+    },
+  },
+  {
     name: 'create_ticket',
     description: 'Create an activity ticket to track any significant customer interaction, task, or follow-up that needs to be visible to the whole team. Use for: estimates sent, bookings made, complaints, jobs scheduled, HR actions, invoices raised, or any event another agent should know about. Always create a ticket rather than just making a mental note.',
     parameters: {
@@ -636,6 +652,8 @@ export class ChatService {
     private readonly cloudinary: CloudinaryService,
     private readonly realtime: RealtimeGateway,
     private readonly autonomy: AutonomyService,
+    private readonly twilio: TwilioService,
+    private readonly hierarchySvc: HierarchyService,
     @InjectQueue('knowledge-processing') private readonly extractionQueue: Queue,
     @InjectQueue('message-embedding') private readonly embeddingQueue: Queue,
   ) {}
@@ -1252,8 +1270,8 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     const journey = this.resolveCustomerJourney(conv.agent, conv.channel, meta, content, history)
     if (journey) await this.persistCustomerStage(conversationId, meta, journey.stage)
 
-    // ── RAG + Memory + ticket fetch (all in parallel) ──────────────
-    const [ragContext, memoryContext, ticketsBlock, teamRoster] = await Promise.all([
+    // ── RAG + Memory + ticket fetch + hierarchy context (all in parallel) ──
+    const [ragContext, memoryContext, ticketsBlock, teamRoster, hierarchyContext] = await Promise.all([
       this.knowledge.retrieveContext(
         conv.agent.id,
         content,
@@ -1274,10 +1292,11 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         select: { name: true, role: true, prompt: true },
         orderBy: { createdAt: 'asc' },
       }),
+      this.hierarchySvc.getAgentContext(tenantId, conv.agent.id).catch(() => ''),
     ])
 
     // ── Build enriched system prompt ──────────────────────────────
-    let enrichedSystemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext + memoryContext, false, ticketsBlock, teamRoster, conv.channel ?? '')
+    let enrichedSystemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, ragContext + memoryContext, false, ticketsBlock, teamRoster, conv.channel ?? '', hierarchyContext)
     if (journey?.addendum) enrichedSystemPrompt += journey.addendum
     if (conv.channel === 'WHATSAPP' || conv.channel === 'SMS') {
       enrichedSystemPrompt += this.buildPhoneChannelAddendum(conv.channel)
@@ -1462,18 +1481,18 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         ]
       : isLeadQualAgent
         // Lead qualification (Charlie): storm lookup + CRM search + routing
-        ? ['handoff_to_agent', 'suggest_transfer', 'ask_user', ...memoryTools, 'fetch_storm_data', 'crm_search_leads', ...ticketToolNames, ...taskTools]
+        ? ['handoff_to_agent', 'suggest_transfer', 'contact_human', 'ask_user', ...memoryTools, 'fetch_storm_data', 'crm_search_leads', ...ticketToolNames, ...taskTools]
         : isExecAssistant
           // Executive assistant (Hanna): full ticket management + contact + scheduling, no silent relay
-          ? ['request_approval', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, ...ticketToolNames, 'get_available_slots', ...taskTools]
+          ? ['request_approval', 'contact_customer', 'contact_human', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, ...ticketToolNames, 'get_available_slots', ...taskTools]
       : isIntakeAgent
         // Intake agent: silent relay + explicit transfer when user requests it
-            ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'handoff_to_agent', 'suggest_transfer', 'ask_user', ...memoryTools, ...ticketToolNames, ...taskTools, ...socialTools]
+            ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'contact_human', 'generate_document', 'handoff_to_agent', 'suggest_transfer', 'ask_user', ...memoryTools, ...ticketToolNames, ...taskTools, ...socialTools]
         : isStormAnalyst
           // Storm analyst: gets storm data tool + standard specialist tools
-              ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, 'fetch_storm_data', ...ticketToolNames, ...taskTools, ...socialTools]
+              ? ['request_approval', 'reply_to_widget_session', 'contact_customer', 'contact_human', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, 'fetch_storm_data', ...ticketToolNames, ...taskTools, ...socialTools]
           // Specialist agent (estimator, inspector, etc.): offer transfers, no silent relay
-              : ['request_approval', 'reply_to_widget_session', 'contact_customer', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, ...ticketToolNames, ...schedulingTools, ...taskTools, ...socialTools]
+              : ['request_approval', 'reply_to_widget_session', 'contact_customer', 'contact_human', 'generate_document', 'suggest_transfer', 'ask_user', ...memoryTools, ...ticketToolNames, ...schedulingTools, ...taskTools, ...socialTools]
 
     // Public WhatsApp/SMS: single face to the customer — consult any teammate via handoff,
     // never UI transfer / widget tools (sales agents like Will often aren't "intake" by role).
@@ -2589,6 +2608,116 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
           }
         }
 
+        // ── Org hierarchy: contact a human staff member ────
+        if (toolName === 'contact_human') {
+          try {
+            const { userId, message, urgency, reason } = params as { userId: string; message: string; urgency: string; reason: string }
+            const targetUser = await this.prisma.user.findFirst({
+              where: { id: userId, tenantId, isActive: true },
+              select: { id: true, name: true, designation: true, email: true, phone: true },
+            })
+            if (!targetUser) return `[contact_human] Could not find staff member with ID "${userId}".`
+
+            // Persist an escalation notification ticket
+            const ticket = await this.prisma.activityTicket.create({
+              data: {
+                tenantId,
+                title: `[${urgency}] ${reason} — from ${agent.name}`,
+                description: message,
+                type: 'GENERAL',
+                priority: urgency === 'URGENT' ? 'URGENT' : 'MEDIUM',
+                status: 'OPEN',
+                source: 'INTERNAL',
+                contactRef: targetUser.name,
+                contactEmail: targetUser.email,
+                assignedAgentId: agent.id,
+                nextAction: `Human staff member "${targetUser.name}" should review and respond.`,
+                metadata: {
+                  isHierarchyEscalation: true,
+                  targetUserId: targetUser.id,
+                  targetUserPhone: targetUser.phone,
+                  reason,
+                  agentId: agent.id,
+                  agentName: agent.name,
+                  conversationId,
+                } as any,
+                activityLog: [{
+                  agentName: agent.name,
+                  agentId: agent.id,
+                  action: 'HIERARCHY_ESCALATION',
+                  note: `Contacted ${targetUser.name} (${reason}): ${message}`,
+                  timestamp: new Date().toISOString(),
+                }] as any,
+              },
+            })
+
+            // Send WhatsApp notification to the staff member's phone
+            const staffPhone: string | null = targetUser.phone ?? null
+            if (staffPhone) {
+              const urgencyEmoji = urgency === 'URGENT' ? '🚨' : '📋'
+              const waBody = [
+                `${urgencyEmoji} *${urgency} — ${reason}*`,
+                `*From:* ${agent.name}`,
+                ``,
+                message,
+                ``,
+                `_Reply to this message and your response will be forwarded back to the agent._`,
+                `_Ref: #${ticket.id.slice(-6)}_`,
+              ].join('\n')
+
+              try {
+                await this.twilio.sendWhatsApp({
+                  tenantId,
+                  to: staffPhone,
+                  body: waBody,
+                  agentId: agent.id,
+                  conversationId,
+                })
+                // Store phone→conversation mapping in CommunicationLog metadata so replies route back
+                const phoneTail = staffPhone.replace(/\D/g, '').slice(-10)
+                await this.prisma.communicationLog.updateMany({
+                  where: {
+                    tenantId,
+                    to: { contains: phoneTail },
+                    direction: 'OUTBOUND',
+                    channel: 'WHATSAPP',
+                    agentId: agent.id,
+                    conversationId,
+                  },
+                  data: {
+                    metadata: {
+                      isEscalationMessage: true,
+                      targetUserId: targetUser.id,
+                      ticketId: ticket.id,
+                    } as any,
+                  },
+                })
+                this.logger.log(`[ContactHuman] WhatsApp sent to ${targetUser.name} (${targetUser.phone})`)
+              } catch (waErr: any) {
+                this.logger.warn(`[ContactHuman] WhatsApp send failed: ${waErr.message}`)
+              }
+            }
+
+            emit?.({
+              action_card: {
+                type: 'escalation',
+                targetUserId: targetUser.id,
+                targetUserName: targetUser.name,
+                urgency,
+                reason,
+                whatsappSent: Boolean(targetUser.phone),
+              },
+            })
+
+            this.logger.log(`[ContactHuman] ${agent.name} → ${targetUser.name} (${urgency} / ${reason})`)
+            const notifyMethod = targetUser.phone ? 'WhatsApp + dashboard ticket' : 'dashboard ticket'
+            return `[Escalation sent] ${targetUser.name} (${targetUser.designation ?? 'Staff'}) has been notified via ${notifyMethod}. Reason: ${reason}. Urgency: ${urgency}. Message: "${message}"`
+          } catch (err: any) {
+            this.logger.error(`[ContactHuman] Failed: ${err.message}`)
+            return `[contact_human] Failed to contact human staff member: ${err.message}`
+          }
+        }
+
         // ── Storm data query ───────────────────────────────
         if (toolName === 'fetch_storm_data') {
           try {
@@ -2967,7 +3096,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     const streamJourney = this.resolveCustomerJourney(conv.agent, conv.channel, streamMeta, content, history)
     if (streamJourney) await this.persistCustomerStage(conversationId, streamMeta, streamJourney.stage)
 
-    const [ragContext, memoryContext, streamTicketsBlock, streamTeamRoster] = await Promise.all([
+    const [ragContext, memoryContext, streamTicketsBlock, streamTeamRoster, streamHierarchyContext] = await Promise.all([
       this.knowledge.retrieveContext(
         conv.agent.id,
         content,
@@ -2988,6 +3117,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
         select: { name: true, role: true, prompt: true },
         orderBy: { createdAt: 'asc' },
       }),
+      this.hierarchySvc.getAgentContext(tenantId, conv.agent.id).catch(() => ''),
     ])
     const combinedRag = ragContext + memoryContext
 
@@ -3101,7 +3231,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       `registry=${registryDocs.length} injectedChars=${scope.scopedDocuments.reduce((n, d) => n + d.text.length, 0)}`,
     )
 
-    let systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag + attachmentContextBlock, false, streamTicketsBlock, streamTeamRoster, conv.channel ?? '')
+    let systemPrompt = this.buildFullSystemPrompt(conv.agent, mergedSettings, brainContext, crmContextBlock, combinedRag + attachmentContextBlock, false, streamTicketsBlock, streamTeamRoster, conv.channel ?? '', streamHierarchyContext)
     if (streamJourney?.addendum) systemPrompt += streamJourney.addendum
     if (conv.channel === 'WHATSAPP' || conv.channel === 'SMS') {
       systemPrompt += this.buildPhoneChannelAddendum(conv.channel)
@@ -3587,7 +3717,7 @@ ${label.toUpperCase()} CHANNEL RULES (critical)
 
   // ── Builds the structured system prompt ──────────────────────────
 
-  private buildFullSystemPrompt(agent: any, settings: any, brainContext: string, crmContextBlock: string, ragContext = '', isSpecialist = false, ticketsBlock = '', teamRoster: { name: string; role: string; prompt?: string | null }[] = [], channel = ''): string {
+  private buildFullSystemPrompt(agent: any, settings: any, brainContext: string, crmContextBlock: string, ragContext = '', isSpecialist = false, ticketsBlock = '', teamRoster: { name: string; role: string; prompt?: string | null }[] = [], channel = '', hierarchyContext = ''): string {
     const brain = settings?.brain ?? {}
     const company = brain.companyName || settings.tenantName || 'the company'
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
@@ -5479,7 +5609,11 @@ When chatting with the business owner/manager directly (in the internal chat thr
 - Each briefing shows 🔑 Session ID and the customer name prominently.
 - Be proactive: flag things that need attention without being asked.` : ''
 
-    return `${header}${brainContext}${internalToolsSection}${teamCoordinationSection}${roleHandoffSection}${widgetSessionSection}${ticketsBlock}${crmContextBlock}${ragContext}${knowledgeSection}${footer}`
+    const hierarchySection = hierarchyContext
+      ? `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n${hierarchyContext}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+      : ''
+
+    return `${header}${brainContext}${internalToolsSection}${teamCoordinationSection}${roleHandoffSection}${widgetSessionSection}${ticketsBlock}${crmContextBlock}${ragContext}${knowledgeSection}${hierarchySection}${footer}`
   }
 
   // ── ElevenLabs TTS ───────────────────────────────────────────────────────

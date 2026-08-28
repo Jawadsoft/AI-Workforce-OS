@@ -40,6 +40,8 @@ async function main() {
     select: { id: true, name: true, role: true, tenantId: true },
   })
   const agentNameToId = new Map(serverAgents.map(a => [`${a.name}|${a.role}`, a.id]))
+  // Also build name-only map as fallback (first match wins)
+  const agentNameOnlyToId = new Map(serverAgents.map(a => [a.name.toLowerCase(), a.id]))
 
   // Helper: resolve a local userId to server userId
   function resolveUserId(localId, localEmail) {
@@ -81,6 +83,7 @@ async function main() {
 
   for (const a of data.agents) {
     const serverAgentId = agentNameToId.get(`${a.name}|${a.role}`)
+      ?? agentNameOnlyToId.get(a.name.toLowerCase())
     if (!serverAgentId) { agentSkipped++; continue }
 
     if (!a.supervisorUserId) { agentSkipped++; continue }
@@ -101,12 +104,29 @@ async function main() {
   console.log('\n🗺️  Importing hierarchy canvas layouts...')
 
   for (const h of data.hierarchies) {
-    // Find matching tenant on server by name
-    const serverTenant = await p.tenant.findFirst({
-      where: { name: h.tenantName },
-      select: { id: true },
-    })
-    if (!serverTenant) {
+    // Find matching tenant — try exact name, then case-insensitive, then via any user email
+    let resolvedTenantId = null
+
+    const byExact = await p.tenant.findFirst({ where: { name: h.tenantName }, select: { id: true } })
+    if (byExact) { resolvedTenantId = byExact.id }
+
+    if (!resolvedTenantId) {
+      // Case-insensitive: fetch all tenants and compare manually
+      const allTenants = await p.tenant.findMany({ select: { id: true, name: true } })
+      const match = allTenants.find(t => t.name.toLowerCase() === h.tenantName.toLowerCase())
+      if (match) resolvedTenantId = match.id
+    }
+
+    if (!resolvedTenantId) {
+      // Fallback: find via any user from this tenant that exists on server
+      const anyUser = data.users.find(u => u.tenantId === h.tenantId && u.email)
+      if (anyUser) {
+        const serverUser = await p.user.findFirst({ where: { email: anyUser.email }, select: { tenantId: true } })
+        if (serverUser) resolvedTenantId = serverUser.tenantId
+      }
+    }
+
+    if (!resolvedTenantId) {
       console.log(`   ⚠️  Tenant not found: ${h.tenantName} — skipping layout`)
       continue
     }
@@ -164,9 +184,9 @@ async function main() {
     }
 
     await p.tenantHierarchy.upsert({
-      where: { tenantId: serverTenant.id },
+      where: { tenantId: resolvedTenantId },
       update: { layout },
-      create: { tenantId: serverTenant.id, layout },
+      create: { tenantId: resolvedTenantId, layout },
     })
     console.log(`   ✅ Layout saved for tenant: ${h.tenantName}`)
   }

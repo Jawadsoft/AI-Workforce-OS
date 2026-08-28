@@ -49,34 +49,52 @@ async function main() {
   const hashedTemp = await bcrypt.hash(TEMP_PASSWORD, 10)
   const emailToServerId = new Map()
 
-  console.log('\n👥 Creating / updating users...')
+  // ── Pre-build local tenantId → server tenantId map ─────────────
+  // For each unique local tenantId, find a matching server tenant by
+  // looking up any user from that tenant that already exists on the server.
+  console.log('\n🔍 Resolving tenant mappings...')
+  const localTenantToServer = new Map() // localTenantId → { id, name }
 
-  for (const u of teamUsers) {
-    // Find matching tenant on server by tenant name (from export)
-    const exportedTenant = data.hierarchies.find(h => h.tenantId === u.tenantId)
-    const tenantName = exportedTenant?.tenantName
+  const uniqueLocalTenantIds = [...new Set(teamUsers.map(u => u.tenantId))]
+  for (const localTenantId of uniqueLocalTenantIds) {
+    const usersInTenant = teamUsers.filter(u => u.tenantId === localTenantId)
 
-    let serverTenant = null
-    if (tenantName) {
-      serverTenant = await p.tenant.findFirst({
-        where: { name: tenantName },
+    // Try by tenant name first
+    const exportedTenant = data.hierarchies.find(h => h.tenantId === localTenantId)
+    if (exportedTenant?.tenantName) {
+      const byName = await p.tenant.findFirst({
+        where: { name: exportedTenant.tenantName },
         select: { id: true, name: true },
       })
+      if (byName) { localTenantToServer.set(localTenantId, byName); continue }
     }
 
-    if (!serverTenant) {
-      // Fallback: check if user already exists by email
+    // Fallback: find any user from this tenant that already exists on server
+    for (const u of usersInTenant) {
       const existing = await p.user.findFirst({
         where: { email: u.email },
         select: { id: true, tenantId: true },
       })
       if (existing) {
-        serverTenant = await p.tenant.findUnique({
+        const tenant = await p.tenant.findUnique({
           where: { id: existing.tenantId },
           select: { id: true, name: true },
         })
+        if (tenant) { localTenantToServer.set(localTenantId, tenant); break }
       }
     }
+
+    if (!localTenantToServer.has(localTenantId)) {
+      console.log(`   ⚠️  Could not resolve tenant for localId ...${localTenantId.slice(-6)}`)
+    } else {
+      console.log(`   ✅ Tenant mapped: ...${localTenantId.slice(-6)} → "${localTenantToServer.get(localTenantId).name}"`)
+    }
+  }
+
+  console.log('\n👥 Creating / updating users...')
+
+  for (const u of teamUsers) {
+    const serverTenant = localTenantToServer.get(u.tenantId)
 
     if (!serverTenant) {
       console.log(`   ⚠️  Tenant not found for ${u.email} — skipping`)

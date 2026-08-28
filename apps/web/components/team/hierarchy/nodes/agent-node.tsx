@@ -6,7 +6,8 @@ import { Bot, Zap } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { HierarchyNodeData } from '../use-hierarchy'
 
-export const AgentNode = memo(({ data, selected }: NodeProps<HierarchyNodeData>) => {
+export const AgentNode = memo(({ data: rawData, selected }: NodeProps) => {
+  const data = rawData as HierarchyNodeData
   return (
     <div
       className={cn(

@@ -107,8 +107,8 @@ function HierarchyCanvasInner({ members }: HierarchyCanvasProps) {
   const aiSuggestMutation = useAiSuggestHierarchy()
   const aiRefineMutation = useAiRefineHierarchy()
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<HierarchyNodeData>([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<HierarchyNodeData>>([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [selectedNode, setSelectedNode] = useState<Node<HierarchyNodeData> | null>(null)
   const [escalationRules, setEscalationRules] = useState<EscalationRule[]>([])
   const [initialized, setInitialized] = useState(false)

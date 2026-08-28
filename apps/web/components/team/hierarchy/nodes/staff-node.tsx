@@ -24,7 +24,8 @@ const ROLE_BADGE: Record<string, string> = {
   VIEWER: 'bg-green-100 text-green-700',
 }
 
-export const StaffNode = memo(({ data, selected }: NodeProps<HierarchyNodeData>) => {
+export const StaffNode = memo(({ data: rawData, selected }: NodeProps) => {
+  const data = rawData as HierarchyNodeData
   const gradient = ROLE_COLORS[data.role ?? 'USER'] ?? 'from-slate-500 to-slate-600'
   const badge = ROLE_BADGE[data.role ?? 'USER'] ?? 'bg-slate-100 text-slate-600'
   const isOwner = data.role === 'TENANT_OWNER' || data.role === 'SUPER_ADMIN'

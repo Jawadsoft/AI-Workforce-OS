@@ -458,6 +458,7 @@ export class IntegrationsService {
             fromEmail: email.from,
             fromName: email.fromName,
             subject: email.subject,
+            body: email.body?.replace(/\u0000/g, '') ?? null,
             receivedAt: email.receivedAt,
             classification: classification.type,
             confidence: classification.confidence,
@@ -909,6 +910,7 @@ export class IntegrationsService {
             fromEmail: email.from,
             fromName: email.fromName,
             subject: email.subject,
+            body: email.body?.replace(/\u0000/g, '') ?? null,
             receivedAt: email.receivedAt,
             classification: classification.type,
             confidence: classification.confidence,
@@ -1083,6 +1085,7 @@ export class IntegrationsService {
             fromEmail: email.from,
             fromName: email.fromName,
             subject: email.subject,
+            body: email.body?.replace(/\u0000/g, '') ?? null,
             receivedAt: email.receivedAt,
             classification: classification.type,
             confidence: classification.confidence,
@@ -1652,17 +1655,25 @@ Body: ${(email.body ?? email.snippet ?? '').slice(0, 1200)}`
     if (conversationId) {
       try {
         const prior = await this.prisma.processedEmail.findMany({
-          where: { conversationId },
+          where: {
+            conversationId,
+            // Exclude any self-sent records that slipped through (prevents quoting system replies)
+            NOT: { fromEmail: { in: [email.from, ...(email.fromEmail ? [email.fromEmail] : [])] } },
+          },
           orderBy: { receivedAt: 'asc' },
           take: 10,
-          select: { fromEmail: true, fromName: true, receivedAt: true, extractedData: true },
+          select: { fromEmail: true, fromName: true, receivedAt: true, body: true, extractedData: true },
         })
-        conversationHistory = prior.map(p => ({
-          from: p.fromEmail,
-          fromName: p.fromName ?? p.fromEmail,
-          date: p.receivedAt.toUTCString(),
-          body: (p.extractedData as any)?.snippet ?? '',
-        }))
+        conversationHistory = prior
+          .map(p => ({
+            from: p.fromEmail,
+            fromName: p.fromName ?? p.fromEmail,
+            date: p.receivedAt.toUTCString(),
+            // Prefer full stored body; fall back to snippet for older records
+            body: p.body ?? (p.extractedData as any)?.snippet ?? '',
+          }))
+          // Drop entries with no meaningful body content
+          .filter(p => p.body.trim().length > 5)
       } catch {}
     }
 
@@ -1799,9 +1810,11 @@ Instructions:
     if (!entries.some(e => e.body)) return ''
 
     const quoted = entries
-      .filter(e => e.body)
+      .filter(e => e.body?.trim().length > 5)
       .map(e => {
         const cleanBody = this.stripMimeJunk(e.body)
+        // Skip if cleaning stripped everything meaningful
+        if (cleanBody.trim().length < 5) return null
         const safeBody = cleanBody
           .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
           .replace(/\n/g, '<br>')
@@ -1814,6 +1827,7 @@ Instructions:
   ${safeBody}
 </blockquote>`
       })
+      .filter((s): s is string => s !== null)
       .join('')
 
     return quoted
@@ -2001,17 +2015,23 @@ Instructions:
     if (email.conversationId) {
       try {
         const prior = await this.prisma.processedEmail.findMany({
-          where: { conversationId: email.conversationId },
+          where: {
+            conversationId: email.conversationId,
+            // Exclude self-sent records — only quote genuine customer messages
+            NOT: { fromEmail: email.fromEmail },
+          },
           orderBy: { receivedAt: 'asc' },
           take: 10,
-          select: { fromEmail: true, fromName: true, receivedAt: true, extractedData: true },
+          select: { fromEmail: true, fromName: true, receivedAt: true, body: true, extractedData: true },
         })
-        conversationHistory = prior.map(p => ({
-          from: p.fromEmail,
-          fromName: p.fromName ?? p.fromEmail,
-          date: p.receivedAt.toUTCString(),
-          body: (p.extractedData as any)?.snippet ?? '',
-        }))
+        conversationHistory = prior
+          .map(p => ({
+            from: p.fromEmail,
+            fromName: p.fromName ?? p.fromEmail,
+            date: p.receivedAt.toUTCString(),
+            body: p.body ?? (p.extractedData as any)?.snippet ?? '',
+          }))
+          .filter(p => p.body.trim().length > 5)
       } catch {}
     }
 

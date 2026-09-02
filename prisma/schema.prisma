@@ -522,6 +522,7 @@ model ProcessedEmail {
   receivedAt         DateTime
   classification     String?
   confidence         Int?
+  body               String?            @db.Text
   extractedData      Json               @default("{}")
   action             String?
   status             String             @default("pending")

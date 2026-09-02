@@ -480,7 +480,7 @@ const CRM_TOOL_DEFINITIONS = [
   },
   {
     name: 'regenerate_social_image',
-    description: 'Regenerate a higher-quality AI image for an existing social post that is still in draft/pending_approval. Use when the user says the picture quality is bad, blurry, or asks you to generate a better image yourself. Do NOT give Canva/Lightroom tutorials — call this tool.',
+    description: 'Regenerate a higher-quality AI image for an existing social post that is still in draft/pending_approval. Use when the user says the picture quality is bad, blurry, or asks you to generate a better image yourself. ALSO use when the user asks to add a logo, add branding, put the logo on the image, or overlay the company logo on an existing post — call this tool with imageStyle: "branded". If the user says "both images" or refers to multiple posts without giving IDs, ask for the post IDs from the action cards before calling. Do NOT give Canva/Lightroom tutorials — call this tool.',
     parameters: {
       type: 'object',
       properties: {
@@ -3879,6 +3879,8 @@ SOCIAL MEDIA IMAGES — CRITICAL (when you have post_to_social):
 ✅ Images are BRANDED by default — the AI photo gets the company's logo, a headline, feature bullets, and a call-to-action (phone/website) overlaid on it, like a marketing flyer. This is the default and correct behavior — do not apologize for it or ask permission first.
 ✅ Only pass imageStyle: "clean" if the user EXPLICITLY asks for a plain photo with no text/graphics/branding (e.g. "just the photo, no text/overlay/logo")
 ✅ If the user says image quality is bad / generate a better picture yourself → call regenerate_social_image (or post_to_social with imageFeedback)
+✅ If the user says "add logo", "add branding", "put the logo on the image", or "brand the image" on existing posts → call regenerate_social_image with imageStyle: "branded". If no post IDs are visible, ask for them before calling.
+❌ NEVER say "I'll add the logo" or "I'll brand the image" without actually calling regenerate_social_image — saying it without calling the tool does nothing
 ✅ post_to_social also supports richer formats via the "format" param: carousel (multi-slide, each with its own AI image), video_script (short-form script + caption), poll (question + options). Use them when asked or when it clearly fits.
 ✅ Use get_content_calendar when staff wants to plan ahead (a week/month of topics) — it can also save each day as a placeholder draft.
 ✅ If the user uploads a logo, photo, or image in the chat and asks for a social post, call post_to_social immediately — the uploaded image will automatically be used as the post photo (with the branded overlay applied on top if imageStyle is branded).

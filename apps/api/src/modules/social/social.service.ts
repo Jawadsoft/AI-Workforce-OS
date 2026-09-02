@@ -276,6 +276,14 @@ Only return the JSON object, nothing else.`
       const imageResult = await this.generateImage(brief, brainContext, contentType, imageFeedback, tenantId, imageStyle)
       imageUrl = imageResult.url
       imagePrompt = imageResult.prompt
+    } else if (imageStyle === 'branded' && tenantId) {
+      // Apply branded headline/logo/CTA overlay on top of the user-uploaded image
+      try {
+        const branded = await this.brandImage(imageUrl, brief, brainContext, contentType, tenantId)
+        if (branded) imageUrl = branded
+      } catch (err: any) {
+        this.logger.warn(`Flyer branding on uploaded image failed, using raw upload: ${err.message}`)
+      }
     }
 
     return { platform, content: mainContent, imageUrl, imagePrompt, contentType, alternatives, metadata }

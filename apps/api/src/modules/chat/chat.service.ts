@@ -1413,6 +1413,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     handoffCountRef?: { count: number; lastSpecialistId?: string; lastSpecialistName?: string },
     conversationId?: string,
     conversationSource?: string,
+    uploadedImageUrls?: { url: string; name: string }[],
   ): Promise<string> {
     // Specialists (depth >= 1) cannot handoff further or proactively create tasks — prevents infinite loops
     const isSpecialist = handoffDepth > 0
@@ -2796,6 +2797,10 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
             }
             emit?.({ step: { label: 'Generating social media posts', status: 'active' } })
             const format = params.format ?? 'single_image'
+            // Use the first chat-attached image (logo/photo) as the post image if the user uploaded one
+            const chatUploadedImageUrl = uploadedImageUrls && uploadedImageUrls.length > 0
+              ? uploadedImageUrls[uploadedImageUrls.length - 1].url
+              : undefined
             const drafts = await this.social.generatePosts({
               tenantId,
               agentId: agent.id,
@@ -2805,6 +2810,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
               imageFeedback: params.imageFeedback,
               format,
               imageStyle: params.imageStyle === 'clean' ? 'clean' : 'branded',
+              uploadedImageUrl: chatUploadedImageUrl,
             })
             const saved = await Promise.all(
               drafts.map((draft) =>
@@ -3294,7 +3300,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
       emit(payload)
     }
     try {
-      fullReply = await this.runWithToolDispatch(tenantId, conv.agent, systemPrompt, messages, streamCustomerId, trackingEmit, 0, undefined, conversationId, streamSource)
+      fullReply = await this.runWithToolDispatch(tenantId, conv.agent, systemPrompt, messages, streamCustomerId, trackingEmit, 0, undefined, conversationId, streamSource, visionImages.length > 0 ? visionImages : undefined)
     } catch (err: any) {
       fullReply = `I encountered an issue fetching data: ${err?.message ?? 'Unknown error'}.`
     }
@@ -3875,6 +3881,9 @@ SOCIAL MEDIA IMAGES — CRITICAL (when you have post_to_social):
 ✅ If the user says image quality is bad / generate a better picture yourself → call regenerate_social_image (or post_to_social with imageFeedback)
 ✅ post_to_social also supports richer formats via the "format" param: carousel (multi-slide, each with its own AI image), video_script (short-form script + caption), poll (question + options). Use them when asked or when it clearly fits.
 ✅ Use get_content_calendar when staff wants to plan ahead (a week/month of topics) — it can also save each day as a placeholder draft.
+✅ If the user uploads a logo, photo, or image in the chat and asks for a social post, call post_to_social immediately — the uploaded image will automatically be used as the post photo (with the branded overlay applied on top if imageStyle is branded).
+❌ NEVER say you cannot use, store, or process an uploaded image — if an image is attached, it WILL be used for the post
+❌ NEVER describe the logo/image and ask the user to use Canva themselves — call post_to_social and the system handles it
 ❌ NEVER say you cannot create images
 ❌ NEVER give Canva / Lightroom / Unsplash tutorials instead of calling the tool
 

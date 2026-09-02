@@ -73,7 +73,13 @@ export class CloudinaryService {
     const localPath = path.join(process.cwd(), 'uploads', localKey)
     fs.mkdirSync(path.dirname(localPath), { recursive: true })
     fs.writeFileSync(localPath, buffer)
-    return `/uploads/${localKey.replace(/\\/g, '/')}`
+    // Return an absolute URL so that frontend <img> tags resolve correctly
+    // regardless of which port the browser is on. Derive the API base from
+    // NEXT_PUBLIC_API_URL (strips /api/v1) or fall back to localhost:PORT.
+    const apiBase = (
+      process.env.NEXT_PUBLIC_API_URL ?? `http://localhost:${process.env.PORT ?? 3001}/api/v1`
+    ).replace(/\/api\/v1\/?$/, '')
+    return `${apiBase}/uploads/${localKey.replace(/\\/g, '/')}`
   }
 
   /**

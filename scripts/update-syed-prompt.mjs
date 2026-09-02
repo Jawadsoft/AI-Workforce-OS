@@ -486,15 +486,9 @@ Attract attention. Build trust. Generate leads. Grow the StormBuddy brand.
 When in doubt — act. Use the tools. Get the work done. Then review.`
 
 async function main() {
-  // Find agents named "Syed" with a social media / marketing role
+  // Target Syed — Social Media & Marketing Agent (id confirmed)
   const agents = await prisma.agent.findMany({
-    where: {
-      OR: [
-        { name: { contains: 'Syed', mode: 'insensitive' } },
-        { role: { contains: 'social media', mode: 'insensitive' } },
-        { role: { contains: 'marketing', mode: 'insensitive' } },
-      ],
-    },
+    where: { id: 'cmqz3pbcd000skpopl7tjso6p' },
     select: { id: true, name: true, role: true, tenantId: true },
   })
 

@@ -59,6 +59,8 @@ export class AccountMailer {
     references?: string[]
     /** Pre-generated Message-ID to use. When omitted nodemailer assigns one. */
     messageId?: string
+    /** CC recipients for Reply All — connected account address is excluded automatically */
+    cc?: string[]
   }): Promise<string> {
     // Guard against malformed addresses
     if (!params.to || params.to.includes('undefined') || !params.to.includes('@')) {
@@ -68,10 +70,15 @@ export class AccountMailer {
     // Build complete References chain: prior chain + immediate parent (deduplicated)
     const refChain = [...(params.references ?? []), ...(params.inReplyTo ? [params.inReplyTo] : [])]
       .filter((v, i, a) => v && a.indexOf(v) === i)
+    // Filter out the sending account from CC to avoid self-CC
+    const ccList = (params.cc ?? []).filter(addr =>
+      addr && addr.includes('@') && addr.toLowerCase() !== this.config.fromEmail.toLowerCase()
+    )
     const transporter = this.buildTransporter()
     const info = await transporter.sendMail({
       from: `"${this.config.smtpFromName}" <${this.config.fromEmail}>`,
       to: params.to,
+      ...(ccList.length ? { cc: ccList.join(', ') } : {}),
       subject: params.subject.startsWith('Re:') ? params.subject : `Re: ${params.subject}`,
       html: params.html,
       text: params.text,
@@ -81,7 +88,7 @@ export class AccountMailer {
     })
     // info.messageId is the actual Message-ID accepted by the SMTP server
     const sentId: string = info.messageId ?? params.messageId ?? ''
-    this.logger.log(`Reply sent from ${this.config.fromEmail} to ${params.to} (Message-ID: ${sentId})`)
+    this.logger.log(`Reply sent from ${this.config.fromEmail} to ${params.to}${ccList.length ? ` cc ${ccList.join(', ')}` : ''} (Message-ID: ${sentId})`)
     return sentId
   }
 

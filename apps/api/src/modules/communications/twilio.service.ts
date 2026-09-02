@@ -17,6 +17,10 @@ export interface SendWhatsAppDto {
   mediaUrl?: string[]
   agentId?: string
   conversationId?: string
+  /** Twilio Content Template SID (e.g. HXxxx). When set, sends a template message instead of free-form. */
+  contentSid?: string
+  /** Template variable values keyed by position: { "1": "value1", "2": "value2" } */
+  contentVariables?: Record<string, string>
 }
 
 export interface MakeCallDto {
@@ -158,7 +162,13 @@ export class TwilioService {
     const msg = await client.messages.create({
       from,
       to,
-      body: dto.body,
+      // Use approved template when contentSid is provided (bypasses 24h session window)
+      ...(dto.contentSid
+        ? {
+            contentSid: dto.contentSid,
+            contentVariables: dto.contentVariables ? JSON.stringify(dto.contentVariables) : undefined,
+          }
+        : { body: dto.body }),
       ...(dto.mediaUrl?.length ? { mediaUrl: dto.mediaUrl } : {}),
     })
     await this.prisma.communicationLog.create({

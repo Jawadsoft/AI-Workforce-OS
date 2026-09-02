@@ -12,6 +12,10 @@ export interface RawEmail {
   receivedAt: Date
   snippet: string
   labelIds: string[]
+  /** Original To: recipients (for Reply All) */
+  to?: string[]
+  /** Original Cc: recipients (for Reply All) */
+  cc?: string[]
   /** Value of the In-Reply-To header from the incoming email (for threading replies) */
   inReplyTo?: string
   /** Full References chain from the incoming email (space-separated Message-IDs) */
@@ -142,8 +146,8 @@ export class GmailAdapter {
     })
   }
 
-  async sendReply(to: string, subject: string, body: string, threadId?: string): Promise<string> {
-    const raw = this.buildRawEmail(to, subject, body)
+  async sendReply(to: string, subject: string, body: string, threadId?: string, cc?: string[]): Promise<string> {
+    const raw = this.buildRawEmail(to, subject, body, cc)
     const res = await this.gmail.users.messages.send({
       userId: 'me',
       requestBody: {
@@ -155,8 +159,8 @@ export class GmailAdapter {
     return res.data.id ?? ''
   }
 
-  async createDraft(to: string, subject: string, body: string, threadId?: string): Promise<string> {
-    const raw = this.buildRawEmail(to, subject, body)
+  async createDraft(to: string, subject: string, body: string, threadId?: string, cc?: string[]): Promise<string> {
+    const raw = this.buildRawEmail(to, subject, body, cc)
     const res = await this.gmail.users.drafts.create({
       userId: 'me',
       requestBody: {
@@ -169,9 +173,11 @@ export class GmailAdapter {
     return res.data.id ?? ''
   }
 
-  private buildRawEmail(to: string, subject: string, body: string): string {
+  private buildRawEmail(to: string, subject: string, body: string, cc?: string[]): string {
+    const ccFiltered = (cc ?? []).filter(a => a && a.includes('@'))
     const lines = [
       `To: ${to}`,
+      ...(ccFiltered.length ? [`Cc: ${ccFiltered.join(', ')}`] : []),
       `Subject: ${subject}`,
       'Content-Type: text/html; charset=utf-8',
       'MIME-Version: 1.0',

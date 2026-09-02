@@ -466,6 +466,8 @@ export class IntegrationsService {
               snippet: (email.snippet || email.body?.slice(0, 500) || '').replace(/\u0000/g, ''),
               inReplyTo: email.inReplyTo ?? null,
               references: email.references ?? null,
+              to: email.to ?? null,
+              cc: email.cc ?? null,
             },
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
@@ -913,6 +915,8 @@ export class IntegrationsService {
             extractedData: {
               ...(classification.extractedData as any ?? {}),
               snippet: (email.snippet || email.body?.slice(0, 500) || '').replace(/\u0000/g, ''),
+              to: email.to ?? null,
+              cc: email.cc ?? null,
             },
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
@@ -1087,6 +1091,8 @@ export class IntegrationsService {
               snippet: (email.snippet || email.body?.slice(0, 500) || '').replace(/\u0000/g, ''),
               inReplyTo: email.inReplyTo ?? null,
               references: email.references ?? null,
+              to: email.to ?? null,
+              cc: email.cc ?? null,
             },
             action: action ?? 'skipped',
             status: errorMessage ? 'failed' : 'actioned',
@@ -1165,6 +1171,11 @@ export class IntegrationsService {
         // Pre-generate Message-ID using the real sending domain so SMTP servers don't rewrite it
         const sendingDomain = fromEmail.split('@')[1] ?? 'mail.local'
         const outboundMsgId = `<reply-${Date.now()}-${Math.random().toString(36).slice(2)}@${sendingDomain}>`
+        // Build Reply All CC: original To + Cc, excluding the connected account itself
+        const replyAllCc = [
+          ...(email.to ?? []),
+          ...(email.cc ?? []),
+        ].filter(addr => addr.toLowerCase() !== fromEmail.toLowerCase() && addr.toLowerCase() !== email.from.toLowerCase())
         // sendReply returns the actual Message-ID accepted by the SMTP server
         const sentMsgId = await mailer.sendReply({
           to: email.from,
@@ -1173,6 +1184,7 @@ export class IntegrationsService {
           inReplyTo,
           references: refs.length ? refs : undefined,
           messageId: outboundMsgId,
+          cc: replyAllCc.length ? replyAllCc : undefined,
         })
         const trackedMsgId = sentMsgId || outboundMsgId
         // Save a copy to Sent folder so email clients can reconstruct the thread
@@ -1184,6 +1196,7 @@ export class IntegrationsService {
           inReplyTo,
           references: refs.length ? refs : undefined,
           fromName: fromEmail,
+          cc: replyAllCc.length ? replyAllCc : undefined,
         }).catch(() => {})  // non-blocking, best-effort
         await imap.markAsRead(email.id)
         if (conversationId) await this.recordOutboundMessage(conversationId, trackedMsgId)
@@ -1271,8 +1284,11 @@ export class IntegrationsService {
           ? this.fillTemplate(replyTemplate, email, classification)
           : await this.generateEmailReply(email, classification, tenantId, assignedAgentId, conversationId)
         const replySubject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || ''}`
+        // Build Reply All CC: original To + Cc, excluding self and the sender
+        const gmailReplyAllCc = [...(email.to ?? []), ...(email.cc ?? [])]
+          .filter(addr => addr.toLowerCase() !== email.from.toLowerCase())
         // Gmail API returns the sent thread/message ID which we use for tracking
-        const gmailSentId = await gmail.sendReply(email.from, replySubject, replyBody, email.threadId)
+        const gmailSentId = await gmail.sendReply(email.from, replySubject, replyBody, email.threadId, gmailReplyAllCc.length ? gmailReplyAllCc : undefined)
         if (conversationId && gmailSentId) await this.recordOutboundMessage(conversationId, gmailSentId)
         await gmail.markAsRead(email.id)
         await this.notifyAgentOfEmail(tenantId, email, classification,
@@ -1285,7 +1301,9 @@ export class IntegrationsService {
           ? this.fillTemplate(replyTemplate, email, classification)
           : await this.generateEmailReply(email, classification, tenantId, assignedAgentId, conversationId)
         const replySubject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || ''}`
-        const draftId = await gmail.createDraft(email.from, replySubject, replyBody, email.threadId)
+        const gmailDraftCc = [...(email.to ?? []), ...(email.cc ?? [])]
+          .filter(addr => addr.toLowerCase() !== email.from.toLowerCase())
+        const draftId = await gmail.createDraft(email.from, replySubject, replyBody, email.threadId, gmailDraftCc.length ? gmailDraftCc : undefined)
         await this.notifyAgentOfEmail(tenantId, email, classification, `📝 Draft reply created (Draft ID: ${draftId})`)
         await gmail.markAsRead(email.id)
         return 'drafted'
@@ -2021,6 +2039,16 @@ Instructions:
     const pregenMsgId = `<manual-${Date.now()}-${Math.random().toString(36).slice(2)}@${replyDomain}>`
     let sentMsgId = pregenMsgId
 
+    // Build Reply All CC from stored extractedData (to/cc captured at ingest time)
+    const ed = (email.extractedData as any) ?? {}
+    const storedTo: string[] = Array.isArray(ed.to) ? ed.to : []
+    const storedCc: string[] = Array.isArray(ed.cc) ? ed.cc : []
+    const replyAllCc = [...storedTo, ...storedCc].filter(
+      addr => addr && addr.includes('@') &&
+        addr.toLowerCase() !== email.fromEmail.toLowerCase() &&
+        addr.toLowerCase() !== account.accountEmail.toLowerCase()
+    )
+
     if (account.provider === 'google') {
       // Gmail — use the Gmail API to reply in the thread; returns the Gmail message ID
       const oauth2 = this.getGoogleOAuthClient()
@@ -2028,7 +2056,7 @@ Instructions:
       const refreshToken = account.encryptedRefreshToken ? decrypt(account.encryptedRefreshToken) : undefined
       oauth2.setCredentials({ access_token: accessToken, refresh_token: refreshToken, expiry_date: account.expiresAt?.getTime() })
       const gmail = new GmailAdapter(oauth2)
-      const gmailMsgId = await gmail.sendReply(email.fromEmail, subject, html, email.threadId ?? undefined)
+      const gmailMsgId = await gmail.sendReply(email.fromEmail, subject, html, email.threadId ?? undefined, replyAllCc.length ? replyAllCc : undefined)
       if (gmailMsgId) sentMsgId = gmailMsgId
     } else if (account.provider === 'microsoft') {
       // Office 365 — use OAuth2 SMTP with threading headers
@@ -2050,6 +2078,7 @@ Instructions:
         inReplyTo,
         references: refsChain.length ? refsChain : undefined,
         messageId: pregenMsgId,
+        cc: replyAllCc.length ? replyAllCc : undefined,
       })
       if (smtpMsgId) sentMsgId = smtpMsgId
     } else {
@@ -2066,6 +2095,7 @@ Instructions:
         inReplyTo,
         references: refsChain.length ? refsChain : undefined,
         messageId: pregenMsgId,
+        cc: replyAllCc.length ? replyAllCc : undefined,
       })
       if (smtpMsgId) sentMsgId = smtpMsgId
     }

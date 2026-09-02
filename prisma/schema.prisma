@@ -7,96 +7,80 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ─────────────────────────────────────────────
-// MULTI-TENANT
-// ─────────────────────────────────────────────
-
 model Tenant {
-  id         String    @id @default(cuid())
-  name       String
-  slug       String    @unique
-  industry   Industry?
-  plan       String    @default("free")
-  isActive   Boolean   @default(true)
-  isApproved Boolean   @default(false)
-  settings   Json      @default("{}")
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-
-  users                 User[]
-  agents                Agent[]
-  conversations         Conversation[]
-  tasks                 Task[]
+  id                    String                   @id @default(cuid())
+  name                  String
+  slug                  String                   @unique
+  industry              Industry?
+  plan                  String                   @default("free")
+  isActive              Boolean                  @default(true)
+  settings              Json                     @default("{}")
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+  isApproved            Boolean                  @default(false)
   tickets               ActivityTicket[]
+  agents                Agent[]
+  escalationRules       AgentEscalationRule[]
+  agentMemoryFacts      AgentMemoryFact[]
   approvals             Approval[]
-  knowledgeDocs         KnowledgeDocument[]
-  documents             GeneratedDocument[]
-  documentTemplates     DocumentTemplate[]
-  crmConnections        CRMConnection[]
-  webhooks              Webhook[]
   auditLogs             AuditLog[]
+  crmConnections        CRMConnection[]
   commLogs              CommunicationLog[]
   connectedAccounts     ConnectedAccount[]
-  emailAgentRules       EmailAgentRule[]
-  processedEmails       ProcessedEmail[]
-  emailConversations    EmailConversation[]
-  stormReports          StormReport[]
+  conversations         Conversation[]
   conversationSummaries ConversationSummary[]
-  agentMemoryFacts      AgentMemoryFact[]
+  documentTemplates     DocumentTemplate[]
+  emailAgentRules       EmailAgentRule[]
+  emailConversations    EmailConversation[]
+  documents             GeneratedDocument[]
+  knowledgeDocs         KnowledgeDocument[]
   messageChunks         MessageChunk[]
-  featureFlags          TenantFeatureFlag[]
+  processedEmails       ProcessedEmail[]
   socialAccounts        SocialAccount[]
-  socialPosts           SocialPost[]
   socialInteractions    SocialInteraction[]
+  socialPosts           SocialPost[]
+  stormReports          StormReport[]
   assignedAdmins        SuperAdminTenantAccess[]
+  tasks                 Task[]
+  featureFlags          TenantFeatureFlag[]
   hierarchy             TenantHierarchy?
-  escalationRules       AgentEscalationRule[]
+  users                 User[]
+  webhooks              Webhook[]
 }
-
-// ─────────────────────────────────────────────
-// USERS
-// ─────────────────────────────────────────────
 
 model User {
-  id               String   @id @default(cuid())
+  id               String                   @id @default(cuid())
   tenantId         String
-  email            String   @unique
+  email            String                   @unique
   name             String
   password         String
-  role             UserRole @default(USER)
+  role             UserRole                 @default(USER)
   avatar           String?
-  isActive         Boolean  @default(true)
+  isActive         Boolean                  @default(true)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
   createdByAdminId String?
-  maxTenants       Int?     @default(5)
-  permissions      String[] @default([])
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-
-  // ── Org hierarchy fields ──────────────────────────
-  designation      String?  // job title e.g. "Sales Manager", "Field Technician"
-  department       String?  // e.g. "Sales", "Operations", "Admin"
-  managerId        String?  // self-referencing: who this person reports to
-  phone            String?  // for agents to contact this person
-  nodePosition     Json?    // { x: number, y: number } for canvas drag position
-
-  tenant           Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  messages         Message[]
-  tasks            Task[]                   @relation("TaskAssignee")
-  approvals        Approval[]               @relation("ApprovalReviewer")
-  resetTokens      PasswordResetToken[]
-  ssoTokens        SsoToken[]
-  createdByAdmin   User?                    @relation("SubAdminCreator", fields: [createdByAdminId], references: [id])
-  createdSubAdmins User[]                   @relation("SubAdminCreator")
-  managedTenants   SuperAdminTenantAccess[] @relation("AdminTenantAssignments")
-  manager          User?                    @relation("OrgHierarchy", fields: [managerId], references: [id])
-  directReports    User[]                   @relation("OrgHierarchy")
+  maxTenants       Int?                     @default(5)
+  permissions      String[]                 @default([])
+  department       String?
+  designation      String?
+  managerId        String?
+  nodePosition     Json?
+  phone            String?
   supervisedAgents Agent[]                  @relation("AgentSupervisor")
   escalationRules  AgentEscalationRule[]    @relation("EscalationTarget")
+  approvals        Approval[]               @relation("ApprovalReviewer")
+  messages         Message[]
+  resetTokens      PasswordResetToken[]
+  ssoTokens        SsoToken[]
+  managedTenants   SuperAdminTenantAccess[] @relation("AdminTenantAssignments")
+  tasks            Task[]                   @relation("TaskAssignee")
+  createdByAdmin   User?                    @relation("SubAdminCreator", fields: [createdByAdminId], references: [id])
+  createdSubAdmins User[]                   @relation("SubAdminCreator")
+  manager          User?                    @relation("OrgHierarchy", fields: [managerId], references: [id])
+  directReports    User[]                   @relation("OrgHierarchy")
+  tenant           Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
-
-// ─────────────────────────────────────────────
-// SUPER ADMIN TENANT ACCESS
-// ─────────────────────────────────────────────
 
 model SuperAdminTenantAccess {
   id          String   @id @default(cuid())
@@ -104,88 +88,72 @@ model SuperAdminTenantAccess {
   tenantId    String
   assignedAt  DateTime @default(now())
   assignedBy  String?
-
-  admin  User   @relation("AdminTenantAssignments", fields: [adminUserId], references: [id], onDelete: Cascade)
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  admin       User     @relation("AdminTenantAssignments", fields: [adminUserId], references: [id], onDelete: Cascade)
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([adminUserId, tenantId])
   @@index([adminUserId])
   @@index([tenantId])
 }
 
-// ─────────────────────────────────────────────
-// AGENTS
-// ─────────────────────────────────────────────
-
 model Agent {
-  id            String      @id @default(cuid())
-  tenantId      String
-  name          String
-  role          String
-  industry      Industry
-  avatar        String?
-  voiceId       String?
-  prompt        String      @db.Text
-  status        AgentStatus @default(ACTIVE)
-  permissions   String[]
-  tools         String[]
-  approvalRules Json        @default("{}")
-  isTemplate    Boolean     @default(false)
-  templateId    String?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-
-  // ── Org hierarchy fields ──────────────────────────
-  supervisorUserId   String?  // which human user supervises this agent
-  hierarchyPosition  Json?    // { x: number, y: number } canvas position
-
-  tenant                Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  conversations         Conversation[]
-  tasks                 Task[]
-  approvals             Approval[]
-  knowledgeDocs         AgentKnowledge[]
-  crmAccess             AgentCRMAccess[]
-  emailRules            EmailAgentRule[]
-  connectedAccounts     ConnectedAccount[]
-  createdTickets        ActivityTicket[]      @relation("TicketCreator")
+  id                    String                @id @default(cuid())
+  tenantId              String
+  name                  String
+  role                  String
+  industry              Industry
+  avatar                String?
+  prompt                String
+  status                AgentStatus           @default(ACTIVE)
+  permissions           String[]
+  tools                 String[]
+  approvalRules         Json                  @default("{}")
+  isTemplate            Boolean               @default(false)
+  templateId            String?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  voiceId               String?
+  hierarchyPosition     Json?
+  supervisorUserId      String?
   assignedTickets       ActivityTicket[]      @relation("TicketAssignee")
-  conversationSummaries ConversationSummary[]
-  memoryFacts           AgentMemoryFact[]
-  messageChunks         MessageChunk[]
+  createdTickets        ActivityTicket[]      @relation("TicketCreator")
   supervisor            User?                 @relation("AgentSupervisor", fields: [supervisorUserId], references: [id])
+  tenant                Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  crmAccess             AgentCRMAccess[]
   escalationRules       AgentEscalationRule[] @relation("AgentEscalations")
+  knowledgeDocs         AgentKnowledge[]
+  memoryFacts           AgentMemoryFact[]
+  approvals             Approval[]
+  connectedAccounts     ConnectedAccount[]
+  conversations         Conversation[]
+  conversationSummaries ConversationSummary[]
+  emailRules            EmailAgentRule[]
+  messageChunks         MessageChunk[]
+  tasks                 Task[]
 }
 
-// ─────────────────────────────────────────────
-// ORG HIERARCHY
-// ─────────────────────────────────────────────
-
-// Stores the full ReactFlow canvas snapshot (nodes + edges positions)
 model TenantHierarchy {
   id        String   @id @default(cuid())
   tenantId  String   @unique
   layout    Json     @default("{}")
   updatedAt DateTime @updatedAt
-
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
-// Per-agent escalation rules: "when X happens, contact Y"
 model AgentEscalationRule {
-  id              String   @id @default(cuid())
-  tenantId        String
-  agentId         String
-  trigger         String   // e.g. "quote > 5000", "complaint", "vip", "after_hours"
-  triggerLabel    String   // human-readable: "Quote over $5,000"
-  action          String   @default("notify") // "notify" | "handoff"
-  targetUserId    String?  // human to notify/escalate to
-  targetAgentId   String?  // agent to hand off to
-  urgency         String   @default("NORMAL") // "URGENT" | "NORMAL"
-  createdAt       DateTime @default(now())
-
-  tenant      Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent       Agent   @relation("AgentEscalations", fields: [agentId], references: [id], onDelete: Cascade)
-  targetUser  User?   @relation("EscalationTarget", fields: [targetUserId], references: [id])
+  id            String   @id @default(cuid())
+  tenantId      String
+  agentId       String
+  trigger       String
+  triggerLabel  String
+  action        String   @default("notify")
+  targetUserId  String?
+  targetAgentId String?
+  urgency       String   @default("NORMAL")
+  createdAt     DateTime @default(now())
+  agent         Agent    @relation("AgentEscalations", fields: [agentId], references: [id], onDelete: Cascade)
+  targetUser    User?    @relation("EscalationTarget", fields: [targetUserId], references: [id])
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([agentId])
   @@index([tenantId])
@@ -197,24 +165,20 @@ model AgentTemplate {
   role          String
   industries    Industry[]
   description   String
-  defaultPrompt String     @db.Text
+  defaultPrompt String
   tools         String[]
-  avatar        String?
   isPublic      Boolean    @default(true)
   createdAt     DateTime   @default(now())
+  avatar        String?
 }
 
-// Super-admin-editable overrides layered on top of the static Help Guide
-// content shipped in apps/web/lib/help-content.ts. A row here means "this
-// article's text has been customized"; articleId also supports brand new
-// super-admin-authored articles (isCustom = true) that don't exist statically.
 model HelpArticleOverride {
   id          String   @id @default(cuid())
   articleId   String   @unique
   title       String?
   category    String?
   audience    String?
-  summary     String?  @db.Text
+  summary     String?
   steps       Json?
   tips        Json?
   isCustom    Boolean  @default(false)
@@ -223,8 +187,6 @@ model HelpArticleOverride {
   updatedAt   DateTime @updatedAt
 }
 
-// Images super-admin attaches to a Help Guide article (static or custom),
-// e.g. annotated CRM screenshots shown alongside the relevant steps.
 model HelpArticleImage {
   id        String   @id @default(cuid())
   articleId String
@@ -236,52 +198,42 @@ model HelpArticleImage {
   @@index([articleId])
 }
 
-// ─────────────────────────────────────────────
-// CHAT
-// ─────────────────────────────────────────────
-
 model Conversation {
-  id             String   @id @default(cuid())
+  id             String                @id @default(cuid())
   tenantId       String
   agentId        String
   userId         String?
   title          String?
-  channel        String   @default("INTERNAL")
-  callerPhone    String?
+  metadata       Json                  @default("{}")
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  channel        String                @default("INTERNAL")
+  status         String                @default("OPEN")
   callerEmail    String?
-  status         String   @default("OPEN")
-  isPrimary      Boolean  @default(false)
-  metadata       Json     @default("{}")
-  runningSummary String?  @db.Text // always-injected rolling summary of this thread
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  tenant    Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent     Agent                 @relation(fields: [agentId], references: [id])
-  messages  Message[]
-  tickets   ActivityTicket[]
-  summaries ConversationSummary[]
+  callerPhone    String?
+  isPrimary      Boolean               @default(false)
+  runningSummary String?
+  tickets        ActivityTicket[]
+  agent          Agent                 @relation(fields: [agentId], references: [id])
+  tenant         Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  summaries      ConversationSummary[]
+  messages       Message[]
 }
 
 model Message {
-  id             String      @id @default(cuid())
+  id             String       @id @default(cuid())
   conversationId String
   userId         String?
-  agentId        String?
   role           MessageRole
-  content        String      @db.Text
+  content        String
+  metadata       Json         @default("{}")
+  createdAt      DateTime     @default(now())
+  agentId        String?
   briefingType   String?
-  attachments    Json        @default("[]")
-  metadata       Json        @default("{}")
-  createdAt      DateTime    @default(now())
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  user         User?        @relation(fields: [userId], references: [id])
+  attachments    Json         @default("[]")
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User?        @relation(fields: [userId], references: [id])
 }
-
-// ─────────────────────────────────────────────
-// TASKS
-// ─────────────────────────────────────────────
 
 model Task {
   id               String       @id @default(cuid())
@@ -289,141 +241,115 @@ model Task {
   agentId          String?
   assigneeId       String?
   title            String
-  description      String?      @db.Text
+  description      String?
   intent           String       @default("general_task")
-  priority         TaskPriority @default(MEDIUM)
   status           TaskStatus   @default(PENDING)
   result           Json?
   requiresApproval Boolean      @default(false)
-  dueDate          DateTime?
   metadata         Json         @default("{}")
-  crmTaskId        String?
-  crmProvider      String?
-  pushedToCRM      Boolean      @default(false)
-  pushedToCRMAt    DateTime?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
-
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent    Agent?    @relation(fields: [agentId], references: [id])
-  assignee User?     @relation("TaskAssignee", fields: [assigneeId], references: [id])
-  approval Approval?
+  dueDate          DateTime?
+  priority         TaskPriority @default(MEDIUM)
+  crmProvider      String?
+  crmTaskId        String?
+  pushedToCRM      Boolean      @default(false)
+  pushedToCRMAt    DateTime?
+  approval         Approval?
+  agent            Agent?       @relation(fields: [agentId], references: [id])
+  assignee         User?        @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  tenant           Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
-
-// ─────────────────────────────────────────────
-// APPROVALS
-// ─────────────────────────────────────────────
 
 model Approval {
   id              String         @id @default(cuid())
   tenantId        String
   taskId          String?        @unique
-  agentId         String?
-  approverId      String?
-  type            String         @default("general")
-  title           String?
-  description     String?        @db.Text
   status          ApprovalStatus @default(PENDING)
-  payload         Json?
-  rejectionReason String?
-  notes           String?        @db.Text
-  resolvedAt      DateTime?
+  notes           String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
-
-  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  task     Task?  @relation(fields: [taskId], references: [id])
-  agent    Agent? @relation(fields: [agentId], references: [id])
-  approver User?  @relation("ApprovalReviewer", fields: [approverId], references: [id])
+  agentId         String?
+  approverId      String?
+  description     String?
+  payload         Json?
+  rejectionReason String?
+  resolvedAt      DateTime?
+  title           String?
+  type            String         @default("general")
+  agent           Agent?         @relation(fields: [agentId], references: [id])
+  approver        User?          @relation("ApprovalReviewer", fields: [approverId], references: [id])
+  task            Task?          @relation(fields: [taskId], references: [id])
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
-// ─────────────────────────────────────────────
-// KNOWLEDGE BASE
-// ─────────────────────────────────────────────
-
 model KnowledgeDocument {
-  id        String   @id @default(cuid())
+  id        String           @id @default(cuid())
   tenantId  String
   name      String
   fileType  String
   fileUrl   String
   fileSize  Int
-  status    String   @default("processing")
-  createdAt DateTime @default(now())
-
-  tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  chunks KnowledgeChunk[]
-  agents AgentKnowledge[]
+  status    String           @default("processing")
+  createdAt DateTime         @default(now())
+  agents    AgentKnowledge[]
+  chunks    KnowledgeChunk[]
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 model KnowledgeChunk {
-  id         String   @id @default(cuid())
+  id         String            @id @default(cuid())
   documentId String
-  content    String   @db.Text
+  content    String
   embedding  Json?
-  metadata   Json     @default("{}")
+  metadata   Json              @default("{}")
   chunkIndex Int
-  createdAt  DateTime @default(now())
-
-  document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdAt  DateTime          @default(now())
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 }
 
 model AgentKnowledge {
   agentId    String
   documentId String
-
-  agent    Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  agent      Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@id([agentId, documentId])
 }
 
-// ─────────────────────────────────────────────
-// INDUSTRY KNOWLEDGE PACKS (platform-level, no tenantId)
-// Pre-built knowledge shared across all tenants in the same industry.
-// Super admin populates once — every tenant benefits automatically.
-// ─────────────────────────────────────────────
-
 model IndustryKnowledgePack {
-  id          String   @id @default(cuid())
-  industry    String   @unique // "ROOFING", "CLEANING", "HVAC", "PLUMBING"
+  id          String                 @id @default(cuid())
+  industry    String                 @unique
   name        String
   description String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  documents IndustryKnowledgeDoc[]
+  isActive    Boolean                @default(true)
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+  documents   IndustryKnowledgeDoc[]
 }
 
 model IndustryKnowledgeDoc {
-  id         String   @id @default(cuid())
+  id         String                   @id @default(cuid())
   packId     String
   name       String
-  category   String // "PRICING", "PRODUCTS", "INSURANCE", "PROCESS", "LEGAL", "TERMINOLOGY"
-  agentRoles String[] // ["estimator","sales","intake"] — which roles this doc is relevant for
-  content    String   @db.Text
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-
-  pack   IndustryKnowledgePack    @relation(fields: [packId], references: [id], onDelete: Cascade)
-  chunks IndustryKnowledgeChunk[]
+  category   String
+  agentRoles String[]
+  content    String
+  isActive   Boolean                  @default(true)
+  createdAt  DateTime                 @default(now())
+  chunks     IndustryKnowledgeChunk[]
+  pack       IndustryKnowledgePack    @relation(fields: [packId], references: [id], onDelete: Cascade)
 }
 
 model IndustryKnowledgeChunk {
-  id         String   @id @default(cuid())
+  id         String               @id @default(cuid())
   docId      String
-  content    String   @db.Text
+  content    String
   embedding  Json?
   chunkIndex Int
-  createdAt  DateTime @default(now())
-
-  doc IndustryKnowledgeDoc @relation(fields: [docId], references: [id], onDelete: Cascade)
+  createdAt  DateTime             @default(now())
+  doc        IndustryKnowledgeDoc @relation(fields: [docId], references: [id], onDelete: Cascade)
 }
-
-// ─────────────────────────────────────────────
-// DOCUMENTS
-// ─────────────────────────────────────────────
 
 model GeneratedDocument {
   id        String   @id @default(cuid())
@@ -436,8 +362,7 @@ model GeneratedDocument {
   content   Json?
   status    String   @default("generating")
   createdAt DateTime @default(now())
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 model DocumentTemplate {
@@ -450,44 +375,33 @@ model DocumentTemplate {
   isDefault   Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
-// ─────────────────────────────────────────────
-// CRM
-// ─────────────────────────────────────────────
-
 model CRMConnection {
-  id        String      @id @default(cuid())
-  tenantId  String
-  provider  CRMProvider
-  name      String
-  baseUrl   String?
-  apiKey    String?
-  config    Json        @default("{}")
-  isActive  Boolean     @default(true)
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
-
-  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id          String           @id @default(cuid())
+  tenantId    String
+  provider    CRMProvider
+  name        String
+  baseUrl     String?
+  apiKey      String?
+  config      Json             @default("{}")
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
   agentAccess AgentCRMAccess[]
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 model AgentCRMAccess {
   agentId      String
   connectionId String
   permissions  String[]
-
-  agent      Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  connection CRMConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  connection   CRMConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
   @@id([agentId, connectionId])
 }
-
-// ─────────────────────────────────────────────
-// PASSWORD RESET
-// ─────────────────────────────────────────────
 
 model PasswordResetToken {
   id        String   @id @default(cuid())
@@ -496,31 +410,380 @@ model PasswordResetToken {
   expiresAt DateTime
   used      Boolean  @default(false)
   createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
-
-// ─────────────────────────────────────────────
-// COMMUNICATIONS (SMS / WhatsApp / Voice)
-// ─────────────────────────────────────────────
 
 model CommunicationLog {
   id             String        @id @default(cuid())
   tenantId       String
-  channel        CommChannel // SMS | WHATSAPP | VOICE
-  direction      CommDirection // INBOUND | OUTBOUND
+  channel        CommChannel
+  direction      CommDirection
   from           String
   to             String
-  body           String?       @db.Text
+  body           String?
   status         String        @default("sent")
   twilioSid      String?
-  durationSec    Int? // for calls
+  durationSec    Int?
   agentId        String?
   conversationId String?
   metadata       Json          @default("{}")
   createdAt      DateTime      @default(now())
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+model Webhook {
+  id        String       @id @default(cuid())
+  tenantId  String
+  url       String
+  events    String[]
+  secret    String?
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  tenant    Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  logs      WebhookLog[]
+}
+
+model WebhookLog {
+  id         String   @id @default(cuid())
+  webhookId  String
+  event      String
+  payload    Json
+  statusCode Int?
+  success    Boolean
+  createdAt  DateTime @default(now())
+  webhook    Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String?
+  action     String
+  resource   String
+  resourceId String?
+  metadata   Json     @default("{}")
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model ConnectedAccount {
+  id                    String              @id @default(cuid())
+  tenantId              String
+  provider              String
+  accountEmail          String
+  accountName           String?
+  encryptedAccessToken  String
+  encryptedRefreshToken String?
+  scopes                String[]
+  expiresAt             DateTime?
+  status                String              @default("active")
+  metadata              Json                @default("{}")
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  assignedAgentId       String?
+  assignedAgent         Agent?              @relation(fields: [assignedAgentId], references: [id])
+  tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  emailRules            EmailAgentRule[]
+  conversations         EmailConversation[]
+  processedEmails       ProcessedEmail[]
+
+  @@unique([tenantId, provider, accountEmail])
+}
+
+model EmailAgentRule {
+  id                  String           @id @default(cuid())
+  tenantId            String
+  emailType           String
+  mode                String           @default("notify_only")
+  replyTemplate       String?
+  confidenceThreshold Int              @default(80)
+  isActive            Boolean          @default(true)
+  assignedAgentId     String?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  connectedAccountId  String
+  assignedAgent       Agent?           @relation(fields: [assignedAgentId], references: [id])
+  connectedAccount    ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  tenant              Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([connectedAccountId, emailType])
+}
+
+model ProcessedEmail {
+  id                 String             @id @default(cuid())
+  tenantId           String
+  connectedAccountId String
+  gmailMessageId     String
+  threadId           String?
+  fromEmail          String
+  fromName           String?
+  subject            String?
+  receivedAt         DateTime
+  classification     String?
+  confidence         Int?
+  extractedData      Json               @default("{}")
+  action             String?
+  status             String             @default("pending")
+  draftReplyId       String?
+  approvalId         String?
+  taskId             String?
+  errorMessage       String?
+  createdAt          DateTime           @default(now())
+  conversationId     String?
+  connectedAccount   ConnectedAccount   @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  conversation       EmailConversation? @relation(fields: [conversationId], references: [id])
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([connectedAccountId, gmailMessageId])
+}
+
+model EmailConversation {
+  id                 String           @id @default(cuid())
+  tenantId           String
+  connectedAccountId String
+  customerEmail      String
+  customerName       String?
+  subject            String?
+  status             String           @default("open")
+  lastMessageId      String?
+  allMessageIds      String[]         @default([])
+  assignedAgentId    String?
+  lastReplyAt        DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  connectedAccount   ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  tenant             Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  messages           ProcessedEmail[]
+
+  @@index([tenantId, customerEmail])
+  @@index([connectedAccountId, customerEmail])
+}
+
+model ActivityTicket {
+  id               String        @id @default(cuid())
+  ticketNumber     Int           @default(autoincrement())
+  tenantId         String
+  source           String        @default("INTERNAL")
+  conversationId   String?
+  title            String
+  subject          String?
+  description      String?
+  notes            String?
+  type             String        @default("GENERAL")
+  status           TicketStatus  @default(OPEN)
+  priority         TaskPriority  @default(MEDIUM)
+  contactRef       String?
+  contactPhone     String?
+  contactEmail     String?
+  createdByAgentId String?
+  assignedAgentId  String?
+  nextAction       String?
+  followUpAt       DateTime?
+  resolvedAt       DateTime?
+  activityLog      Json          @default("[]")
+  searchEmbedding  Json?
+  metadata         Json          @default("{}")
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  leadId           String?
+  assignedAgent    Agent?        @relation("TicketAssignee", fields: [assignedAgentId], references: [id])
+  conversation     Conversation? @relation(fields: [conversationId], references: [id])
+  createdBy        Agent?        @relation("TicketCreator", fields: [createdByAgentId], references: [id])
+  tenant           Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([tenantId, source])
+  @@index([tenantId, assignedAgentId])
+  @@index([tenantId, followUpAt])
+  @@index([tenantId, leadId])
+}
+
+model ConversationSummary {
+  id             String        @id @default(cuid())
+  tenantId       String
+  agentId        String
+  conversationId String?
+  summaryType    String        @default("CONVERSATION")
+  summary        String
+  keyEntities    String[]
+  embedding      Json?
+  messageCount   Int           @default(0)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  subjectKey     String?
+  importance     Int           @default(0)
+  deletedAt      DateTime?
+  agent          Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, agentId, createdAt])
+  @@index([tenantId, agentId, subjectKey])
+}
+
+model AgentMemoryFact {
+  id                   String    @id @default(cuid())
+  tenantId             String
+  agentId              String
+  subjectKey           String
+  fact                 String
+  category             String    @default("general")
+  embedding            Json?
+  confidence           Float     @default(0.8)
+  sourceConversationId String?
+  importance           Int       @default(1)
+  deletedAt            DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  agent                Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tenant               Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, agentId, subjectKey])
+  @@index([tenantId, agentId, deletedAt])
+}
+
+model MessageChunk {
+  id             String   @id @default(cuid())
+  tenantId       String
+  agentId        String
+  conversationId String
+  messageId      String
+  subjectKey     String?
+  role           String
+  chunkIndex     Int      @default(0)
+  content        String
+  embedding      Json?
+  createdAt      DateTime @default(now())
+  agent          Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, agentId, conversationId])
+  @@index([tenantId, agentId, subjectKey])
+  @@index([messageId])
+}
+
+model StormReport {
+  id         String   @id @default(cuid())
+  tenantId   String
+  reportDate DateTime
+  type       String
+  time       String?
+  state      String
+  county     String?
+  location   String?
+  lat        Float?
+  lon        Float?
+  size       Float?
+  comments   String?
+  createdAt  DateTime @default(now())
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, reportDate])
+  @@index([tenantId, state])
+  @@index([tenantId, type, reportDate])
+}
+
+model TenantFeatureFlag {
+  id        String    @id @default(cuid())
+  tenantId  String
+  feature   String
+  enabled   Boolean   @default(false)
+  enabledAt DateTime?
+  enabledBy String?
+  notes     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, feature])
+  @@index([tenantId])
+}
+
+model SocialAccount {
+  id           String              @id @default(cuid())
+  tenantId     String
+  platform     String
+  accountName  String
+  pageId       String?
+  accessToken  String
+  refreshToken String?
+  expiresAt    DateTime?
+  isActive     Boolean             @default(true)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  interactions SocialInteraction[]
+  posts        SocialPost[]
+
+  @@unique([tenantId, platform])
+  @@index([tenantId])
+}
+
+model SocialPost {
+  id              String         @id @default(cuid())
+  tenantId        String
+  agentId         String?
+  socialAccountId String?
+  platform        String
+  content         String
+  imageUrl        String?
+  imagePrompt     String?
+  contentType     String         @default("general")
+  status          String         @default("draft")
+  scheduledAt     DateTime?
+  publishedAt     DateTime?
+  platformPostId  String?
+  errorMessage    String?
+  approvalId      String?
+  metadata        Json           @default("{}")
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  socialAccount   SocialAccount? @relation(fields: [socialAccountId], references: [id])
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([tenantId, platform])
+  @@index([scheduledAt])
+}
+
+model SocialInteraction {
+  id              String        @id @default(cuid())
+  tenantId        String
+  socialAccountId String
+  agentId         String?
+  platform        String
+  type            String
+  externalId      String
+  parentId        String?
+  senderId        String?
+  senderName      String?
+  content         String
+  replyContent    String?
+  status          String        @default("received")
+  errorMessage    String?
+  createdAt       DateTime      @default(now())
+  repliedAt       DateTime?
+  socialAccount   SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([platform, externalId])
+  @@index([tenantId, createdAt])
+  @@index([socialAccountId])
+}
+
+model SsoToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  source    String
+  used      Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token, source])
+  @@index([userId])
 }
 
 enum CommChannel {
@@ -534,284 +797,6 @@ enum CommDirection {
   OUTBOUND
 }
 
-// ─────────────────────────────────────────────
-// WEBHOOKS
-// ─────────────────────────────────────────────
-
-model Webhook {
-  id        String   @id @default(cuid())
-  tenantId  String
-  url       String
-  events    String[]
-  secret    String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-
-  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  logs   WebhookLog[]
-}
-
-model WebhookLog {
-  id         String   @id @default(cuid())
-  webhookId  String
-  event      String
-  payload    Json
-  statusCode Int?
-  success    Boolean
-  createdAt  DateTime @default(now())
-
-  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
-}
-
-// ─────────────────────────────────────────────
-// AUDIT
-// ─────────────────────────────────────────────
-
-model AuditLog {
-  id         String   @id @default(cuid())
-  tenantId   String
-  userId     String?
-  action     String
-  resource   String
-  resourceId String?
-  metadata   Json     @default("{}")
-  ipAddress  String?
-  createdAt  DateTime @default(now())
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-}
-
-// ─────────────────────────────────────────────
-// INTEGRATIONS — CONNECTED ACCOUNTS
-// ─────────────────────────────────────────────
-
-model ConnectedAccount {
-  id                    String    @id @default(cuid())
-  tenantId              String
-  provider              String // 'google' | 'imap'
-  accountEmail          String
-  accountName           String?
-  encryptedAccessToken  String    @db.Text
-  encryptedRefreshToken String?   @db.Text
-  scopes                String[] // granted scopes
-  expiresAt             DateTime?
-  status                String    @default("active") // active | expired | revoked
-  metadata              Json      @default("{}") // imap host/port/secure, display name, etc.
-  assignedAgentId       String?   // override: all mail from this account is handled by this agent
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
-
-  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  processedEmails ProcessedEmail[]
-  assignedAgent   Agent?              @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
-  emailRules      EmailAgentRule[]
-  conversations   EmailConversation[]
-
-  @@unique([tenantId, provider, accountEmail])
-}
-
-model EmailAgentRule {
-  id                  String   @id @default(cuid())
-  tenantId            String
-  connectedAccountId  String   // rules are scoped per connected account
-  emailType           String   // lead_inquiry | complaint | quote_request | etc.
-  mode                String   @default("notify_only") // auto_reply | auto_draft | approval_required | notify_only | block
-  replyTemplate       String?  @db.Text
-  confidenceThreshold Int      @default(80)
-  isActive            Boolean  @default(true)
-  assignedAgentId     String?  // which agent writes/sends replies for this email type
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-
-  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
-  assignedAgent    Agent?           @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
-
-  @@unique([connectedAccountId, emailType])
-}
-
-model ProcessedEmail {
-  id                 String   @id @default(cuid())
-  tenantId           String
-  connectedAccountId String
-  conversationId     String?  // links to EmailConversation
-  gmailMessageId     String
-  threadId           String?
-  fromEmail          String
-  fromName           String?
-  subject            String?
-  receivedAt         DateTime
-  classification     String? // email type
-  confidence         Int?
-  extractedData      Json     @default("{}")
-  action             String? // replied | drafted | archived | flagged | escalated | blocked
-  status             String   @default("pending") // pending | actioned | skipped | failed
-  draftReplyId       String? // Gmail draft ID if draft was created
-  approvalId         String?
-  taskId             String?
-  errorMessage       String?
-  createdAt          DateTime @default(now())
-
-  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  connectedAccount ConnectedAccount   @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
-  conversation     EmailConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-
-  @@unique([connectedAccountId, gmailMessageId])
-}
-
-// ─────────────────────────────────────────────
-// EMAIL CONVERSATIONS (THREAD TRACKING)
-// ─────────────────────────────────────────────
-
-model EmailConversation {
-  id                 String    @id @default(cuid())
-  tenantId           String
-  connectedAccountId String
-  customerEmail      String
-  customerName       String?
-  subject            String?
-  status             String    @default("open") // open | closed | waiting
-  // RFC Message-ID of the most recent message in the thread (inbound or outbound)
-  lastMessageId      String?
-  // All RFC Message-IDs seen in this thread (inbound + outbound) for References matching
-  allMessageIds      String[]  @default([])
-  assignedAgentId    String?
-  lastReplyAt        DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-
-  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
-  messages         ProcessedEmail[]
-
-  @@index([tenantId, customerEmail])
-  @@index([connectedAccountId, customerEmail])
-}
-
-// ─────────────────────────────────────────────
-// ACTIVITY TICKETS
-// ─────────────────────────────────────────────
-
-model ActivityTicket {
-  id               String       @id @default(cuid())
-  ticketNumber     Int          @default(autoincrement())
-  tenantId         String
-  source           String       @default("INTERNAL") // "INTERNAL" | "WIDGET"
-  conversationId   String?
-  title            String
-  subject          String?
-  description      String?      @db.Text
-  notes            String?      @db.Text // handoff notes, agent-to-agent context
-  type             String       @default("GENERAL")
-  status           TicketStatus @default(OPEN)
-  priority         TaskPriority @default(MEDIUM)
-  contactRef       String?
-  contactPhone     String?
-  contactEmail     String?
-  leadId           String? // CRM lead ID — all pipeline tickets for one lead share this value
-  createdByAgentId String?
-  assignedAgentId  String?
-  nextAction       String?      @db.Text
-  followUpAt       DateTime?
-  resolvedAt       DateTime?
-  activityLog      Json         @default("[]")
-  searchEmbedding  Json? // vector embedding of title+description+notes for intent search
-  metadata         Json         @default("{}")
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
-
-  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy     Agent?        @relation("TicketCreator", fields: [createdByAgentId], references: [id], onDelete: SetNull)
-  assignedAgent Agent?        @relation("TicketAssignee", fields: [assignedAgentId], references: [id], onDelete: SetNull)
-  conversation  Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-
-  @@index([tenantId, status])
-  @@index([tenantId, source])
-  @@index([tenantId, assignedAgentId])
-  @@index([tenantId, followUpAt])
-  @@index([tenantId, leadId])
-}
-
-// ─────────────────────────────────────────────
-// AGENT MEMORY
-// ─────────────────────────────────────────────
-
-model ConversationSummary {
-  id             String    @id @default(cuid())
-  tenantId       String
-  agentId        String
-  conversationId String? // null for handoff memories (no direct conversation)
-  summaryType    String    @default("CONVERSATION") // "CONVERSATION" | "HANDOFF" | "EPISODE"
-  summary        String    @db.Text
-  keyEntities    String[]
-  embedding      Json?
-  messageCount   Int       @default(0)
-  subjectKey     String? // identity binding: user:/customer:/phone:/email:/anon:
-  importance     Int       @default(0) // 0-5; >=4 survives nightly cleanup
-  deletedAt      DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId, agentId, createdAt])
-  @@index([tenantId, agentId, subjectKey])
-}
-
-// Durable profile facts — always injected for a known subject (ChatGPT-like memory)
-model AgentMemoryFact {
-  id                   String    @id @default(cuid())
-  tenantId             String
-  agentId              String
-  subjectKey           String // user:ID | customer:ID | phone:E164 | email:addr | anon:convId
-  fact                 String    @db.Text
-  category             String    @default("general") // identity | preference | decision | constraint | general
-  embedding            Json?
-  confidence           Float     @default(0.8)
-  sourceConversationId String?
-  importance           Int       @default(1) // 1-5; >=4 never auto-deleted
-  deletedAt            DateTime?
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId, agentId, subjectKey])
-  @@index([tenantId, agentId, deletedAt])
-}
-
-// Raw-message vector store — chunked + embedded copy of every chat message.
-// Used as a fallback recall layer when the compressed runningSummary/episodic
-// search (which only ever covers the conversation's earliest ~60 messages)
-// misses something that was said further into a long-running conversation.
-model MessageChunk {
-  id             String   @id @default(cuid())
-  tenantId       String
-  agentId        String
-  conversationId String
-  messageId      String
-  subjectKey     String? // user:ID | customer:ID | phone:E164 | email:addr | anon:convId
-  role           String // USER | ASSISTANT
-  chunkIndex     Int      @default(0)
-  content        String   @db.Text
-  embedding      Json?
-  createdAt      DateTime @default(now())
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId, agentId, conversationId])
-  @@index([tenantId, agentId, subjectKey])
-  @@index([messageId])
-}
-
-// ─────────────────────────────────────────────
-// ENUMS
-// ─────────────────────────────────────────────
-
 enum Industry {
   ROOFING
   CAR_DEALERSHIP
@@ -821,22 +806,22 @@ enum Industry {
   HEALTHCARE
   CONSTRUCTION
   REAL_ESTATE
+  OTHER
   HVAC
   LANDSCAPING
   PEST_CONTROL
   INSURANCE
   HUMAN_RESOURCES
-  OTHER
 }
 
 enum UserRole {
   SUPER_ADMIN
-  SCOPED_ADMIN
   TENANT_OWNER
   TENANT_ADMIN
   MANAGER
   USER
   VIEWER
+  SCOPED_ADMIN
 }
 
 enum AgentStatus {
@@ -847,13 +832,13 @@ enum AgentStatus {
 
 enum TaskStatus {
   PENDING
-  IN_PROGRESS
   PROCESSING
   REQUIRES_APPROVAL
-  PENDING_APPROVAL
   APPROVED
   COMPLETED
   FAILED
+  IN_PROGRESS
+  PENDING_APPROVAL
   CANCELLED
 }
 
@@ -893,152 +878,6 @@ enum CRMProvider {
   SALESFORCE
   ZOHO
   JOBNIMBUS
-  STORMBUDDI
   CUSTOM
-}
-
-// ─────────────────────────────────────────────
-// STORM REPORTS (NOAA SPC daily scrape)
-// ─────────────────────────────────────────────
-
-model StormReport {
-  id         String   @id @default(cuid())
-  tenantId   String
-  reportDate DateTime // the date the storm occurred (UTC)
-  type       String // "hail" | "tornado" | "wind"
-  time       String? // original UTC time string e.g. "1930"
-  state      String // two-letter state e.g. "TX"
-  county     String?
-  location   String? // e.g. "3 ESE Houston"
-  lat        Float?
-  lon        Float?
-  size       Float? // hail: inches. wind: mph. tornado: null
-  comments   String?
-  createdAt  DateTime @default(now())
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId, reportDate])
-  @@index([tenantId, state])
-  @@index([tenantId, type, reportDate])
-}
-
-// ─────────────────────────────────────────────
-// FEATURE FLAGS (Super Admin per-tenant control)
-// ─────────────────────────────────────────────
-
-model TenantFeatureFlag {
-  id        String    @id @default(cuid())
-  tenantId  String
-  feature   String
-  enabled   Boolean   @default(false)
-  enabledAt DateTime?
-  enabledBy String?
-  notes     String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  @@unique([tenantId, feature])
-  @@index([tenantId])
-}
-
-// ─────────────────────────────────────────────
-// SOCIAL MEDIA
-// ─────────────────────────────────────────────
-
-model SocialAccount {
-  id           String    @id @default(cuid())
-  tenantId     String
-  platform     String // "facebook" | "instagram" | "linkedin" | "x"
-  accountName  String
-  pageId       String?
-  accessToken  String    @db.Text
-  refreshToken String?   @db.Text
-  expiresAt    DateTime?
-  isActive     Boolean   @default(true)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-
-  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  posts        SocialPost[]
-  interactions SocialInteraction[]
-
-  @@unique([tenantId, platform])
-  @@index([tenantId])
-}
-
-model SocialPost {
-  id              String    @id @default(cuid())
-  tenantId        String
-  agentId         String?
-  socialAccountId String?
-  platform        String
-  content         String    @db.Text
-  imageUrl        String?
-  imagePrompt     String?
-  contentType     String    @default("general") // "educational" | "promotional" | "story" | "team" | "review" | "general"
-  status          String    @default("draft") // "draft" | "pending_approval" | "scheduled" | "published" | "failed"
-  scheduledAt     DateTime?
-  publishedAt     DateTime?
-  platformPostId  String?
-  errorMessage    String?
-  approvalId      String?
-  metadata        Json      @default("{}")
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id])
-
-  @@index([tenantId, status])
-  @@index([tenantId, platform])
-  @@index([scheduledAt])
-}
-
-// Inbound comments/DMs on connected social accounts + the agent's auto-reply.
-// externalId is the platform's comment/message id — used to dedupe retried webhook
-// deliveries and to guard against replying to our own auto-reply (infinite loop).
-model SocialInteraction {
-  id              String    @id @default(cuid())
-  tenantId        String
-  socialAccountId String
-  agentId         String?
-  platform        String // "facebook" | "instagram"
-  type            String // "comment" | "message"
-  externalId      String // platform comment id or message id
-  parentId        String? // post id (comment) or conversation thread id (message)
-  senderId        String? // commenter PSID/IGSID or sender PSID/IGSID
-  senderName      String?
-  content         String    @db.Text
-  replyContent    String?   @db.Text
-  status          String    @default("received") // received | replied | skipped | failed
-  errorMessage    String?
-  createdAt       DateTime  @default(now())
-  repliedAt       DateTime?
-
-  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
-
-  @@unique([platform, externalId])
-  @@index([tenantId, createdAt])
-  @@index([socialAccountId])
-}
-
-// SSO tokens for external CRM integrations (e.g., StormBuddi)
-// Tokens are single-use and expire after 5 minutes
-model SsoToken {
-  id        String   @id @default(cuid())
-  userId    String
-  token     String   @unique
-  source    String   // "stormbuddi" | other CRM identifiers
-  used      Boolean  @default(false)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([token, source])
-  @@index([userId])
+  STORMBUDDI
 }

@@ -2695,7 +2695,18 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                 })
                 this.logger.log(`[ContactHuman] WhatsApp sent to ${targetUser.name} (${targetUser.phone})`)
               } catch (waErr: any) {
-                this.logger.warn(`[ContactHuman] WhatsApp send failed: ${waErr.message}`)
+                // Twilio template restriction — log clearly but do NOT fail the escalation
+                // The ticket has already been created; dashboard notification still works
+                const isTemplateError = waErr.message?.toLowerCase().includes('template') || waErr.code === 63016 || waErr.code === 63003
+                if (isTemplateError) {
+                  this.logger.warn(
+                    `[ContactHuman] WhatsApp blocked by Twilio template restriction for ${targetUser.name}. ` +
+                    `Staff must send a message to your Twilio number first to open the 24-hour session window. ` +
+                    `Ticket #${ticket.id.slice(-6)} still created on dashboard.`
+                  )
+                } else {
+                  this.logger.warn(`[ContactHuman] WhatsApp send failed for ${targetUser.name}: ${waErr.message} (code: ${waErr.code})`)
+                }
               }
             }
 

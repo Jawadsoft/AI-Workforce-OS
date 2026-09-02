@@ -189,6 +189,23 @@ export class ImapAdapter {
       const inReplyToRaw = getRawHeader('In-Reply-To')
       const referencesRaw = getRawHeader('References')
 
+      // Parse To: and Cc: for Reply All support
+      const parseAddressList = (header: string): string[] => {
+        if (!header) return []
+        return header
+          .split(',')
+          .map(a => {
+            // Extract bare email from "Name <email>" or "email"
+            const m = a.match(/<([^>]+)>/) ?? a.match(/([^\s,]+@[^\s,]+)/)
+            return m?.[1]?.trim() ?? ''
+          })
+          .filter(a => a.includes('@'))
+      }
+      const toRaw = getRawHeader('To')
+      const ccRaw = getRawHeader('Cc')
+      const toAddresses = parseAddressList(toRaw)
+      const ccAddresses = parseAddressList(ccRaw)
+
       const body = rawStr ? this.extractTextFromRaw(rawStr) : ''
       const uid = msg.uid ?? msg.seq ?? String(Date.now())
 
@@ -205,6 +222,8 @@ export class ImapAdapter {
         receivedAt: env?.date ? new Date(env.date) : new Date(),
         snippet: body.slice(0, 200).replace(/\s+/g, ' ').trim(),
         labelIds,
+        to: toAddresses.length ? toAddresses : undefined,
+        cc: ccAddresses.length ? ccAddresses : undefined,
         inReplyTo: inReplyToRaw || undefined,
         references: referencesRaw ? referencesRaw.split(/\s+/).filter(Boolean) : undefined,
       }
@@ -271,8 +290,9 @@ export class ImapAdapter {
     inReplyTo?: string
     references?: string[]
     fromName?: string
+    cc?: string[]
   }): Promise<boolean> {
-    const { to, subject, htmlBody, messageId, inReplyTo, references, fromName } = params
+    const { to, subject, htmlBody, messageId, inReplyTo, references, fromName, cc } = params
     if (!to || !to.includes('@')) return false
 
     const client = this.createClient()
@@ -294,9 +314,11 @@ export class ImapAdapter {
       const fromDisplay = fromName ? `"${fromName}" <${this.config.user}>` : this.config.user
       const dateStr = new Date().toUTCString()
 
+      const ccList = (cc ?? []).filter(a => a && a.includes('@') && a.toLowerCase() !== this.config.user.toLowerCase())
       const rawMessage = [
         `From: ${fromDisplay}`,
         `To: ${to}`,
+        ...(ccList.length ? [`Cc: ${ccList.join(', ')}`] : []),
         `Date: ${dateStr}`,
         `Message-ID: ${messageId}`,
         `Subject: ${subject}`,

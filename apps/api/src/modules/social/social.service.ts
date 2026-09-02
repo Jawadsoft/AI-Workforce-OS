@@ -20,7 +20,10 @@ export interface GeneratePostOptions {
   brief: string
   platforms: string[]
   contentType?: string
+  /** Background photo uploaded from the Social page — replaces the AI-generated background */
   uploadedImageUrl?: string
+  /** Logo/image uploaded via chat — placed as the corner logo on the branded flyer overlay instead of the brand-kit logo */
+  logoOverrideUrl?: string
   /** Extra guidance when regenerating a better image (e.g. "sharper roofing photo, no blur") */
   imageFeedback?: string
   /** Richer content format — defaults to a normal single-image post */
@@ -163,6 +166,7 @@ export class SocialService {
           opts.format ?? 'single_image',
           opts.tenantId,
           opts.imageStyle ?? 'branded',
+          opts.logoOverrideUrl,
         ),
       ),
     )
@@ -180,6 +184,7 @@ export class SocialService {
     format: PostFormat = 'single_image',
     tenantId?: string,
     imageStyle: ImageStyle = 'branded',
+    logoOverrideUrl?: string,
   ): Promise<GeneratedPostDraft> {
     const spec = PLATFORM_SPECS[platform] ?? PLATFORM_SPECS.facebook
 
@@ -273,13 +278,13 @@ Only return the JSON object, nothing else.`
     let imageUrl: string | null = uploadedImageUrl ?? null
     let imagePrompt: string | null = null
     if (!imageUrl) {
-      const imageResult = await this.generateImage(brief, brainContext, contentType, imageFeedback, tenantId, imageStyle)
+      const imageResult = await this.generateImage(brief, brainContext, contentType, imageFeedback, tenantId, imageStyle, logoOverrideUrl)
       imageUrl = imageResult.url
       imagePrompt = imageResult.prompt
     } else if (imageStyle === 'branded' && tenantId) {
-      // Apply branded headline/logo/CTA overlay on top of the user-uploaded image
+      // Apply branded headline/logo/CTA overlay on top of the user-uploaded background photo
       try {
-        const branded = await this.brandImage(imageUrl, brief, brainContext, contentType, tenantId)
+        const branded = await this.brandImage(imageUrl, brief, brainContext, contentType, tenantId, logoOverrideUrl)
         if (branded) imageUrl = branded
       } catch (err: any) {
         this.logger.warn(`Flyer branding on uploaded image failed, using raw upload: ${err.message}`)
@@ -393,6 +398,7 @@ Only return the JSON.`,
     imageFeedback?: string,
     tenantId?: string,
     imageStyle: ImageStyle = 'branded',
+    logoOverrideUrl?: string,
   ): Promise<{ url: string | null; prompt: string | null }> {
     let result: { url: string | null; prompt: string | null } = { url: null, prompt: null }
 
@@ -451,7 +457,7 @@ Only return the JSON.`,
     // unless the caller explicitly asked for a plain/clean image.
     if (result.url && imageStyle === 'branded' && tenantId) {
       try {
-        const branded = await this.brandImage(result.url, brief, brainContext, contentType, tenantId)
+        const branded = await this.brandImage(result.url, brief, brainContext, contentType, tenantId, logoOverrideUrl)
         if (branded) return { url: branded, prompt: result.prompt }
       } catch (err: any) {
         this.logger.warn(`Flyer branding failed, using clean image instead: ${err.message}`)
@@ -468,6 +474,7 @@ Only return the JSON.`,
     brainContext: string,
     contentType: string,
     tenantId: string,
+    logoOverrideUrl?: string,
   ): Promise<string | null> {
     const [copy, tenant] = await Promise.all([
       this.generateFlyerCopy(brief, brainContext, contentType),
@@ -478,7 +485,7 @@ Only return the JSON.`,
 
     const pngBuffer = await this.flyer.render(backgroundUrl, copy, {
       companyName: brandKit.companyName,
-      logoUrl: brandKit.logoUrl,
+      logoUrl: logoOverrideUrl ?? brandKit.logoUrl,
       phone: brandKit.phone,
       website: brandKit.website,
       accentColor: brandKit.accentColor,

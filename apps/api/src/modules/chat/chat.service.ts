@@ -2797,8 +2797,8 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
             }
             emit?.({ step: { label: 'Generating social media posts', status: 'active' } })
             const format = params.format ?? 'single_image'
-            // Use the first chat-attached image (logo/photo) as the post image if the user uploaded one
-            const chatUploadedImageUrl = uploadedImageUrls && uploadedImageUrls.length > 0
+            // Use the most recently chat-attached image as the corner logo on the branded flyer overlay
+            const chatLogoUrl = uploadedImageUrls && uploadedImageUrls.length > 0
               ? uploadedImageUrls[uploadedImageUrls.length - 1].url
               : undefined
             const drafts = await this.social.generatePosts({
@@ -2810,7 +2810,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
               imageFeedback: params.imageFeedback,
               format,
               imageStyle: params.imageStyle === 'clean' ? 'clean' : 'branded',
-              uploadedImageUrl: chatUploadedImageUrl,
+              logoOverrideUrl: chatLogoUrl,
             })
             const saved = await Promise.all(
               drafts.map((draft) =>

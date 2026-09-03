@@ -254,9 +254,9 @@ const CanvasLayerEditor = memo(function CanvasLayerEditor({ layers, onLayersChan
       fc.renderAll()
 
       // ── Events ───────────────────────────────────────────────────
-      fc.on('selection:created', (e: any) => setSelectedId(e.selected?.[0]?.data?.id ?? null))
-      fc.on('selection:updated', (e: any) => setSelectedId(e.selected?.[0]?.data?.id ?? null))
-      fc.on('selection:cleared', () => setSelectedId(null))
+      fc.on('selection:created' as any, (e: any) => setSelectedId(e.selected?.[0]?.data?.id ?? null))
+      fc.on('selection:updated' as any, (e: any) => setSelectedId(e.selected?.[0]?.data?.id ?? null))
+      fc.on('selection:cleared' as any, () => setSelectedId(null))
 
       const persist = () => {
         const active = fc.getActiveObject() as any
@@ -288,8 +288,8 @@ const CanvasLayerEditor = memo(function CanvasLayerEditor({ layers, onLayersChan
         }
       }
 
-      fc.on('object:moved', persist)
-      fc.on('object:scaled', persist)
+      // 'object:modified' fires after move, scale, or rotate (v6+ replaces object:moved/scaled)
+      fc.on('object:modified' as any, persist)
 
       // Delete key
       const onKey = (e: KeyboardEvent) => {

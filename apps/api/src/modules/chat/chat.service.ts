@@ -463,7 +463,7 @@ const CRM_TOOL_DEFINITIONS = [
   },
   {
     name: 'post_to_social',
-    description: 'Generate and queue a social media post WITH an AI-generated image (you CAN create images — never say you cannot). Use when staff asks to post something, create social content, or share on Facebook/Instagram/LinkedIn/X. Goes to the approval queue. Always show the full post text back. If they want a better/new image on an EXISTING draft, use regenerate_social_image instead of Canva tips.',
+    description: 'Generate and queue a social media post WITH an AI-generated image (you CAN create images — never say you cannot). Use when staff asks to post something, create social content, or share on Facebook/Instagram/LinkedIn/X. Goes to the approval queue. Always show the full post text back and include the post ID(s) from the result. imageStyle "branded" = AI photo + logo/headline/bullets/CTA overlay (DEFAULT). imageStyle "clean" = plain AI photo with NO logo, NO text overlay — only use clean when user explicitly asks for no branding. If they want a better/new image on an EXISTING draft, use regenerate_social_image instead of Canva tips.',
     parameters: {
       type: 'object',
       properties: {
@@ -487,6 +487,58 @@ const CRM_TOOL_DEFINITIONS = [
         postId: { type: 'string', description: 'The social post ID from the action card (full id or last 6+ characters if that is all you have — prefer full id)' },
         feedback: { type: 'string', description: 'What to improve e.g. "higher quality, sharper roofing photo, professional daylight"' },
         imageStyle: { type: 'string', enum: ['branded', 'clean'], description: 'Default is "branded" (headline/bullets/logo/CTA overlay). Only pass "clean" if the user EXPLICITLY asks for the plain photo with no text/graphics — e.g. "remove the text" or "give me just the photo".' },
+      },
+      required: ['postId'],
+    },
+  },
+  {
+    name: 'brand_existing_post',
+    description: 'Keep the existing background photo of a post and overlay AI-generated branded text layers on top (logo, headline, bullets, CTA, contact). Use this when the user wants to add branding/logo/overlay to an existing post WITHOUT changing the background image. This is faster and cheaper than regenerate_social_image. Call this instead of regenerate_social_image whenever the user says "add logo", "add branding", "add overlay", or "keep the photo but add branding".',
+    parameters: {
+      type: 'object',
+      properties: {
+        postId: { type: 'string', description: 'The social post ID' },
+      },
+      required: ['postId'],
+    },
+  },
+  {
+    name: 'rerender_post',
+    description: 'Re-render the post image from its current layer data — no AI image generation, just re-composite the existing layers. Use after update_post_layers when you want to see the result, or when the user says "re-render", "apply changes", or "update the image" on a post that already has layers.',
+    parameters: {
+      type: 'object',
+      properties: {
+        postId: { type: 'string', description: 'The social post ID' },
+      },
+      required: ['postId'],
+    },
+  },
+  {
+    name: 'get_post_layers',
+    description: 'Get the current editable layer data (headline, subheading, bullets, CTA, logo, colors, contact) for a branded social post. Call this BEFORE calling update_post_layers so you know the current state. Returns null if the post has no layer data.',
+    parameters: {
+      type: 'object',
+      properties: {
+        postId: { type: 'string', description: 'The social post ID' },
+      },
+      required: ['postId'],
+    },
+  },
+  {
+    name: 'update_post_layers',
+    description: 'Edit specific layers of an existing branded social post and re-render the image instantly — no full AI regeneration needed. Use for: changing headline/subheading/bullet text, editing CTA, toggling visibility, changing accent color, repositioning any layer. To reposition a layer pass a "pos": { x, y, w, h } (% of canvas, 0–100) alongside "customLayout": true. Call get_post_layers first to see current values. Only pass the fields you want to change.',
+    parameters: {
+      type: 'object',
+      properties: {
+        postId: { type: 'string', description: 'The social post ID' },
+        accentColor: { type: 'string', description: 'Hex color for the accent/brand color e.g. "#e63946"' },
+        logo: { type: 'object', properties: { visible: { type: 'boolean' }, url: { type: 'string' } }, description: 'Show/hide or change logo URL' },
+        companyName: { type: 'object', properties: { text: { type: 'string' }, visible: { type: 'boolean' } }, description: 'Company name text and visibility' },
+        headline: { type: 'object', properties: { text: { type: 'string' }, visible: { type: 'boolean' }, fontSize: { type: 'number' } }, description: 'Main headline — change text, hide it, or adjust font size' },
+        subheading: { type: 'object', properties: { text: { type: 'string' }, visible: { type: 'boolean' } }, description: 'Subheading text and visibility' },
+        bullets: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, subtitle: { type: 'string' }, visible: { type: 'boolean' } } }, description: 'Feature bullets — replace the full array if changing bullet content' },
+        cta: { type: 'object', properties: { text: { type: 'string' }, visible: { type: 'boolean' } }, description: 'Call-to-action bar text and visibility' },
+        contact: { type: 'object', properties: { phone: { type: 'string' }, website: { type: 'string' }, visible: { type: 'boolean' } }, description: 'Contact details (phone/website) and visibility' },
       },
       required: ['postId'],
     },
@@ -1457,7 +1509,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
     // social media tools — only for agents with the post_to_social tool flag
     const agentTools = agent.tools as string[] ?? []
     const socialTools = agentTools.includes('post_to_social')
-      ? ['post_to_social', 'regenerate_social_image', 'review_to_post', 'repurpose_content', 'get_content_calendar']
+      ? ['post_to_social', 'regenerate_social_image', 'brand_existing_post', 'rerender_post', 'get_post_layers', 'update_post_layers', 'review_to_post', 'repurpose_content', 'get_content_calendar']
       : []
 
     // Specialists can update/view tickets but NEVER create new ones (prevents duplicates during auto-wake/handoff)
@@ -2824,6 +2876,7 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
                   scheduledAt: params.scheduledAt ? new Date(params.scheduledAt) : undefined,
                   requireApproval: true,
                   metadata: draft.metadata,
+                  layers: draft.layers,
                 }),
               ),
             )
@@ -2904,6 +2957,110 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
               : `Tried to regenerate the image but no image URL was produced. Check OpenAI image access / Cloudinary / UNSPLASH_ACCESS_KEY, then retry.`
           } catch (err: any) {
             return `Could not regenerate image: ${err.message}`
+          }
+        }
+
+        if (toolName === 'brand_existing_post') {
+          try {
+            emit?.({ step: { label: 'Applying branded overlay to existing image', status: 'active' } })
+            let postId = String(params.postId ?? '').trim()
+            if (postId.length < 20) {
+              const match = await this.prisma.socialPost.findFirst({
+                where: { tenantId, id: { endsWith: postId } },
+                orderBy: { createdAt: 'desc' },
+              })
+              if (match) postId = match.id
+            }
+            const result = await this.social.initPostLayers(tenantId, postId)
+            emit?.({ step: { label: 'Applying branded overlay to existing image', status: 'done' } })
+            emit?.({
+              action_card: {
+                type: 'social_post',
+                id: postId,
+                title: 'Post (branding applied)',
+                platform: '',
+                content: '',
+                imageUrl: result.imageUrl,
+                status: 'pending_approval',
+              },
+            })
+            return `Branding applied to post ${postId} — logo, headline, bullets, and CTA overlaid on the existing photo. The new image is shown in the card. Use update_post_layers to tweak any text, colors, or visibility.`
+          } catch (err: any) {
+            return `Could not apply branding: ${err.message}`
+          }
+        }
+
+        if (toolName === 'rerender_post') {
+          try {
+            emit?.({ step: { label: 'Re-rendering post image from layers', status: 'active' } })
+            let postId = String(params.postId ?? '').trim()
+            if (postId.length < 20) {
+              const match = await this.prisma.socialPost.findFirst({
+                where: { tenantId, id: { endsWith: postId } },
+                orderBy: { createdAt: 'desc' },
+              })
+              if (match) postId = match.id
+            }
+            // Re-render by passing an empty patch — keeps all existing layers, just re-composites
+            const result = await this.social.updatePostLayers(tenantId, postId, {})
+            emit?.({ step: { label: 'Re-rendering post image from layers', status: 'done' } })
+            emit?.({
+              action_card: {
+                type: 'social_post',
+                id: postId,
+                title: 'Post (re-rendered)',
+                platform: '',
+                content: '',
+                imageUrl: result.imageUrl,
+                status: 'pending_approval',
+              },
+            })
+            return `Re-rendered post ${postId} from its current layer data. No new AI image was generated — the existing layers were re-composited. Preview in the card above.`
+          } catch (err: any) {
+            return `Could not re-render post: ${err.message}`
+          }
+        }
+
+        if (toolName === 'get_post_layers') {
+          try {
+            let postId = String(params.postId ?? '').trim()
+            if (postId.length < 20) {
+              const match = await this.prisma.socialPost.findFirst({ where: { tenantId, id: { endsWith: postId } }, orderBy: { createdAt: 'desc' } })
+              if (match) postId = match.id
+            }
+            const layers = await this.social.getPostLayers(tenantId, postId)
+            if (!layers) return `Post ${postId} has no editable layer data — it may have been generated before the layer system was added. Ask the user to regenerate the post first.`
+            return JSON.stringify(layers, null, 2)
+          } catch (err: any) {
+            return `Error fetching post layers: ${err.message}`
+          }
+        }
+
+        if (toolName === 'update_post_layers') {
+          try {
+            emit?.({ step: { label: 'Updating post design', status: 'active' } })
+            let postId = String(params.postId ?? '').trim()
+            if (postId.length < 20) {
+              const match = await this.prisma.socialPost.findFirst({ where: { tenantId, id: { endsWith: postId } }, orderBy: { createdAt: 'desc' } })
+              if (match) postId = match.id
+            }
+            const { postId: _id, ...updates } = params
+            const result = await this.social.updatePostLayers(tenantId, postId, updates)
+            emit?.({ step: { label: 'Updating post design', status: 'done' } })
+            emit?.({
+              action_card: {
+                type: 'social_post',
+                id: postId,
+                title: 'Post (updated design)',
+                platform: 'facebook',
+                content: '',
+                imageUrl: result.imageUrl,
+                status: 'pending_approval',
+              },
+            })
+            return `Done — the post image has been updated with your changes. Preview it in the card above or in the **Social Media** section. Let me know if you want any further tweaks.`
+          } catch (err: any) {
+            return `Error updating post layers: ${err.message}`
           }
         }
 
@@ -3879,13 +4036,34 @@ SOCIAL MEDIA IMAGES — CRITICAL (when you have post_to_social):
 ✅ Images are BRANDED by default — the AI photo gets the company's logo, a headline, feature bullets, and a call-to-action (phone/website) overlaid on it, like a marketing flyer. This is the default and correct behavior — do not apologize for it or ask permission first.
 ✅ Only pass imageStyle: "clean" if the user EXPLICITLY asks for a plain photo with no text/graphics/branding (e.g. "just the photo, no text/overlay/logo")
 ✅ If the user says image quality is bad / generate a better picture yourself → call regenerate_social_image (or post_to_social with imageFeedback)
-✅ If the user says "add logo", "add branding", "put the logo on the image", or "brand the image" on existing posts → call regenerate_social_image with imageStyle: "branded". If no post IDs are visible, ask for them before calling.
-❌ NEVER say "I'll add the logo" or "I'll brand the image" without actually calling regenerate_social_image — saying it without calling the tool does nothing
+✅ TOOL ROUTING FOR IMAGE CHANGES — read carefully before choosing a tool:
+  • User says "add logo / add branding / add overlay" on an existing post → call brand_existing_post (keeps photo, adds AI text layers — NO new image generated)
+  • User says "change headline / edit bullets / change color / hide logo / move layer" → call get_post_layers then update_post_layers (instant re-render, no AI)
+  • User says "re-render / apply changes / update the image" after layer edits → call rerender_post (re-composites existing layers, no AI)
+  • User says "generate a better photo / new image / different background / regenerate" → ONLY THEN call regenerate_social_image
+  • imageStyle "clean" = NO logo, NO overlay — only use if user explicitly asks for plain photo
+❌ NEVER call regenerate_social_image just to add branding — use brand_existing_post instead (it's faster and keeps the photo)
+❌ NEVER say "I'll add the logo" or "I'll brand the image" without actually calling brand_existing_post or update_post_layers
+❌ NEVER claim "the logo is included" or "branding is added" on a post generated with imageStyle: "clean"
+✅ After calling post_to_social, you ALWAYS have the post ID(s) in the tool response — NEVER ask the user for a post ID you just generated. Use the ID from the tool result immediately if needed.
+✅ If the user says "logo isn't added", "layers aren't there", or "branding is missing" right after generating — call brand_existing_post with that post ID immediately, do NOT ask for the ID again.
+✅ To make precise edits on an EXISTING post image (change headline text, edit bullets, change CTA, toggle logo/contact, change colors) → call get_post_layers first to see current values, then call update_post_layers with only the fields to change — this re-renders instantly without using AI image generation
+✅ update_post_layers is cheaper and faster than regenerate_social_image for text/color/visibility changes — prefer it when the user wants to tweak specific elements rather than regenerate the whole image
+✅ update_post_layers supports POSITION changes too — each layer (headline, subheading, bullets, cta, contact, logo) can have a "pos" field: { x, y, w, h } as percentages (0–100) of the canvas. Set customLayout: true alongside pos changes to activate the absolute positioning renderer. Example: move headline to x:5, y:10 means 5% from left, 10% from top.
 ✅ post_to_social also supports richer formats via the "format" param: carousel (multi-slide, each with its own AI image), video_script (short-form script + caption), poll (question + options). Use them when asked or when it clearly fits.
 ✅ Use get_content_calendar when staff wants to plan ahead (a week/month of topics) — it can also save each day as a placeholder draft.
 ✅ If the user uploads a logo, photo, or image in the chat and asks for a social post, call post_to_social immediately — the uploaded logo will automatically be placed as the corner logo on the branded post (AI generates the background photo, the uploaded image appears at standard size in the corner).
 ❌ NEVER say you cannot use, store, or process an uploaded image — if an image is attached, it WILL be used as the corner logo on the post
 ❌ NEVER describe the logo/image and ask the user to use Canva themselves — call post_to_social and the system handles it
+
+SOCIAL MEDIA VISUAL EDITOR (Social Page):
+- The Social Media page has a built-in visual image editor accessible via the pen icon (🖊) on each post card.
+- The editor has a live Fabric.js canvas where the user can drag, resize, and delete any layer (logo, headline, subheading, bullets, CTA, contact info).
+- For posts without layer data (generated before the layer system), the editor shows two options: "Add layers to existing image" (keeps the current photo, overlays AI-generated branding) or "Generate a new AI image" (full regeneration).
+- The logo section has an upload button to replace the logo with a new PNG/SVG/JPG file.
+- After making changes on the canvas, the user clicks Preview to see a Puppeteer-rendered version, then Save to update the post.
+- You handle the AI side (text/layer updates via tools); the visual editor handles the user's manual drag-and-drop adjustments. Both write to the same layers JSON.
+- When a user says "I'll adjust it in the editor" or "let me edit it myself" — confirm you've made your changes and remind them to hit Preview then Save in the editor.
 ❌ NEVER say you cannot create images
 ❌ NEVER give Canva / Lightroom / Unsplash tutorials instead of calling the tool
 

@@ -11,8 +11,10 @@ import {
   Sparkles, Image, Send, Clock, CheckCircle, XCircle,
   Loader2, Plus, Trash2, Edit2, Calendar, RefreshCw,
   Facebook, Linkedin, Twitter, Instagram, LayoutGrid, List,
-  BarChart2, Star, Link2, Unlink, Info, AlertTriangle, CheckSquare
+  BarChart2, Star, Link2, Unlink, Info, AlertTriangle, CheckSquare,
+  PenLine,
 } from 'lucide-react'
+import { PostImageEditor } from './post-image-editor'
 
 const PLATFORM_ICONS: Record<string, React.ReactNode> = {
   facebook:  <Facebook className="w-4 h-4 text-blue-500" />,
@@ -68,6 +70,7 @@ export function SocialPage() {
   const [filterStatus, setFilterStatus] = useState('')
   const [filterPlatform, setFilterPlatform] = useState('')
   const [editingPost, setEditingPost] = useState<any>(null)
+  const [editingImagePost, setEditingImagePost] = useState<{ id: string; imageUrl: string } | null>(null)
   const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel?: string; onConfirm: () => void } | null>(null)
   const [selectMode, setSelectMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -432,6 +435,7 @@ export function SocialPage() {
                   onPublishNow={() => publishNowMutation.mutate(post.id)}
                   onDelete={() => askConfirm({ title: 'Delete post?', message: 'This permanently deletes this post. This cannot be undone.', confirmLabel: 'Delete', onConfirm: () => deleteMutation.mutate(post.id) })}
                   onEdit={() => setEditingPost({ ...post })}
+                  onEditImage={post.imageUrl ? () => setEditingImagePost({ id: post.id, imageUrl: post.imageUrl }) : undefined}
                   onGenerate={() => openGenerateFromPost(post)}
                   selectMode={selectMode}
                   selected={selectedIds.has(post.id)}
@@ -449,6 +453,7 @@ export function SocialPage() {
                   onPublishNow={() => publishNowMutation.mutate(post.id)}
                   onDelete={() => askConfirm({ title: 'Delete post?', message: 'This permanently deletes this post. This cannot be undone.', confirmLabel: 'Delete', onConfirm: () => deleteMutation.mutate(post.id) })}
                   onEdit={() => setEditingPost({ ...post })}
+                  onEditImage={post.imageUrl ? () => setEditingImagePost({ id: post.id, imageUrl: post.imageUrl }) : undefined}
                   onGenerate={() => openGenerateFromPost(post)}
                   selectMode={selectMode}
                   selected={selectedIds.has(post.id)}
@@ -944,6 +949,19 @@ export function SocialPage() {
         </div>
       )}
 
+      {/* Image Editor */}
+      {editingImagePost && (
+        <PostImageEditor
+          postId={editingImagePost.id}
+          initialImageUrl={editingImagePost.imageUrl}
+          onClose={() => setEditingImagePost(null)}
+          onSaved={(newImageUrl) => {
+            qc.invalidateQueries({ queryKey: ['social-posts'] })
+            setEditingImagePost(null)
+          }}
+        />
+      )}
+
       {/* Edit Post Modal */}
       {editingPost && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -1013,12 +1031,13 @@ export function SocialPage() {
   )
 }
 
-function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit, onGenerate, selectMode, selected, onToggleSelect }: {
+function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit, onEditImage, onGenerate, selectMode, selected, onToggleSelect }: {
   post: any
   onApprove: () => void
   onPublishNow: () => void
   onDelete: () => void
   onEdit: () => void
+  onEditImage?: () => void
   onGenerate: () => void
   selectMode?: boolean
   selected?: boolean
@@ -1100,9 +1119,14 @@ function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit, onGenerate,
               <Send className="w-4 h-4" />
             </button>
           )}
-          <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground transition-colors" title="Edit">
+          <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground transition-colors" title="Edit caption">
             <Edit2 className="w-4 h-4" />
           </button>
+          {onEditImage && (
+            <button onClick={onEditImage} className="p-1.5 rounded-lg hover:bg-indigo-500/10 text-indigo-400 transition-colors" title="Edit image">
+              <PenLine className="w-4 h-4" />
+            </button>
+          )}
           <button onClick={onDelete} className="p-1.5 rounded-lg hover:bg-red-500/10 text-red-400 transition-colors" title="Delete">
             <Trash2 className="w-4 h-4" />
           </button>
@@ -1112,12 +1136,13 @@ function PostCard({ post, onApprove, onPublishNow, onDelete, onEdit, onGenerate,
   )
 }
 
-function GalleryCard({ post, onApprove, onPublishNow, onDelete, onEdit, onGenerate, selectMode, selected, onToggleSelect }: {
+function GalleryCard({ post, onApprove, onPublishNow, onDelete, onEdit, onEditImage, onGenerate, selectMode, selected, onToggleSelect }: {
   post: any
   onApprove: () => void
   onPublishNow: () => void
   onDelete: () => void
   onEdit: () => void
+  onEditImage?: () => void
   onGenerate: () => void
   selectMode?: boolean
   selected?: boolean
@@ -1181,6 +1206,11 @@ function GalleryCard({ post, onApprove, onPublishNow, onDelete, onEdit, onGenera
               <button onClick={onEdit} className="flex-1 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs transition-colors">
                 Edit
               </button>
+              {onEditImage && (
+                <button onClick={onEditImage} className="py-1 px-2 rounded-lg bg-indigo-500/80 hover:bg-indigo-500 text-white text-xs transition-colors" title="Edit image">
+                  <PenLine className="w-3 h-3" />
+                </button>
+              )}
               <button onClick={onDelete} className="py-1 px-2 rounded-lg bg-red-500/80 hover:bg-red-500 text-white text-xs transition-colors">
                 <Trash2 className="w-3 h-3" />
               </button>

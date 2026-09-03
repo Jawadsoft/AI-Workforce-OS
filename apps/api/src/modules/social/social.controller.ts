@@ -94,6 +94,21 @@ export class SocialController {
     })
   }
 
+  @Post('upload-logo')
+  @ApiOperation({ summary: 'Upload a logo image and return its CDN URL' })
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadLogo(
+    @CurrentTenant() tenantId: string,
+    @UploadedFile() file: MulterFile,
+  ) {
+    if (!file) throw new BadRequestException('No file provided')
+    const url = await this.cloudinary.upload(
+      tenantId, 'logos', `${Date.now()}-${file.originalname}`,
+      file.buffer, file.mimetype, 'image',
+    )
+    return { url }
+  }
+
   // ── Posts CRUD ────────────────────────────────────────────────────
 
   @Get('posts')
@@ -128,6 +143,30 @@ export class SocialController {
       ...dto,
       scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
     })
+  }
+
+  @Get('posts/:id/layers')
+  @ApiOperation({ summary: 'Get editable layer data for a branded post' })
+  async getPostLayers(@CurrentTenant() tenantId: string, @Param('id') id: string) {
+    return this.service.getPostLayers(tenantId, id)
+  }
+
+  @Patch('posts/:id/layers')
+  @ApiOperation({ summary: 'Update layer data and re-render the post image' })
+  async updatePostLayers(@CurrentTenant() tenantId: string, @Param('id') id: string, @Body() body: any) {
+    return this.service.updatePostLayers(tenantId, id, body)
+  }
+
+  @Post('posts/:id/regenerate-image')
+  @ApiOperation({ summary: 'Regenerate post image with layer data (enables editor on old posts)' })
+  async regenerateImage(@CurrentTenant() tenantId: string, @Param('id') id: string, @Body() body: any) {
+    return this.service.regeneratePostImage(tenantId, id, body.feedback, body.imageStyle === 'clean' ? 'clean' : 'branded')
+  }
+
+  @Post('posts/:id/init-layers')
+  @ApiOperation({ summary: 'Keep existing image as background, overlay AI-generated branding layers on top' })
+  async initPostLayers(@CurrentTenant() tenantId: string, @Param('id') id: string) {
+    return this.service.initPostLayers(tenantId, id)
   }
 
   @Post('posts/:id/approve')

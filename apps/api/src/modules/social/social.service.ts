@@ -6,7 +6,7 @@ import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.se
 import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
 import { BrainService } from '../brain/brain.service'
 import { resolveBrandKit } from '../documents/document-render.helpers'
-import { SocialFlyerService, type FlyerCopy } from './social-flyer.service'
+import { SocialFlyerService, type FlyerCopy, type SocialPostLayers } from './social-flyer.service'
 import { AutonomyService } from '../../common/autonomy/autonomy.service'
 import OpenAI from 'openai'
 
@@ -41,6 +41,8 @@ export interface GeneratedPostDraft {
   alternatives: string[]
   /** Format-specific extras: carouselImages/carouselSlides, videoScript, poll */
   metadata?: Record<string, any>
+  /** Editable layer structure for the branded flyer — null for clean/unbranded posts */
+  layers?: SocialPostLayers | null
 }
 
 const PLATFORM_SPECS: Record<string, { maxLength: number; hashtagCount: number; style: string }> = {
@@ -277,21 +279,23 @@ Only return the JSON object, nothing else.`
     // Generate image if not provided
     let imageUrl: string | null = uploadedImageUrl ?? null
     let imagePrompt: string | null = null
+    let postLayers: SocialPostLayers | null = null
     if (!imageUrl) {
       const imageResult = await this.generateImage(brief, brainContext, contentType, imageFeedback, tenantId, imageStyle, logoOverrideUrl)
       imageUrl = imageResult.url
       imagePrompt = imageResult.prompt
+      postLayers = imageResult.layers ?? null
     } else if (imageStyle === 'branded' && tenantId) {
       // Apply branded headline/logo/CTA overlay on top of the user-uploaded background photo
       try {
-        const branded = await this.brandImage(imageUrl, brief, brainContext, contentType, tenantId, logoOverrideUrl)
-        if (branded) imageUrl = branded
+        const brandResult = await this.brandImage(imageUrl, brief, brainContext, contentType, tenantId, logoOverrideUrl)
+        if (brandResult.url) { imageUrl = brandResult.url; postLayers = brandResult.layers }
       } catch (err: any) {
         this.logger.warn(`Flyer branding on uploaded image failed, using raw upload: ${err.message}`)
       }
     }
 
-    return { platform, content: mainContent, imageUrl, imagePrompt, contentType, alternatives, metadata }
+    return { platform, content: mainContent, imageUrl, imagePrompt, contentType, alternatives, metadata, layers: postLayers }
   }
 
   // ── Carousel slide planning ────────────────────────────────────────
@@ -399,7 +403,7 @@ Only return the JSON.`,
     tenantId?: string,
     imageStyle: ImageStyle = 'branded',
     logoOverrideUrl?: string,
-  ): Promise<{ url: string | null; prompt: string | null }> {
+  ): Promise<{ url: string | null; prompt: string | null; layers?: SocialPostLayers | null }> {
     let result: { url: string | null; prompt: string | null } = { url: null, prompt: null }
 
     // Always try gpt-image-1 first for all content types
@@ -457,8 +461,8 @@ Only return the JSON.`,
     // unless the caller explicitly asked for a plain/clean image.
     if (result.url && imageStyle === 'branded' && tenantId) {
       try {
-        const branded = await this.brandImage(result.url, brief, brainContext, contentType, tenantId, logoOverrideUrl)
-        if (branded) return { url: branded, prompt: result.prompt }
+        const brandResult = await this.brandImage(result.url, brief, brainContext, contentType, tenantId, logoOverrideUrl)
+        if (brandResult.url) return { url: brandResult.url, prompt: result.prompt, layers: brandResult.layers }
       } catch (err: any) {
         this.logger.warn(`Flyer branding failed, using clean image instead: ${err.message}`)
       }
@@ -467,7 +471,7 @@ Only return the JSON.`,
     return result
   }
 
-  /** Overlay a branded headline/bullets/CTA flyer on top of a clean AI photo. Returns the new Cloudinary URL, or null on failure. */
+  /** Overlay a branded headline/bullets/CTA flyer on top of a clean AI photo. Returns the new Cloudinary URL + layer data. */
   private async brandImage(
     backgroundUrl: string,
     brief: string,
@@ -475,23 +479,38 @@ Only return the JSON.`,
     contentType: string,
     tenantId: string,
     logoOverrideUrl?: string,
-  ): Promise<string | null> {
+  ): Promise<{ url: string | null; layers: SocialPostLayers | null }> {
     const [copy, tenant] = await Promise.all([
       this.generateFlyerCopy(brief, brainContext, contentType),
       this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true, settings: true } }),
     ])
-    if (!copy) return null
+    if (!copy) return { url: null, layers: null }
     const brandKit = resolveBrandKit(tenant)
+    const logoUrl = logoOverrideUrl ?? brandKit.logoUrl
+
+    const layers: SocialPostLayers = {
+      version: 1,
+      backgroundUrl,
+      accentColor: brandKit.accentColor,
+      logo: { url: logoUrl, visible: !!logoUrl },
+      companyName: { text: brandKit.companyName, visible: true },
+      headline: { text: copy.headline, visible: true },
+      subheading: { text: copy.subheading ?? '', visible: !!copy.subheading },
+      bullets: copy.bullets.map(b => ({ title: b.title, subtitle: b.subtitle, visible: true })),
+      cta: { text: copy.cta, visible: true },
+      contact: { phone: brandKit.phone, website: brandKit.website, visible: !!(brandKit.phone || brandKit.website) },
+    }
 
     const pngBuffer = await this.flyer.render(backgroundUrl, copy, {
       companyName: brandKit.companyName,
-      logoUrl: logoOverrideUrl ?? brandKit.logoUrl,
+      logoUrl,
       phone: brandKit.phone,
       website: brandKit.website,
       accentColor: brandKit.accentColor,
     })
     const filename = `social-flyer-${Date.now()}.png`
-    return this.cloudinary.upload('social-media', 'generated', filename, pngBuffer, 'image/png', 'image')
+    const url = await this.cloudinary.upload('social-media', 'generated', filename, pngBuffer, 'image/png', 'image')
+    return { url, layers }
   }
 
   /** AI-generated headline/subheading/bullets/CTA copy for the branded flyer overlay. */
@@ -642,6 +661,7 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
       data: {
         imageUrl: imageResult.url,
         imagePrompt: imageResult.prompt,
+        ...(imageResult.layers ? { layers: imageResult.layers as any } : {}),
       },
     })
 
@@ -750,6 +770,7 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
     scheduledAt?: Date
     requireApproval?: boolean
     metadata?: Record<string, any>
+    layers?: SocialPostLayers | null
   }) {
     await this.requireSocialFeature(tenantId)
 
@@ -776,8 +797,73 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
         scheduledAt,
         ...(connectedAccount && { socialAccountId: connectedAccount.id }),
         metadata: { ...(data.metadata ?? {}), contentHash: this.contentHash(data.content) } as any,
+        layers: (data.layers ?? {}) as any,
       },
     })
+  }
+
+  /**
+   * Take the existing post image (keep it as background) and overlay AI-generated
+   * branded text layers on top. Saves layers + new imageUrl. Does NOT call the
+   * image-generation API — the original photo is preserved.
+   */
+  async initPostLayers(tenantId: string, postId: string): Promise<{ imageUrl: string; layers: SocialPostLayers }> {
+    await this.requireSocialFeature(tenantId)
+    const post = await this.prisma.socialPost.findFirst({ where: { id: postId, tenantId } })
+    if (!post) throw new NotFoundException('Post not found')
+    if (!post.imageUrl) throw new BadRequestException('Post has no image to use as background')
+
+    const brainContext = await this.getBrainContext(tenantId)
+    const result = await this.brandImage(post.imageUrl, post.content, brainContext, post.contentType ?? 'general', tenantId)
+    if (!result.url || !result.layers) throw new BadRequestException('Failed to brand existing image')
+
+    await this.prisma.socialPost.update({
+      where: { id: postId },
+      data: { imageUrl: result.url, layers: result.layers as any },
+    })
+
+    return { imageUrl: result.url, layers: result.layers }
+  }
+
+  async getPostLayers(tenantId: string, postId: string): Promise<SocialPostLayers | null> {
+    const post = await this.prisma.socialPost.findFirst({ where: { id: postId, tenantId }, select: { layers: true } })
+    if (!post) throw new NotFoundException('Post not found')
+    const layers = post.layers as any
+    if (!layers || !layers.version) return null
+    return layers as SocialPostLayers
+  }
+
+  async updatePostLayers(tenantId: string, postId: string, updates: Partial<SocialPostLayers>): Promise<{ imageUrl: string; layers: SocialPostLayers }> {
+    const post = await this.prisma.socialPost.findFirst({ where: { id: postId, tenantId } })
+    if (!post) throw new NotFoundException('Post not found')
+
+    const current = (post.layers as any) as SocialPostLayers
+    if (!current?.version) throw new BadRequestException('This post has no editable layer data. Regenerate it first.')
+
+    // Deep merge: top-level keys merged, arrays replaced
+    const merged: SocialPostLayers = {
+      ...current,
+      ...updates,
+      logo: updates.logo ? { ...current.logo, ...updates.logo } : current.logo,
+      companyName: updates.companyName ? { ...current.companyName, ...updates.companyName } : current.companyName,
+      headline: updates.headline ? { ...current.headline, ...updates.headline } : current.headline,
+      subheading: updates.subheading ? { ...current.subheading, ...updates.subheading } : current.subheading,
+      bullets: updates.bullets ?? current.bullets,
+      cta: updates.cta ? { ...current.cta, ...updates.cta } : current.cta,
+      contact: updates.contact ? { ...current.contact, ...updates.contact } : current.contact,
+    }
+
+    // Re-render the flyer from the updated layers
+    const pngBuffer = await this.flyer.renderFromLayers(merged)
+    const filename = `social-flyer-edit-${Date.now()}.png`
+    const imageUrl = await this.cloudinary.upload('social-media', 'generated', filename, pngBuffer, 'image/png', 'image')
+
+    await this.prisma.socialPost.update({
+      where: { id: postId },
+      data: { imageUrl, layers: merged as any },
+    })
+
+    return { imageUrl, layers: merged }
   }
 
   async getPosts(tenantId: string, filters?: { status?: string; platform?: string }) {

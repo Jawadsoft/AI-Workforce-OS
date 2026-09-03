@@ -31,6 +31,7 @@
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",
+    "fabric": "^7.4.0",
     "framer-motion": "^11.2.0",
     "geist": "^1.7.1",
     "lucide-react": "^0.400.0",

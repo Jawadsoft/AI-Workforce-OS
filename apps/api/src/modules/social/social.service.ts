@@ -1620,23 +1620,39 @@ Return only that JSON object, nothing else.`
       return json
     }
 
+    // When there is an image, publish via /photos (caption + photo) so Facebook
+    // renders it as a proper photo post, not a link-preview card with the
+    // Cloudinary domain shown as the source.
+    if (imageUrl) {
+      const photoRes = await fetch(`https://graph.facebook.com/v21.0/${pageId}/photos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: imageUrl, caption: content, access_token: accessToken }),
+      })
+      const photoJson = await photoRes.json()
+      if (photoJson?.error) {
+        const fbErr = photoJson.error
+        const isPermission = fbErr.code === 200 || (fbErr.message ?? '').toLowerCase().includes('permission')
+        const detail = [fbErr.message, fbErr.error_user_msg, fbErr.error_user_title].filter(Boolean).join(' — ')
+        const err: any = new Error(`Facebook API error (#${fbErr.code}): ${detail}`)
+        if (isPermission) err.status = 403
+        throw err
+      }
+      return photoJson
+    }
+
+    // Text-only post (no image)
     const url = `https://graph.facebook.com/v21.0/${pageId}/feed`
-    const body: any = { message: content, access_token: accessToken }
-    if (imageUrl) body.link = imageUrl
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ message: content, access_token: accessToken }),
     })
     const json = await res.json()
-    // Facebook Graph API returns HTTP 200 even for errors — check the body.
-    // Error code 200 = permission error (requires pages_manage_posts / Advanced Access).
     if (json?.error) {
       const fbErr = json.error
       const isPermission = fbErr.code === 200 || (fbErr.message ?? '').toLowerCase().includes('permission')
-      const detail = [fbErr.message, fbErr.error_user_msg, fbErr.error_user_title]
-        .filter(Boolean)
-        .join(' — ')
+      const detail = [fbErr.message, fbErr.error_user_msg, fbErr.error_user_title].filter(Boolean).join(' — ')
       const err: any = new Error(`Facebook API error (#${fbErr.code}): ${detail}`)
       if (isPermission) err.status = 403
       throw err

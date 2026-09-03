@@ -526,19 +526,84 @@ const CRM_TOOL_DEFINITIONS = [
   },
   {
     name: 'update_post_layers',
-    description: 'Edit specific layers of an existing branded social post and re-render the image instantly — no full AI regeneration needed. Use for: changing headline/subheading/bullet text, editing CTA, toggling visibility, changing accent color, repositioning any layer. To reposition a layer pass a "pos": { x, y, w, h } (% of canvas, 0–100) alongside "customLayout": true. Call get_post_layers first to see current values. Only pass the fields you want to change.',
+    description: 'Edit specific layers of an existing branded social post and re-render the image instantly — no full AI regeneration needed. Use for: changing headline/subheading/bullet text, editing CTA, toggling visibility, changing accent color, repositioning any layer. To reposition a layer include a "pos": { x, y, w, h } object (values are percentages of canvas width/height, 0–100) inside the layer AND set "customLayout": true at the top level. Call get_post_layers first to see current values. Only pass the fields you want to change.',
     parameters: {
       type: 'object',
       properties: {
         postId: { type: 'string', description: 'The social post ID' },
+        customLayout: { type: 'boolean', description: 'Set to true when moving/resizing any layer via "pos". Must be true for pos coordinates to take effect.' },
         accentColor: { type: 'string', description: 'Hex color for the accent/brand color e.g. "#e63946"' },
-        logo: { type: 'object', properties: { visible: { type: 'boolean' }, url: { type: 'string' } }, description: 'Show/hide or change logo URL' },
-        companyName: { type: 'object', properties: { text: { type: 'string' }, visible: { type: 'boolean' } }, description: 'Company name text and visibility' },
-        headline: { type: 'object', properties: { text: { type: 'string' }, visible: { type: 'boolean' }, fontSize: { type: 'number' } }, description: 'Main headline — change text, hide it, or adjust font size' },
-        subheading: { type: 'object', properties: { text: { type: 'string' }, visible: { type: 'boolean' } }, description: 'Subheading text and visibility' },
-        bullets: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, subtitle: { type: 'string' }, visible: { type: 'boolean' } } }, description: 'Feature bullets — replace the full array if changing bullet content' },
-        cta: { type: 'object', properties: { text: { type: 'string' }, visible: { type: 'boolean' } }, description: 'Call-to-action bar text and visibility' },
-        contact: { type: 'object', properties: { phone: { type: 'string' }, website: { type: 'string' }, visible: { type: 'boolean' } }, description: 'Contact details (phone/website) and visibility' },
+        logo: {
+          type: 'object',
+          description: 'Logo layer — show/hide, change URL, or reposition. x/y/width are % of canvas.',
+          properties: {
+            visible: { type: 'boolean' },
+            url: { type: 'string' },
+            x: { type: 'number', description: '% from left edge (0–100)' },
+            y: { type: 'number', description: '% from top edge (0–100)' },
+            width: { type: 'number', description: '% of canvas width (0–100)' },
+          },
+        },
+        companyName: {
+          type: 'object',
+          description: 'Company name layer.',
+          properties: {
+            text: { type: 'string' },
+            visible: { type: 'boolean' },
+            pos: { type: 'object', description: 'Position as % of canvas: { x, y, w, h }', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } } },
+          },
+        },
+        headline: {
+          type: 'object',
+          description: 'Main headline layer.',
+          properties: {
+            text: { type: 'string' },
+            visible: { type: 'boolean' },
+            fontSize: { type: 'number' },
+            pos: { type: 'object', description: 'Position as % of canvas: { x, y, w, h }', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } } },
+          },
+        },
+        subheading: {
+          type: 'object',
+          description: 'Subheading layer.',
+          properties: {
+            text: { type: 'string' },
+            visible: { type: 'boolean' },
+            pos: { type: 'object', description: 'Position as % of canvas: { x, y, w, h }', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } } },
+          },
+        },
+        bullets: {
+          type: 'array',
+          description: 'Feature bullets — replace the full array when changing content.',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              subtitle: { type: 'string' },
+              visible: { type: 'boolean' },
+              pos: { type: 'object', description: 'Position as % of canvas: { x, y, w, h }', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } } },
+            },
+          },
+        },
+        cta: {
+          type: 'object',
+          description: 'Call-to-action bar.',
+          properties: {
+            text: { type: 'string' },
+            visible: { type: 'boolean' },
+            pos: { type: 'object', description: 'Position as % of canvas: { x, y, w, h }', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } } },
+          },
+        },
+        contact: {
+          type: 'object',
+          description: 'Contact info layer.',
+          properties: {
+            phone: { type: 'string' },
+            website: { type: 'string' },
+            visible: { type: 'boolean' },
+            pos: { type: 'object', description: 'Position as % of canvas: { x, y, w, h }', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } } },
+          },
+        },
       },
       required: ['postId'],
     },

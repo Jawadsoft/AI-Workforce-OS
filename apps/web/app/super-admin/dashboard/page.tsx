@@ -137,6 +137,7 @@ const ALL_FEATURE_FLAGS = [
   { key: 'sms_tools',            label: 'SMS Tool Access',          desc: 'Full tool suite on SMS/WhatsApp channels' },
   { key: 'agent_analytics',      label: 'Agent Analytics Queries',  desc: 'Agents can answer analytics questions' },
   { key: 'conference',           label: 'Conference / War Room',    desc: 'Multi-agent live conference sessions' },
+  { key: 'social_image_editor',  label: 'Social Image Editor',      desc: 'Visual layer editor, branded overlays & AI chat image editing' },
 ]
 
 // ── Glassmorphism style helpers ───────────────────────────────────

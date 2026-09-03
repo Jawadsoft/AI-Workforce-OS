@@ -82,6 +82,14 @@ export class SocialService {
     await this.featureFlags.requireFeature(tenantId, FEATURES.SOCIAL_MEDIA)
   }
 
+  async requireImageEditorFeature(tenantId: string) {
+    await this.featureFlags.requireFeature(tenantId, FEATURES.SOCIAL_IMAGE_EDITOR)
+  }
+
+  async isImageEditorEnabled(tenantId: string): Promise<boolean> {
+    return this.featureFlags.isEnabled(tenantId, FEATURES.SOCIAL_IMAGE_EDITOR)
+  }
+
   // ── Content type tracking ─────────────────────────────────────────
 
   async getNextContentType(tenantId: string): Promise<string> {
@@ -488,26 +496,41 @@ Only return the JSON.`,
     const brandKit = resolveBrandKit(tenant)
     const logoUrl = logoOverrideUrl ?? brandKit.logoUrl
 
+    // Default positions (% of canvas). Kept in sync with renderCustomLayout DP and
+    // the frontend DEFAULT_POS so the canvas editor matches the rendered image exactly.
+    const DP = {
+      companyName: { x: 1,  y: 4,  w: 32, h: 4  },
+      headline:    { x: 1,  y: 10, w: 42, h: 20 },
+      subheading:  { x: 1,  y: 32, w: 38, h: 8  },
+      bullet_0:    { x: 1,  y: 52, w: 43, h: 7  },
+      bullet_1:    { x: 1,  y: 61, w: 43, h: 7  },
+      bullet_2:    { x: 1,  y: 70, w: 43, h: 7  },
+      cta:         { x: 1,  y: 87, w: 57, h: 8  },
+      contact:     { x: 60, y: 87, w: 38, h: 8  },
+    }
+
     const layers: SocialPostLayers = {
       version: 1,
       backgroundUrl,
       accentColor: brandKit.accentColor,
-      logo: { url: logoUrl, visible: !!logoUrl },
-      companyName: { text: brandKit.companyName, visible: true },
-      headline: { text: copy.headline, visible: true },
-      subheading: { text: copy.subheading ?? '', visible: !!copy.subheading },
-      bullets: copy.bullets.map(b => ({ title: b.title, subtitle: b.subtitle, visible: true })),
-      cta: { text: copy.cta, visible: true },
-      contact: { phone: brandKit.phone, website: brandKit.website, visible: !!(brandKit.phone || brandKit.website) },
+      // customLayout=true forces renderCustomLayout for ALL renders, so the canvas
+      // editor and the actual image always use the same coordinate system.
+      customLayout: true,
+      logo: { url: logoUrl, visible: !!logoUrl, x: 72, y: 4, width: 14 },
+      companyName: { text: brandKit.companyName, visible: true, pos: DP.companyName },
+      headline: { text: copy.headline, visible: true, pos: DP.headline },
+      subheading: { text: copy.subheading ?? '', visible: !!copy.subheading, pos: DP.subheading },
+      bullets: copy.bullets.map((b, i) => ({
+        title: b.title, subtitle: b.subtitle, visible: true,
+        pos: DP[`bullet_${i}` as keyof typeof DP] ?? { x: 1, y: 52 + i * 9, w: 43, h: 7 },
+      })),
+      cta: { text: copy.cta, visible: true, pos: DP.cta },
+      contact: { phone: brandKit.phone, website: brandKit.website, visible: !!(brandKit.phone || brandKit.website), pos: DP.contact },
     }
 
-    const pngBuffer = await this.flyer.render(backgroundUrl, copy, {
-      companyName: brandKit.companyName,
-      logoUrl,
-      phone: brandKit.phone,
-      website: brandKit.website,
-      accentColor: brandKit.accentColor,
-    })
+    // Use renderFromLayers (→ renderCustomLayout) so the stored image matches
+    // the canvas coordinate system from day one.
+    const pngBuffer = await this.flyer.renderFromLayers(layers)
     const filename = `social-flyer-${Date.now()}.png`
     const url = await this.cloudinary.upload('social-media', 'generated', filename, pngBuffer, 'image/png', 'image')
     return { url, layers }
@@ -809,6 +832,7 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
    */
   async initPostLayers(tenantId: string, postId: string): Promise<{ imageUrl: string; layers: SocialPostLayers }> {
     await this.requireSocialFeature(tenantId)
+    // Note: initPostLayers is also used by brand_existing_post (core branding, no editor flag needed)
     const post = await this.prisma.socialPost.findFirst({ where: { id: postId, tenantId } })
     if (!post) throw new NotFoundException('Post not found')
     if (!post.imageUrl) throw new BadRequestException('Post has no image to use as background')
@@ -826,6 +850,7 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
   }
 
   async getPostLayers(tenantId: string, postId: string): Promise<SocialPostLayers | null> {
+    await this.requireImageEditorFeature(tenantId)
     const post = await this.prisma.socialPost.findFirst({ where: { id: postId, tenantId }, select: { layers: true } })
     if (!post) throw new NotFoundException('Post not found')
     const layers = post.layers as any
@@ -834,6 +859,7 @@ ${brainContext ? `Business context: ${brainContext}` : ''}`,
   }
 
   async updatePostLayers(tenantId: string, postId: string, updates: Partial<SocialPostLayers>): Promise<{ imageUrl: string; layers: SocialPostLayers }> {
+    await this.requireImageEditorFeature(tenantId)
     const post = await this.prisma.socialPost.findFirst({ where: { id: postId, tenantId } })
     if (!post) throw new NotFoundException('Post not found')
 

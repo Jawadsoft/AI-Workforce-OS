@@ -102,10 +102,18 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
 
 // ─── Full canvas layer editor ─────────────────────────────────────────────────
 
-const CANVAS_W = 600
-const CANVAS_H = 400  // 3:2 matches the 1536×1024 flyer
+/**
+ * Logical canvas size = Puppeteer render size so font sizes and positions are 1:1.
+ * The Fabric canvas is displayed at DISPLAY_W × DISPLAY_H via setZoom(), which
+ * means mouse events and object coordinates automatically stay in logical space.
+ */
+const CANVAS_W = 1536  // matches Puppeteer WIDTH
+const CANVAS_H = 1024  // matches Puppeteer HEIGHT
+const DISPLAY_W = 600  // CSS pixels shown on screen
+const DISPLAY_H = 400  // CSS pixels shown on screen
+const CANVAS_ZOOM = DISPLAY_W / CANVAS_W  // 0.390625 — passed to fc.setZoom()
 
-/** Default positions for each layer (% of canvas). Mirrors the Puppeteer layout. */
+/** Default positions for each layer (% of canvas). Mirrors renderCustomLayout DP. */
 const DEFAULT_POS: Record<string, LayerPos> = {
   companyName: { x: 1,  y: 4,  w: 32, h: 4  },
   headline:    { x: 1,  y: 10, w: 42, h: 20 },
@@ -151,12 +159,14 @@ const CanvasLayerEditor = memo(function CanvasLayerEditor({ layers, onLayersChan
 
       if (destroyed || !canvasEl.current || !FCanvas) return
 
-      // Transparent canvas — background image is rendered as a sibling <img> via CSS
+      // Canvas is created at DISPLAY size but Fabric's zoom maps it to the full
+      // CANVAS (Puppeteer) logical space, so every position and font size is 1:1.
       const fc = new FCanvas(canvasEl.current, {
-        width: CANVAS_W, height: CANVAS_H,
+        width: DISPLAY_W, height: DISPLAY_H,
         backgroundColor: 'rgba(0,0,0,0)',
         renderOnAddRemove: true,
       })
+      fc.setZoom(CANVAS_ZOOM)
       fabricRef.current = fc
 
       // Force Fabric's .canvas-container wrapper to sit exactly at 0,0 over the background <img>
@@ -171,18 +181,21 @@ const CanvasLayerEditor = memo(function CanvasLayerEditor({ layers, onLayersChan
         if (upper) upper.style.pointerEvents = 'auto'
       }
 
+      // Corner size scaled up so handles are still visible at the zoomed-out display size
+      const scaledCorner = Math.round(9 / CANVAS_ZOOM)
       const commonOpts = {
         lockRotation: true, borderColor: '#6366f1',
-        cornerColor: '#6366f1', cornerSize: 9, transparentCorners: false,
-        padding: 4,
+        cornerColor: '#6366f1', cornerSize: scaledCorner, transparentCorners: false,
+        padding: Math.round(4 / CANVAS_ZOOM),
       }
 
       const addText = (id: string, text: string, pos: LayerPos, opts: any = {}) => {
         if (!Textbox) return
+        // fontSize here is in LOGICAL pixels (same as Puppeteer) — zoom scales the display
         const obj = new Textbox(text, {
           left: px(pos.x, CANVAS_W), top: px(pos.y, CANVAS_H),
           width: px(pos.w, CANVAS_W),
-          fontSize: opts.fontSize ?? 13, fill: '#ffffff',
+          fontSize: opts.fontSize ?? 16, fill: '#ffffff',
           fontWeight: opts.bold ? 'bold' : 'normal',
           backgroundColor: 'rgba(0,0,0,0.45)',
           ...commonOpts,
@@ -198,11 +211,12 @@ const CanvasLayerEditor = memo(function CanvasLayerEditor({ layers, onLayersChan
         return DEFAULT_POS[k] ?? fallback
       }
 
-      if (l.companyName.visible) addText('companyName', l.companyName.text, l.companyName.pos ?? gp('companyName', DEFAULT_POS.companyName), { bold: true, fontSize: 11 })
-      if (l.headline.visible)    addText('headline',    l.headline.text,    l.headline.pos    ?? gp('headline',    DEFAULT_POS.headline),    { bold: true, fontSize: 16 })
-      if (l.subheading.visible)  addText('subheading',  l.subheading.text,  l.subheading.pos  ?? gp('subheading',  DEFAULT_POS.subheading),  { fontSize: 11 })
+      // Font sizes match Puppeteer's renderCustomLayout exactly (zoom scales them down visually)
+      if (l.companyName.visible) addText('companyName', l.companyName.text, l.companyName.pos ?? gp('companyName', DEFAULT_POS.companyName), { bold: true, fontSize: 19 })
+      if (l.headline.visible)    addText('headline',    l.headline.text,    l.headline.pos    ?? gp('headline',    DEFAULT_POS.headline),    { bold: true, fontSize: l.headline.fontSize ?? 50 })
+      if (l.subheading.visible)  addText('subheading',  l.subheading.text,  l.subheading.pos  ?? gp('subheading',  DEFAULT_POS.subheading),  { fontSize: 20 })
       l.bullets.forEach((b, i) => {
-        if (b.visible) addText(`bullet_${i}`, `✓ ${b.title}${b.subtitle ? ` — ${b.subtitle}` : ''}`, b.pos ?? DEFAULT_POS[`bullet_${i}`] ?? { x: 3, y: 52 + i * 9, w: 40, h: 7 }, { fontSize: 10 })
+        if (b.visible) addText(`bullet_${i}`, `✓ ${b.title}${b.subtitle ? ` — ${b.subtitle}` : ''}`, b.pos ?? DEFAULT_POS[`bullet_${i}`] ?? { x: 1, y: 52 + i * 9, w: 40, h: 7 }, { fontSize: 16 })
       })
       if (l.cta.visible) {
         const p = l.cta.pos ?? DEFAULT_POS.cta
@@ -210,11 +224,11 @@ const CanvasLayerEditor = memo(function CanvasLayerEditor({ layers, onLayersChan
           const bar = new Rect({ left: px(p.x, CANVAS_W), top: px(p.y, CANVAS_H), width: px(p.w, CANVAS_W), height: px(p.h, CANVAS_H), fill: l.accentColor, rx: 6, ry: 6, ...commonOpts, data: { id: 'cta_bg' }, selectable: false, evented: false })
           fc.add(bar)
         }
-        addText('cta', l.cta.text, p, { bold: true, fontSize: 11 })
+        addText('cta', l.cta.text, p, { bold: true, fontSize: 20 })
       }
       if (l.contact.visible) {
         const txt = [l.contact.phone, l.contact.website].filter(Boolean).join('  |  ')
-        if (txt) addText('contact', txt, l.contact.pos ?? DEFAULT_POS.contact, { fontSize: 10 })
+        if (txt) addText('contact', txt, l.contact.pos ?? DEFAULT_POS.contact, { fontSize: 16 })
       }
 
       // ── Logo ─────────────────────────────────────────────────────
@@ -262,15 +276,16 @@ const CanvasLayerEditor = memo(function CanvasLayerEditor({ layers, onLayersChan
         const active = fc.getActiveObject() as any
         if (!active?.data?.id) return
         const id: string = active.data.id
+        // active.left/top are LOGICAL coordinates (Fabric returns pre-zoom values)
         const left = active.left ?? 0
         const top = active.top ?? 0
         const scaleX = active.scaleX ?? 1
         const scaleY = active.scaleY ?? 1
         const objW = (active.width ?? 0) * scaleX
-        const objH = ((active.height ?? 0) + (active.textLines ? active.textLines.length * (active.lineHeight ?? 1) * (active.fontSize ?? 12) : 0)) * scaleY
+        const objH = (active.height ?? 0) * scaleY
         const pos: LayerPos = {
           x: pct(left, CANVAS_W), y: pct(top, CANVAS_H),
-          w: pct(Math.max(objW, 5), CANVAS_W), h: pct(Math.max(objH, 2), CANVAS_H),
+          w: pct(Math.max(objW, 10), CANVAS_W), h: pct(Math.max(objH, 2), CANVAS_H),
         }
         const cur = layersRef.current
         if (id === 'logo') {
@@ -355,7 +370,7 @@ const CanvasLayerEditor = memo(function CanvasLayerEditor({ layers, onLayersChan
       {/* Canvas — transparent Fabric canvas over CSS background image */}
       <div
         className="rounded-xl overflow-hidden border border-white/10 relative"
-        style={{ width: CANVAS_W, height: CANVAS_H }}
+        style={{ width: DISPLAY_W, height: DISPLAY_H }}
       >
         {/* Background rendered via <img> to avoid CORS canvas taint */}
         {/* eslint-disable-next-line @next/next/no-img-element */}

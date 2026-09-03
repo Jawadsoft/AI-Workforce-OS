@@ -438,7 +438,7 @@ function SocialPostCard({ card }: { card: ActionCard }) {
   const truncated = content.length > 160 && !expanded
 
   return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden text-sm w-full">
+    <div className="rounded-xl border border-border bg-card overflow-hidden text-sm w-[60%]">
       {/* Header — platform icon + action buttons */}
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
@@ -489,10 +489,11 @@ function SocialPostCard({ card }: { card: ActionCard }) {
         </p>
       </div>
 
-      {/* Full-width image at bottom — edge to edge, locked to 16:9 */}
+      {/* Full-width image — h-auto so no cropping regardless of aspect ratio */}
       {card.imageUrl && (
-        <div className="w-full aspect-video overflow-hidden">
-          <img src={card.imageUrl} alt="post image" className="w-full h-full object-cover" />
+        <div className="w-full overflow-hidden">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={card.imageUrl} alt="post image" className="w-full h-auto block" />
         </div>
       )}
     </div>

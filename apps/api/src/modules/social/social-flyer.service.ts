@@ -145,7 +145,7 @@ export class SocialFlyerService {
     })
     if (layers.cta.visible) {
       const p = layers.cta.pos ?? DP.cta
-      elements.push(`<div style="${abs(p,'height:${pct(p.h,H)};')}background:${accent};border-radius:12px;display:flex;align-items:center;padding:0 28px;font-size:20px;font-weight:700;color:#fff;box-shadow:0 6px 20px rgba(0,0,0,.35);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(layers.cta.text)}</div>`)
+      elements.push(`<div style="${abs(p, `height:${pct(p.h, H)};`)}background:${accent};border-radius:12px;display:flex;align-items:center;padding:0 28px;font-size:20px;font-weight:700;color:#fff;box-shadow:0 6px 20px rgba(0,0,0,.35);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(layers.cta.text)}</div>`)
     }
     if (layers.contact.visible) {
       const txt = [layers.contact.phone, layers.contact.website].filter(Boolean).join('  |  ')
@@ -164,7 +164,10 @@ export class SocialFlyerService {
 </body></html>`
 
     const puppeteer = await import('puppeteer').then((m) => m.default ?? m)
-    const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] })
+    const browser = await puppeteer.launch({
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      ...(process.env.PUPPETEER_EXECUTABLE_PATH ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH } : {}),
+    })
     try {
       const page = await browser.newPage()
       await page.setViewport({ width: W, height: H, deviceScaleFactor: 1 })
@@ -185,6 +188,7 @@ export class SocialFlyerService {
     const puppeteer = await import('puppeteer').then((m) => m.default ?? m)
     const browser = await puppeteer.launch({
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=medium'],
+      ...(process.env.PUPPETEER_EXECUTABLE_PATH ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH } : {}),
     })
     try {
       const page = await browser.newPage()

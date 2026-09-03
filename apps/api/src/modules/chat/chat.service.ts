@@ -584,6 +584,19 @@ const CRM_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_recent_posts',
+    description: 'Look up the most recently created social media posts for this account. Call this when the user refers to "the last post", "the post I just created", "my recent posts", "my posts", or asks to modify/brand/edit a post without providing a post ID. Returns up to 5 most recent posts with their IDs, platform, status, and a preview of the content. ALWAYS call this before asking the user for a post ID — never make the user look up an ID themselves.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max posts to return (default 5, max 10)' },
+        status: { type: 'string', enum: ['pending_approval', 'approved', 'published', 'draft'], description: 'Filter by status. Leave empty to get all recent posts.' },
+        platform: { type: 'string', enum: ['facebook', 'instagram', 'linkedin', 'x'], description: 'Filter by platform. Leave empty for all platforms.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'suggest_transfer',
     description: 'Offer to connect the customer with a colleague who is better suited to handle their request. Use this when the customer asks something outside your area of expertise. Shows the customer a button to switch to the right person.',
     parameters: {
@@ -1508,8 +1521,20 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
 
     // social media tools — only for agents with the post_to_social tool flag
     const agentTools = agent.tools as string[] ?? []
+    const imageEditorEnabled = agentTools.includes('post_to_social')
+      ? await this.social.isImageEditorEnabled(tenantId)
+      : false
     const socialTools = agentTools.includes('post_to_social')
-      ? ['post_to_social', 'regenerate_social_image', 'brand_existing_post', 'rerender_post', 'get_post_layers', 'update_post_layers', 'review_to_post', 'repurpose_content', 'get_content_calendar']
+      ? [
+          'post_to_social', 'regenerate_social_image', 'get_recent_posts',
+          // brand_existing_post = "add logo/overlay to existing post" — always available
+          'brand_existing_post',
+          'review_to_post', 'repurpose_content', 'get_content_calendar',
+          // Advanced layer tools require the social_image_editor feature flag
+          ...(imageEditorEnabled
+            ? ['rerender_post', 'get_post_layers', 'update_post_layers']
+            : []),
+        ]
       : []
 
     // Specialists can update/view tickets but NEVER create new ones (prevents duplicates during auto-wake/handoff)
@@ -3021,6 +3046,26 @@ Available tools: contact_customer, update_ticket, get_available_slots, get_my_ti
           }
         }
 
+        if (toolName === 'get_recent_posts') {
+          try {
+            emit?.({ step: { label: 'Looking up recent posts', status: 'active' } })
+            const limit = Math.min(Number(params.limit ?? 5), 10)
+            const filters: { status?: string; platform?: string } = {}
+            if (params.status) filters.status = String(params.status)
+            if (params.platform) filters.platform = String(params.platform)
+            const posts = await this.social.getPosts(tenantId, filters)
+            const recent = posts.slice(0, limit)
+            emit?.({ step: { label: 'Looking up recent posts', status: 'done' } })
+            if (!recent.length) return 'No social posts found for this account yet.'
+            const lines = recent.map((p: any) =>
+              `• **${p.platform}** | id: \`${p.id}\` | status: ${p.status} | ${new Date(p.createdAt).toLocaleString()} — "${String(p.content ?? '').slice(0, 80)}${(p.content?.length ?? 0) > 80 ? '…' : ''}"${p.imageUrl ? ' [has image]' : ''}`
+            )
+            return `${recent.length} most recent post${recent.length > 1 ? 's' : ''}:\n\n${lines.join('\n')}\n\nUse the \`id\` above with brand_existing_post, update_post_layers, or regenerate_social_image.`
+          } catch (err: any) {
+            return `Error fetching recent posts: ${err.message}`
+          }
+        }
+
         if (toolName === 'get_post_layers') {
           try {
             let postId = String(params.postId ?? '').trim()
@@ -4047,6 +4092,8 @@ SOCIAL MEDIA IMAGES — CRITICAL (when you have post_to_social):
 ❌ NEVER claim "the logo is included" or "branding is added" on a post generated with imageStyle: "clean"
 ✅ After calling post_to_social, you ALWAYS have the post ID(s) in the tool response — NEVER ask the user for a post ID you just generated. Use the ID from the tool result immediately if needed.
 ✅ If the user says "logo isn't added", "layers aren't there", or "branding is missing" right after generating — call brand_existing_post with that post ID immediately, do NOT ask for the ID again.
+✅ If the user refers to "the last post", "my recent post", "the post I just made", or any post without giving an ID — call get_recent_posts FIRST to look it up, then act on the result. NEVER ask the user to provide a post ID you can look up yourself.
+✅ If the user asks you to customise/edit/brand a post and you don't have the ID, call get_recent_posts — do NOT say "I can't access that post" or "please provide the post ID".
 ✅ To make precise edits on an EXISTING post image (change headline text, edit bullets, change CTA, toggle logo/contact, change colors) → call get_post_layers first to see current values, then call update_post_layers with only the fields to change — this re-renders instantly without using AI image generation
 ✅ update_post_layers is cheaper and faster than regenerate_social_image for text/color/visibility changes — prefer it when the user wants to tweak specific elements rather than regenerate the whole image
 ✅ update_post_layers supports POSITION changes too — each layer (headline, subheading, bullets, cta, contact, logo) can have a "pos" field: { x, y, w, h } as percentages (0–100) of the canvas. Set customLayout: true alongside pos changes to activate the absolute positioning renderer. Example: move headline to x:5, y:10 means 5% from left, 10% from top.

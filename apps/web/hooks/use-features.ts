@@ -22,6 +22,7 @@ export const FEATURES = {
   SMS_TOOLS:             'sms_tools',
   AGENT_ANALYTICS:       'agent_analytics',
   CONFERENCE:            'conference',
+  SOCIAL_IMAGE_EDITOR:   'social_image_editor',
 } as const
 
 const DEFAULT_ENABLED = ['widget', 'document_generation', 'marketplace', 'create_agents', 'reset_workforce']

@@ -435,7 +435,7 @@ export function SocialPage() {
                   onPublishNow={() => publishNowMutation.mutate(post.id)}
                   onDelete={() => askConfirm({ title: 'Delete post?', message: 'This permanently deletes this post. This cannot be undone.', confirmLabel: 'Delete', onConfirm: () => deleteMutation.mutate(post.id) })}
                   onEdit={() => setEditingPost({ ...post })}
-                  onEditImage={post.imageUrl ? () => setEditingImagePost({ id: post.id, imageUrl: post.imageUrl }) : undefined}
+                  onEditImage={post.imageUrl && isEnabled(FEATURES.SOCIAL_IMAGE_EDITOR) ? () => setEditingImagePost({ id: post.id, imageUrl: post.imageUrl }) : undefined}
                   onGenerate={() => openGenerateFromPost(post)}
                   selectMode={selectMode}
                   selected={selectedIds.has(post.id)}
@@ -453,7 +453,7 @@ export function SocialPage() {
                   onPublishNow={() => publishNowMutation.mutate(post.id)}
                   onDelete={() => askConfirm({ title: 'Delete post?', message: 'This permanently deletes this post. This cannot be undone.', confirmLabel: 'Delete', onConfirm: () => deleteMutation.mutate(post.id) })}
                   onEdit={() => setEditingPost({ ...post })}
-                  onEditImage={post.imageUrl ? () => setEditingImagePost({ id: post.id, imageUrl: post.imageUrl }) : undefined}
+                  onEditImage={post.imageUrl && isEnabled(FEATURES.SOCIAL_IMAGE_EDITOR) ? () => setEditingImagePost({ id: post.id, imageUrl: post.imageUrl }) : undefined}
                   onGenerate={() => openGenerateFromPost(post)}
                   selectMode={selectMode}
                   selected={selectedIds.has(post.id)}

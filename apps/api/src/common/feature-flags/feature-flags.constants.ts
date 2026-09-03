@@ -20,6 +20,10 @@ export const FEATURES = {
   SMS_TOOLS:            'sms_tools',
   AGENT_ANALYTICS:      'agent_analytics',
   CONFERENCE:           'conference',
+
+  // Social image editor & AI layer system
+  // When enabled: visual drag/resize editor, branded overlays, layer editing via chat tools
+  SOCIAL_IMAGE_EDITOR:  'social_image_editor',
 } as const
 
 export type FeatureKey = typeof FEATURES[keyof typeof FEATURES]

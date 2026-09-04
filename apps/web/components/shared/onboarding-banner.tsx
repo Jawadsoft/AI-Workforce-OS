@@ -34,6 +34,8 @@ export function OnboardingBanner() {
   if (!user?.role || !['TENANT_OWNER', 'TENANT_ADMIN'].includes(user.role)) return null
   if (pathname === '/onboarding') return null
   if (isLoading || !data || data.complete) return null
+  // Provisioned tenants go to full /onboarding page — don't show banner
+  if (data.requiresOnboarding) return null
 
   const steps = [
     { label: 'Industry set', done: data.hasIndustry },

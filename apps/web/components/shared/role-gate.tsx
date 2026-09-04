@@ -16,7 +16,7 @@ export function RoleGate({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false)
 
   const isTenantUser = !!user && TENANT_ROLES.includes(user.role)
-  const { isLoading: onboardingLoading, isError: onboardingError } = useOnboardingStatus()
+  const { data: onboardingData, isLoading: onboardingLoading, isError: onboardingError } = useOnboardingStatus()
 
   useEffect(() => {
     if (!isAuthenticated) fetchMe()
@@ -28,6 +28,16 @@ export function RoleGate({ children }: { children: React.ReactNode }) {
       router.replace(defaultHomeForRole(user.role))
     }
   }, [user?.role, pathname, router])
+
+  // Redirect provisioned tenants to onboarding before showing dashboard
+  useEffect(() => {
+    if (!isTenantUser) return
+    if (onboardingLoading) return
+    if (pathname === '/onboarding') return
+    if (onboardingData?.requiresOnboarding && !onboardingData?.complete) {
+      router.replace('/onboarding')
+    }
+  }, [isTenantUser, onboardingLoading, onboardingData, pathname, router])
 
   // Mark ready once we have user + onboarding check resolved (or timed out)
   useEffect(() => {

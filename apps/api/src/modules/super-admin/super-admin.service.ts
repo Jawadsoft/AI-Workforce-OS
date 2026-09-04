@@ -7,6 +7,8 @@ import { AutonomyService } from '../../common/autonomy/autonomy.service'
 import { AutonomyMode } from '../../common/autonomy/autonomy.constants'
 import { BrainService } from '../brain/brain.service'
 import { EmailService } from '../email/email.service'
+import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service'
+import { FEATURES } from '../../common/feature-flags/feature-flags.constants'
 
 @Injectable()
 export class SuperAdminService {
@@ -17,6 +19,7 @@ export class SuperAdminService {
     private readonly autonomy: AutonomyService,
     private readonly brainService: BrainService,
     private readonly emailService: EmailService,
+    private readonly featureFlags: FeatureFlagsService,
   ) {}
 
   // ── Platform stats ────────────────────────────────────────────────
@@ -1116,6 +1119,9 @@ export class SuperAdminService {
         settings: { requiresOnboarding: true },
       },
     })
+
+    // Provisioned tenants: disable create_agents so marketplace shows only their cloned agents
+    await this.featureFlags.setFeature(tenant.id, FEATURES.CREATE_AGENTS, false)
 
     // Generate verification token
     const verificationToken = crypto.randomBytes(32).toString('hex')

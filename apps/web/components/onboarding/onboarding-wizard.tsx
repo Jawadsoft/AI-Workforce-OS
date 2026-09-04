@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Zap, CheckCircle, Loader2, ChevronRight, ChevronLeft, Globe, Sparkles, AlertCircle } from 'lucide-react'
+import { Zap, CheckCircle, Loader2, ChevronRight, ChevronLeft, Globe, Sparkles, AlertCircle, ShieldCheck, Power, PowerOff } from 'lucide-react'
 import { resolveAvatarUrl } from '@/lib/utils'
 
 const INDUSTRIES = [
@@ -32,7 +32,7 @@ const CRMS = [
 // Which CRMs show a setup guide link
 const GUIDE_CRMS = ['HUBSPOT', 'SALESFORCE', 'JOBNIMBUS', 'LARAVEL', 'ZOHO', 'CUSTOM']
 
-const STEPS = ['Website', 'Industry', 'CRM', 'Business Profile', 'Generate']
+const STEPS = ['Website', 'Industry', 'CRM', 'Business Profile', 'Your Agents']
 
 export function OnboardingWizard({ onClose }: { onClose?: () => void } = {}) {
   const router = useRouter()
@@ -45,6 +45,11 @@ export function OnboardingWizard({ onClose }: { onClose?: () => void } = {}) {
   const [analyzeError, setAnalyzeError] = useState('')
   const [showGuide, setShowGuide] = useState(false)
   const [prefilled, setPrefilled] = useState(false)
+  // provisioned-tenant state
+  const [isProvisioned, setIsProvisioned] = useState(false)
+  const [assignedAgents, setAssignedAgents] = useState<any[]>([])
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set())
+  const [savingAgents, setSavingAgents] = useState(false)
 
   const [form, setForm] = useState({
     websiteUrl: '',
@@ -58,9 +63,12 @@ export function OnboardingWizard({ onClose }: { onClose?: () => void } = {}) {
 
   // Load existing tenant settings to pre-populate the form
   useEffect(() => {
-    api.get('/tenants/settings').then((r) => {
-      const s = r.data?.settings ?? {}
-      const ind = r.data?.industry ?? ''
+    Promise.all([
+      api.get('/tenants/settings'),
+      api.get('/tenants/onboarding-status'),
+    ]).then(([settingsRes, statusRes]) => {
+      const s = settingsRes.data?.settings ?? {}
+      const ind = settingsRes.data?.industry ?? ''
       setForm((f) => ({
         ...f,
         industry: ind || f.industry,
@@ -71,6 +79,8 @@ export function OnboardingWizard({ onClose }: { onClose?: () => void } = {}) {
         brandVoice: s.brandVoice || f.brandVoice,
         websiteUrl: s.brand?.website || f.websiteUrl,
       }))
+      const provisioned = !!statusRes.data?.requiresOnboarding
+      setIsProvisioned(provisioned)
       setPrefilled(true)
     }).catch(() => setPrefilled(true))
   }, [])
@@ -106,19 +116,37 @@ export function OnboardingWizard({ onClose }: { onClose?: () => void } = {}) {
     }
   }
 
+  const saveProfile = () =>
+    api.patch('/tenants/onboard', {
+      industry: form.industry,
+      crm: form.crm,
+      services: form.services,
+      locations: form.locations,
+      businessRules: form.businessRules,
+      brandVoice: form.brandVoice,
+    })
+
   const handleGenerate = async () => {
     setIsLoading(true)
     try {
-      await api.patch('/tenants/onboard', {
-        industry: form.industry,
-        crm: form.crm,
-        services: form.services,
-        locations: form.locations,
-        businessRules: form.businessRules,
-        brandVoice: form.brandVoice,
-      })
+      await saveProfile()
       const { data } = await api.post('/tenants/generate-workforce', { industry: form.industry })
       setGeneratedAgents(data)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const loadAssignedAgents = async () => {
+    setIsLoading(true)
+    try {
+      await saveProfile()
+      const { data } = await api.get('/agents')
+      setAssignedAgents(data)
+      // Pre-select all currently active agents
+      setSelectedAgentIds(new Set(data.filter((a: any) => a.status === 'ACTIVE').map((a: any) => a.id)))
     } catch (err) {
       console.error(err)
     } finally {
@@ -129,9 +157,45 @@ export function OnboardingWizard({ onClose }: { onClose?: () => void } = {}) {
   const handleNext = async () => {
     if (step === 3) {
       setStep(4)
-      await handleGenerate()
+      if (isProvisioned) {
+        await loadAssignedAgents()
+      } else {
+        await handleGenerate()
+      }
     } else {
       setStep((s) => s + 1)
+    }
+  }
+
+  const toggleAgent = (id: string) => {
+    setSelectedAgentIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const handleFinishProvisioned = async () => {
+    setSavingAgents(true)
+    try {
+      await Promise.all(
+        assignedAgents.map((agent: any) => {
+          const shouldBeActive = selectedAgentIds.has(agent.id)
+          const isActive = agent.status === 'ACTIVE'
+          if (shouldBeActive && !isActive) return api.post(`/agents/${agent.id}/activate`)
+          if (!shouldBeActive && isActive) return api.post(`/agents/${agent.id}/deactivate`)
+          return Promise.resolve()
+        })
+      )
+      await qc.invalidateQueries({ queryKey: ['onboarding-status'] })
+      await qc.invalidateQueries({ queryKey: ['agents'] })
+      if (onClose) onClose()
+      else router.push('/dashboard')
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setSavingAgents(false)
     }
   }
 
@@ -414,17 +478,85 @@ export function OnboardingWizard({ onClose }: { onClose?: () => void } = {}) {
             </div>
           )}
 
-          {/* Step 4: Generate */}
+          {/* Step 4: Agents */}
           {step === 4 && (
-            <div className="space-y-4 text-center">
+            <div className="space-y-4">
               {isLoading ? (
-                <div className="py-8 space-y-4">
+                <div className="py-8 space-y-4 text-center">
                   <Loader2 className="w-10 h-10 animate-spin text-primary mx-auto" />
-                  <h2 className="text-lg font-semibold">Building your AI workforce...</h2>
-                  <p className="text-muted-foreground text-sm">Creating role-specific agents for your business</p>
+                  <h2 className="text-lg font-semibold">
+                    {isProvisioned ? 'Loading your AI team...' : 'Building your AI workforce...'}
+                  </h2>
+                  <p className="text-muted-foreground text-sm">
+                    {isProvisioned ? 'Fetching agents assigned to your workspace' : 'Creating role-specific agents for your business'}
+                  </p>
                 </div>
-              ) : generatedAgents.length > 0 ? (
+
+              ) : isProvisioned ? (
+                /* Provisioned mode: select/deselect cloned agents */
                 <div className="space-y-4">
+                  <div>
+                    <h2 className="text-lg font-semibold">Choose your active AI agents</h2>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      These agents have been pre-assigned to your workspace. Select which ones you want active.
+                    </p>
+                  </div>
+                  <div className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2">
+                    <ShieldCheck className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                    <p className="text-xs text-blue-200">
+                      Your agent library is managed by your administrator. You can activate or deactivate agents but cannot add new ones.
+                    </p>
+                  </div>
+                  {assignedAgents.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-6">No agents assigned yet. Contact your administrator.</p>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      {assignedAgents.map((agent: any) => {
+                        const selected = selectedAgentIds.has(agent.id)
+                        return (
+                          <button
+                            key={agent.id}
+                            onClick={() => toggleAgent(agent.id)}
+                            className={`rounded-lg border-2 p-3 text-left flex items-center gap-2.5 transition-all ${
+                              selected ? 'border-primary bg-primary/5' : 'border-border opacity-50 hover:opacity-75'
+                            }`}
+                          >
+                            {resolveAvatarUrl(agent.avatar) ? (
+                              <img src={resolveAvatarUrl(agent.avatar)!} alt={agent.name} className="w-8 h-8 rounded-full object-cover shrink-0" />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary shrink-0">
+                                {agent.name[0]}
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium truncate">{agent.name}</p>
+                              <p className="text-xs text-muted-foreground truncate">{agent.role}</p>
+                            </div>
+                            <div className={`ml-auto shrink-0 w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                              selected ? 'bg-primary border-primary' : 'border-muted-foreground'
+                            }`}>
+                              {selected && <div className="w-1.5 h-1.5 bg-white rounded-full" />}
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground text-center">
+                    {selectedAgentIds.size} of {assignedAgents.length} agents selected
+                  </p>
+                  <button
+                    onClick={handleFinishProvisioned}
+                    disabled={savingAgents}
+                    className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground rounded-md py-2.5 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                  >
+                    {savingAgents ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</> : <>Finish Setup →</>}
+                  </button>
+                </div>
+
+              ) : generatedAgents.length > 0 ? (
+                /* Normal mode: show generated agents */
+                <div className="space-y-4 text-center">
                   <div className="flex items-center justify-center gap-2">
                     <CheckCircle className="w-6 h-6 text-green-500" />
                     <h2 className="text-lg font-semibold">Your AI team is ready!</h2>
@@ -450,20 +582,18 @@ export function OnboardingWizard({ onClose }: { onClose?: () => void } = {}) {
                   <button
                     onClick={async () => {
                       await qc.invalidateQueries({ queryKey: ['onboarding-status'] })
-                      if (onClose) {
-                        onClose()
-                      } else {
-                        router.push('/dashboard')
-                      }
+                      if (onClose) onClose()
+                      else router.push('/dashboard')
                     }}
                     className="w-full bg-primary text-primary-foreground rounded-md py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
                   >
                     Go to Dashboard →
                   </button>
                 </div>
+
               ) : (
-                <div className="py-8 space-y-4">
-                  <p className="text-muted-foreground text-sm">Setting up your workforce...</p>
+                <div className="py-8 space-y-4 text-center">
+                  <p className="text-muted-foreground text-sm">Setting up your workspace...</p>
                 </div>
               )}
             </div>
@@ -485,7 +615,7 @@ export function OnboardingWizard({ onClose }: { onClose?: () => void } = {}) {
               disabled={!canNext()}
               className="flex items-center gap-1 bg-primary text-primary-foreground px-5 py-2 rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
-              {step === 3 ? 'Generate Workforce' : 'Next'} <ChevronRight className="w-4 h-4" />
+              {step === 3 ? (isProvisioned ? 'Next' : 'Generate Workforce') : 'Next'} <ChevronRight className="w-4 h-4" />
             </button>
           </div>
         )}

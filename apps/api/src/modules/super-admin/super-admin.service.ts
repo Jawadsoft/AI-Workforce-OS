@@ -1,16 +1,20 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common'
 import { Industry, CRMProvider } from '@prisma/client'
 import { PrismaService } from '../../common/prisma/prisma.service'
 import { INDUSTRY_CRM_DEFAULTS } from '../crm/crm.interface'
 import * as bcrypt from 'bcryptjs'
 import { AutonomyService } from '../../common/autonomy/autonomy.service'
 import { AutonomyMode } from '../../common/autonomy/autonomy.constants'
+import { BrainService } from '../brain/brain.service'
 
 @Injectable()
 export class SuperAdminService {
+  private readonly logger = new Logger(SuperAdminService.name)
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly autonomy: AutonomyService,
+    private readonly brainService: BrainService,
   ) {}
 
   // ── Platform stats ────────────────────────────────────────────────
@@ -1173,7 +1177,7 @@ export class SuperAdminService {
 
     // Expire any active tokens for this user
     await this.prisma.passwordResetToken.updateMany({
-      where: { userId: owner.id, usedAt: null },
+      where: { userId: owner.id, used: false },
       data: { expiresAt: new Date() },
     })
 
@@ -1229,6 +1233,7 @@ export class SuperAdminService {
       ownerEmail: string
       industry?: string
       phone?: string
+      websiteUrl?: string
     },
   ) {
     // Look up scoped admin by provision key
@@ -1250,7 +1255,7 @@ export class SuperAdminService {
         .substring(0, 48) +
         `-${Date.now().toString(36)}`
 
-    return this.createTenantWithVerification(
+    const result = await this.createTenantWithVerification(
       {
         name: data.companyName,
         slug,
@@ -1261,5 +1266,20 @@ export class SuperAdminService {
       admin.id,
       'SCOPED_ADMIN',
     )
+
+    // Fire-and-forget background brain enrichment when a website URL is provided
+    if (data.websiteUrl) {
+      setImmediate(async () => {
+        try {
+          this.logger.log(`Auto-enriching brain for tenant ${result.tenant.id} from ${data.websiteUrl}`)
+          await this.brainService.enrich(result.tenant.id, data.websiteUrl!)
+          this.logger.log(`Brain enrichment complete for tenant ${result.tenant.id}`)
+        } catch (err: any) {
+          this.logger.warn(`Brain enrichment failed for ${result.tenant.id}: ${err.message}`)
+        }
+      })
+    }
+
+    return { ...result, brainEnrichQueued: !!data.websiteUrl }
   }
 }

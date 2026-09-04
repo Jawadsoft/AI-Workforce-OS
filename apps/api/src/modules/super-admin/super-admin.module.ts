@@ -7,9 +7,10 @@ import { FeatureFlagsModule } from '../../common/feature-flags/feature-flags.mod
 import { KnowledgeModule } from '../knowledge/knowledge.module'
 import { AIModule } from '../../ai/ai.module'
 import { HelpModule } from '../help/help.module'
+import { BrainModule } from '../brain/brain.module'
 
 @Module({
-  imports: [PrismaModule, FeatureFlagsModule, AIModule, KnowledgeModule, HelpModule],
+  imports: [PrismaModule, FeatureFlagsModule, AIModule, KnowledgeModule, HelpModule, BrainModule],
   providers: [SuperAdminService, SuperAdminGuard],
   controllers: [SuperAdminController, SuperAdminBootstrapController],
   exports: [SuperAdminService],

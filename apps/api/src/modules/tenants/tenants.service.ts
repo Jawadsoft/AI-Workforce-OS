@@ -314,4 +314,22 @@ export class TenantsService {
     })
     return !!(tenant?.settings as any)?.onboardingComplete
   }
+
+  async onboardingStatus(tenantId: string) {
+    const [tenant, agentCount] = await Promise.all([
+      this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { settings: true, industry: true },
+      }),
+      this.prisma.agent.count({ where: { tenantId, status: 'ACTIVE' } }),
+    ])
+    const settings = (tenant?.settings as Record<string, unknown>) ?? {}
+    const brain = (settings.brain as Record<string, unknown>) ?? null
+    const complete = !!(settings.onboardingComplete)
+    const hasIndustry = !!tenant?.industry
+    const hasBrain = !!(brain && (brain.companyName || brain.companyDescription || brain.services))
+    const hasAgents = agentCount > 0
+
+    return { complete, hasIndustry, hasBrain, hasAgents }
+  }
 }

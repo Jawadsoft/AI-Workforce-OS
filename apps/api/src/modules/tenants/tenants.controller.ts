@@ -113,8 +113,7 @@ export class TenantsController {
   @Get('onboarding-status')
   @ApiOperation({ summary: 'Check if onboarding is complete' })
   async onboardingStatus(@CurrentTenant() tenantId: string) {
-    const complete = await this.service.isOnboardingComplete(tenantId)
-    return { complete }
+    return this.service.onboardingStatus(tenantId)
   }
 
   @Post('reset-workforce')

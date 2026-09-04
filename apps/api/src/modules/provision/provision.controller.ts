@@ -29,6 +29,7 @@ export class ProvisionController {
    *     ownerEmail: string         // Email — receives the verification link
    *     industry?: string          // e.g. "ROOFING"
    *     phone?: string             // Optional
+   *     websiteUrl?: string        // Optional — triggers auto brain enrichment
    *   }
    *
    * Response includes:
@@ -36,6 +37,7 @@ export class ProvisionController {
    *   owner: { id, email, name }
    *   clonedAgents: number
    *   verificationLink: string
+   *   brainEnrichQueued: boolean
    */
   @Post('tenant')
   @ApiOperation({ summary: 'Provision a new tenant using a scoped admin provision key' })
@@ -49,6 +51,7 @@ export class ProvisionController {
       ownerEmail: string
       industry?: string
       phone?: string
+      websiteUrl?: string
     },
   ) {
     if (!provisionKey) {

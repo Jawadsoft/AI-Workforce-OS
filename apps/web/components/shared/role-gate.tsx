@@ -5,11 +5,13 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useAuthStore } from '@/stores/auth.store'
 import { canAccessPath, defaultHomeForRole } from '@/lib/roles'
 import { Loader2, ShieldOff } from 'lucide-react'
+import { useOnboardingStatus } from './onboarding-banner'
 
 export function RoleGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const { user, isAuthenticated, fetchMe } = useAuthStore()
+  const { data: onboardingData } = useOnboardingStatus()
 
   useEffect(() => {
     if (!isAuthenticated) fetchMe()
@@ -21,6 +23,16 @@ export function RoleGate({ children }: { children: React.ReactNode }) {
       router.replace(defaultHomeForRole(user.role))
     }
   }, [user?.role, pathname, router])
+
+  // Auto-redirect tenant owners/admins to onboarding if not complete
+  useEffect(() => {
+    if (!user?.role) return
+    if (!['TENANT_OWNER', 'TENANT_ADMIN'].includes(user.role)) return
+    if (pathname === '/onboarding') return // already there
+    if (onboardingData && !onboardingData.complete) {
+      router.replace('/onboarding')
+    }
+  }, [user?.role, onboardingData, pathname, router])
 
   if (!user) {
     return (

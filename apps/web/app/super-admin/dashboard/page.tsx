@@ -199,6 +199,8 @@ export default function SuperAdminDashboard() {
   const [createTenantForm, setCreateTenantForm] = useState({ name: '', slug: '', ownerName: '', ownerEmail: '', industry: '' })
   const [createTenantSaving, setCreateTenantSaving] = useState(false)
   const [verificationLink, setVerificationLink] = useState('')
+  const [resetPasswordModal, setResetPasswordModal] = useState<{ tenant: Tenant; link: string; ownerEmail: string } | null>(null)
+  const [resetPasswordLoading, setResetPasswordLoading] = useState('')
 
   const api = useSAApi()
 
@@ -272,6 +274,18 @@ export default function SuperAdminDashboard() {
     if (!confirm('Permanently delete this tenant? All data will be lost.')) return
     await api.delete(`/super-admin/tenants/${id}`)
     loadData()
+  }
+
+  async function handleResetPassword(tenant: Tenant) {
+    setResetPasswordLoading(tenant.id)
+    try {
+      const { data } = await api.post(`/super-admin/tenants/${tenant.id}/reset-owner-password`)
+      setResetPasswordModal({ tenant, link: data.resetLink, ownerEmail: data.owner?.email ?? '' })
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to generate reset link')
+    } finally {
+      setResetPasswordLoading('')
+    }
   }
 
   async function createSubAdmin() {
@@ -592,6 +606,7 @@ export default function SuperAdminDashboard() {
                 onAutonomy={toggleAutonomy}
                 userRole={userRole}
                 onCreateTenant={() => setShowCreateTenant(true)}
+                onResetPassword={handleResetPassword}
               />
             )}
             {tab === 'Sub-Admins' && (
@@ -625,7 +640,7 @@ export default function SuperAdminDashboard() {
             )}
             {tab === 'Industry Knowledge' && <IndustryKnowledgeTab api={api} glass={glass} />}
             {tab === 'Default Workspace' && userRole === 'SCOPED_ADMIN' && (
-              <DefaultWorkspacePanel api={api} templates={templates} glass={glass} />
+              <DefaultWorkspacePanel api={api} templates={templates} glass={glass} managedTenants={tenants} />
             )}
           </>
         )}
@@ -647,7 +662,67 @@ export default function SuperAdminDashboard() {
               glass={glass}
               adminId={workspaceAdmin.id}
               onChanged={loadData}
+              managedTenants={subAdmins.find(a => a.id === workspaceAdmin.id)?.managedTenants ?? []}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Reset Password Modal */}
+      {resetPasswordModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-lg rounded-2xl p-6 space-y-5" style={glass.cardElevated}>
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-white">Reset Owner Password</h2>
+                <p className="text-sm text-gray-400 mt-0.5">
+                  {resetPasswordModal.tenant.name} — {resetPasswordModal.ownerEmail}
+                </p>
+              </div>
+              <button
+                onClick={() => setResetPasswordModal(null)}
+                className="text-gray-500 hover:text-white text-xl leading-none transition-colors"
+              >×</button>
+            </div>
+
+            <div className="rounded-xl p-4 space-y-3" style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.2)' }}>
+              <p className="text-xs text-gray-400">
+                Send this link to <strong className="text-white">{resetPasswordModal.ownerEmail}</strong>. It expires in <strong className="text-cyan-300">7 days</strong> and can only be used once.
+              </p>
+              <div
+                className="rounded-lg px-3 py-2 text-xs font-mono text-cyan-300 break-all select-all"
+                style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.08)' }}
+              >
+                {resetPasswordModal.link}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(resetPasswordModal.link)
+                    alert('Reset link copied!')
+                  }}
+                  className="flex-1 py-2 rounded-lg text-sm font-semibold text-white"
+                  style={{ background: 'linear-gradient(135deg, #0891b2, #06b6d4)' }}
+                >
+                  Copy Link
+                </button>
+                <button
+                  onClick={() => {
+                    const subject = encodeURIComponent('Set your password — AI Workforce OS')
+                    const body = encodeURIComponent(`Hi ${resetPasswordModal.tenant.owner?.name ?? ''},\n\nClick the link below to set your password:\n\n${resetPasswordModal.link}\n\nThis link expires in 7 days.\n`)
+                    window.open(`mailto:${resetPasswordModal.ownerEmail}?subject=${subject}&body=${body}`)
+                  }}
+                  className="px-4 py-2 rounded-lg text-sm font-semibold text-cyan-300"
+                  style={{ background: 'rgba(6,182,212,0.12)' }}
+                >
+                  Email
+                </button>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-500">
+              Generating a new link invalidates any previously sent link for this owner.
+            </p>
           </div>
         </div>
       )}
@@ -1304,7 +1379,7 @@ function ApprovalsTab({ tenants, onApprove, onReject }: {
 
 // ── Tenants Tab ───────────────────────────────────────────────────
 
-function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure, onWidget, onFeatures, onAutonomy, userRole, onCreateTenant }: {
+function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure, onWidget, onFeatures, onAutonomy, userRole, onCreateTenant, onResetPassword }: {
   tenants: Tenant[]
   search: string
   onSearch: (v: string) => void
@@ -1316,6 +1391,7 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
   onAutonomy: (id: string, current?: 'off' | 'internal' | 'full') => void
   userRole?: string
   onCreateTenant?: () => void
+  onResetPassword?: (t: Tenant) => void
 }) {
   return (
     <div className="space-y-6">
@@ -1446,6 +1522,17 @@ function TenantsTab({ tenants, search, onSearch, onToggle, onDelete, onConfigure
                     >
                       {t.isActive ? 'Suspend' : 'Activate'}
                     </button>
+                    {onResetPassword && (
+                      <button
+                        onClick={() => onResetPassword(t)}
+                        className="text-xs px-2.5 py-1 rounded-md font-medium transition-colors"
+                        style={{ background: 'rgba(6,182,212,0.12)', color: '#22d3ee', border: '1px solid rgba(255,255,255,0.06)' }}
+                        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(6,182,212,0.22)')}
+                        onMouseLeave={e => (e.currentTarget.style.background = 'rgba(6,182,212,0.12)')}
+                      >
+                        Reset Pwd
+                      </button>
+                    )}
                     <button
                       onClick={() => onDelete(t.id)}
                       className="text-xs px-2.5 py-1 rounded-md font-medium transition-colors"
@@ -1678,12 +1765,13 @@ function SubAdminsTab({ subAdmins, tenants, showNewSubAdmin, setShowNewSubAdmin,
 
 // ── Default Workspace (scoped admin template agents) ──────────────
 
-function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
+function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged, managedTenants }: {
   api: any
   templates: Template[]
   glass: any
   adminId?: string
   onChanged?: () => void
+  managedTenants?: { id: string; name: string; slug: string; isActive: boolean }[]
 }) {
   const [agents, setAgents] = useState<TemplateWorkspaceAgent[]>([])
   const [loading, setLoading] = useState(true)
@@ -1691,9 +1779,36 @@ function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
   const [showCreate, setShowCreate] = useState(false)
   const [showInstall, setShowInstall] = useState(false)
   const [form, setForm] = useState({ name: '', role: '', industry: 'OTHER', prompt: '' })
+  const [showSyncPanel, setShowSyncPanel] = useState(false)
+  const [syncTenantId, setSyncTenantId] = useState('')
+  const [syncReplace, setSyncReplace] = useState(false)
+  const [showApiPanel, setShowApiPanel] = useState(false)
+  const [provisionKey, setProvisionKey] = useState<string | null>(null)
+  const [keyVisible, setKeyVisible] = useState(false)
+  const [keyLoading, setKeyLoading] = useState(false)
+  const [copiedField, setCopiedField] = useState('')
+
+  // Decode scoped admin email from JWT (shown in CRM integration instructions)
+  const scopedAdminEmail = (() => {
+    if (adminId || typeof window === 'undefined') return ''
+    try {
+      const token = localStorage.getItem('sa_access_token')
+      if (!token) return ''
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      return payload.email ?? ''
+    } catch { return '' }
+  })()
 
   const qs = adminId ? `?adminId=${adminId}` : ''
   const adminBody = adminId ? { adminId } : {}
+
+  const loadProvisionKey = useCallback(async () => {
+    if (adminId) return
+    try {
+      const { data } = await api.get('/super-admin/provision-key')
+      setProvisionKey(data.provisionKey ?? null)
+    } catch { /* no key yet */ }
+  }, [api, adminId])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1708,6 +1823,27 @@ function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
   }, [api, qs])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => { loadProvisionKey() }, [loadProvisionKey])
+
+  async function generateKey() {
+    if (!confirm('Generate a new provision key? Any existing key will stop working immediately.')) return
+    setKeyLoading(true)
+    try {
+      const { data } = await api.post('/super-admin/provision-key/generate')
+      setProvisionKey(data.provisionKey)
+      setKeyVisible(true)
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to generate key')
+    } finally {
+      setKeyLoading(false)
+    }
+  }
+
+  function copyToClipboard(text: string, field: string) {
+    navigator.clipboard.writeText(text)
+    setCopiedField(field)
+    setTimeout(() => setCopiedField(''), 2000)
+  }
 
   async function toggleShare(agent: TemplateWorkspaceAgent) {
     try {
@@ -1811,6 +1947,33 @@ function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
     }
   }
 
+  async function syncFromTenant() {
+    if (!syncTenantId) { alert('Please select a tenant'); return }
+    const tenant = managedTenants?.find(t => t.id === syncTenantId)
+    const msg = syncReplace
+      ? `Replace ALL current default agents with agents from "${tenant?.name ?? syncTenantId}"?`
+      : `Copy agents from "${tenant?.name ?? syncTenantId}" into the default workspace? Existing agents with the same name will be updated.`
+    if (!confirm(msg)) return
+    setSaving(true)
+    try {
+      const { data } = await api.post('/super-admin/template-workspace/sync-from-tenant', {
+        ...adminBody,
+        sourceTenantId: syncTenantId,
+        replaceExisting: syncReplace,
+      })
+      alert(data.message || 'Synced successfully')
+      setShowSyncPanel(false)
+      setSyncTenantId('')
+      setSyncReplace(false)
+      await load()
+      onChanged?.()
+    } catch (err: any) {
+      alert(err.response?.data?.message ?? 'Failed to sync from tenant')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       {!adminId && (
@@ -1822,6 +1985,16 @@ function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
             </p>
           </div>
           <div className="flex gap-2">
+            {managedTenants && managedTenants.length > 0 && (
+              <button
+                onClick={() => setShowSyncPanel(!showSyncPanel)}
+                disabled={saving}
+                className="px-3 py-1.5 rounded-lg text-sm text-emerald-300 disabled:opacity-50"
+                style={{ background: 'rgba(16,185,129,0.12)' }}
+              >
+                {showSyncPanel ? '✕ Cancel Sync' : '⇄ Set from Tenant'}
+              </button>
+            )}
             <button
               onClick={pushToAssignedTenants}
               disabled={saving}
@@ -1844,6 +2017,16 @@ function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
 
       {adminId && (
         <div className="flex justify-end gap-2">
+          {managedTenants && managedTenants.length > 0 && (
+            <button
+              onClick={() => setShowSyncPanel(!showSyncPanel)}
+              disabled={saving}
+              className="px-3 py-1.5 rounded-lg text-sm text-emerald-300 disabled:opacity-50"
+              style={{ background: 'rgba(16,185,129,0.12)' }}
+            >
+              {showSyncPanel ? '✕ Cancel Sync' : '⇄ Set from Tenant'}
+            </button>
+          )}
           <button
             onClick={pushToAssignedTenants}
             disabled={saving}
@@ -1860,6 +2043,175 @@ function DefaultWorkspacePanel({ api, templates, glass, adminId, onChanged }: {
           >
             {agents.length > 0 ? 'Reset Workspace' : 'Setup / Refresh Workspace'}
           </button>
+        </div>
+      )}
+
+      {showSyncPanel && managedTenants && managedTenants.length > 0 && (
+        <div className="rounded-xl p-4 space-y-3" style={{ background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)' }}>
+          <h3 className="text-sm font-semibold text-emerald-300">Set Default Workspace from Tenant</h3>
+          <p className="text-xs text-gray-400">
+            Copies all active agents from the selected tenant into this default workspace and marks them all as shared defaults.
+          </p>
+          <select
+            value={syncTenantId}
+            onChange={e => setSyncTenantId(e.target.value)}
+            className="w-full rounded-lg px-3 py-2 text-sm text-white bg-transparent"
+            style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}
+          >
+            <option value="" style={{ background: '#1a1a2e' }}>— Select a tenant —</option>
+            {managedTenants.filter(t => t.isActive).map(t => (
+              <option key={t.id} value={t.id} style={{ background: '#1a1a2e' }}>{t.name}</option>
+            ))}
+          </select>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={syncReplace}
+              onChange={e => setSyncReplace(e.target.checked)}
+              className="rounded"
+            />
+            <span className="text-xs text-gray-300">Replace existing workspace agents (clear before copying)</span>
+          </label>
+          <button
+            onClick={syncFromTenant}
+            disabled={saving || !syncTenantId}
+            className="px-4 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-40"
+            style={{ background: saving ? 'rgba(16,185,129,0.3)' : 'linear-gradient(135deg, #10b981 0%, #059669 100%)' }}
+          >
+            {saving ? 'Syncing…' : '⇄ Copy Agents to Default Workspace'}
+          </button>
+        </div>
+      )}
+
+      {/* CRM API Integration panel — only shown to SCOPED_ADMIN on their own workspace */}
+      {!adminId && (
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid rgba(139,92,246,0.25)' }}>
+          <button
+            onClick={() => setShowApiPanel(!showApiPanel)}
+            className="w-full flex items-center justify-between px-4 py-3 text-left"
+            style={{ background: 'rgba(139,92,246,0.07)' }}
+          >
+            <span className="text-sm font-semibold text-purple-300">⚡ CRM API Integration (StormBuddi / External)</span>
+            <span className="text-gray-400 text-xs">{showApiPanel ? '▲ Hide' : '▼ Show'}</span>
+          </button>
+
+          {showApiPanel && (
+            <div className="p-4 space-y-4" style={{ background: 'rgba(139,92,246,0.04)' }}>
+              <p className="text-xs text-gray-400">
+                Generate a <strong className="text-purple-300">Provision Key</strong> and share it with StormBuddi CRM.
+                Every API call using this key will automatically create a tenant under your account and clone your default agents into it — no other credentials needed.
+              </p>
+
+              {/* Key display + generate */}
+              <div className="space-y-2">
+                <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">Your Provision Key</p>
+                <div className="flex items-center gap-2">
+                  <div
+                    className="flex-1 rounded-lg px-3 py-2 text-xs font-mono overflow-x-auto select-all"
+                    style={{ background: 'rgba(0,0,0,0.35)', border: '1px solid rgba(255,255,255,0.08)', color: provisionKey ? '#e2e8f0' : '#6b7280' }}
+                  >
+                    {provisionKey
+                      ? (keyVisible ? provisionKey : `pk_live_${'•'.repeat(32)}`)
+                      : <em>No key yet — click Generate below</em>}
+                  </div>
+                  {provisionKey && (
+                    <>
+                      <button
+                        onClick={() => setKeyVisible(v => !v)}
+                        title={keyVisible ? 'Hide key' : 'Show key'}
+                        className="px-2 py-1.5 rounded text-sm text-gray-400 hover:text-white shrink-0"
+                        style={{ background: 'rgba(255,255,255,0.06)' }}
+                      >
+                        {keyVisible ? '🙈' : '👁'}
+                      </button>
+                      <button
+                        onClick={() => copyToClipboard(provisionKey, 'key')}
+                        className="px-3 py-1.5 rounded text-xs text-purple-300 shrink-0"
+                        style={{ background: 'rgba(139,92,246,0.15)' }}
+                      >
+                        {copiedField === 'key' ? '✓ Copied' : 'Copy'}
+                      </button>
+                    </>
+                  )}
+                </div>
+                <button
+                  onClick={generateKey}
+                  disabled={keyLoading}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50"
+                  style={{
+                    background: provisionKey ? 'rgba(245,158,11,0.12)' : 'linear-gradient(135deg,#7c3aed,#a855f7)',
+                    color: provisionKey ? '#fcd34d' : '#fff',
+                  }}
+                >
+                  {keyLoading ? 'Generating…' : provisionKey ? '↺ Rotate Key (invalidates old key)' : '+ Generate Provision Key'}
+                </button>
+              </div>
+
+              {/* Integration details — shown once a key exists */}
+              {provisionKey && (
+                <>
+                  {/* Endpoint */}
+                  <div className="space-y-1">
+                    <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">Endpoint</p>
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="flex-1 rounded-lg px-3 py-2 text-xs font-mono text-cyan-300 select-all break-all"
+                        style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.06)' }}
+                      >
+                        POST https://ai-workforce-os-1.onrender.com/api/v1/provision/tenant
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard('https://ai-workforce-os-1.onrender.com/api/v1/provision/tenant', 'url')}
+                        className="px-2 py-1.5 rounded text-xs text-cyan-300 shrink-0"
+                        style={{ background: 'rgba(34,211,238,0.1)' }}
+                      >
+                        {copiedField === 'url' ? '✓' : 'Copy'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Header */}
+                  <div className="space-y-1">
+                    <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">Header</p>
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="flex-1 rounded-lg px-3 py-2 text-xs font-mono text-yellow-300 select-all"
+                        style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.06)' }}
+                      >
+                        x-provision-key: {keyVisible ? provisionKey : `pk_live_${'•'.repeat(32)}`}
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard(`x-provision-key: ${provisionKey}`, 'header')}
+                        className="px-2 py-1.5 rounded text-xs text-yellow-300 shrink-0"
+                        style={{ background: 'rgba(245,158,11,0.1)' }}
+                      >
+                        {copiedField === 'header' ? '✓' : 'Copy'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Example body */}
+                  <div className="space-y-1">
+                    <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">Request Body (JSON)</p>
+                    <pre
+                      className="rounded-lg px-3 py-2 text-xs font-mono text-green-300 select-all overflow-x-auto"
+                      style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.06)' }}
+                    >{`{
+  "companyName": "Acme Roofing LLC",
+  "ownerName":   "John Smith",
+  "ownerEmail":  "john@acmeroofing.com",
+  "industry":    "ROOFING"
+}`}
+                    </pre>
+                    <p className="text-xs text-gray-500">
+                      Optional: <code className="text-gray-400">slug</code> (auto-generated if omitted).
+                      Response includes <code className="text-gray-400">verificationLink</code> — send it to the new tenant owner so they can set their password.
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 

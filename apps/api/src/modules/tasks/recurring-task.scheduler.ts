@@ -27,6 +27,10 @@ export class RecurringTaskScheduler {
     private readonly email: EmailService,
   ) {}
 
+  // Tracks which task IDs are currently being processed in this instance to
+  // prevent a slow email send from being picked up again on the next 5-min tick.
+  private readonly inFlight = new Set<string>()
+
   @Cron('*/5 * * * *')
   async processAutomatedTasks() {
     const now = new Date()
@@ -45,11 +49,20 @@ export class RecurringTaskScheduler {
 
     for (const task of dueTasks) {
       if (!task.tenant?.isActive) continue
+      if (this.inFlight.has(task.id)) {
+        this.logger.warn(`[RecurringTask] Task ${task.id} is still in-flight — skipping this tick`)
+        continue
+      }
+      const taskMeta = (task.metadata as Record<string, any>) ?? {}
+      if (taskMeta.paused === true) continue
+      this.inFlight.add(task.id)
       try {
         await this.runEmailStormReport(task)
       } catch (err: any) {
         this.logger.error(`[RecurringTask] Task ${task.id} failed: ${err.message}`)
         await this.handleFailure(task, err.message)
+      } finally {
+        this.inFlight.delete(task.id)
       }
     }
   }

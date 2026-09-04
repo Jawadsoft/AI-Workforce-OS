@@ -909,6 +909,97 @@ export class SuperAdminService {
     return { success: true }
   }
 
+  /**
+   * Copy all active agents from a managed tenant into the scoped admin's template workspace.
+   * Existing agents in the workspace are updated (matched by name); new ones are created.
+   * All resulting workspace agents are marked as shared defaults.
+   */
+  async syncDefaultsFromTenant(
+    requester: { id: string; role: string },
+    data: { sourceTenantId: string; adminId?: string; replaceExisting?: boolean },
+  ) {
+    const templateTenantId = await this.resolveTemplateTenantId(requester, data.adminId)
+    const adminId = requester.role === 'SCOPED_ADMIN' ? requester.id : (data.adminId as string)
+
+    // Verify requester manages this source tenant
+    const access = await this.prisma.superAdminTenantAccess.findFirst({
+      where: { tenantId: data.sourceTenantId, adminUserId: adminId },
+    })
+    if (!access) throw new BadRequestException('You do not manage this tenant')
+
+    // Get source tenant's active agents
+    const sourceAgents = await this.prisma.agent.findMany({
+      where: { tenantId: data.sourceTenantId, status: 'ACTIVE' },
+    })
+
+    if (data.replaceExisting) {
+      await this.prisma.agent.deleteMany({ where: { tenantId: templateTenantId } })
+    }
+
+    let created = 0
+    let updated = 0
+
+    for (const src of sourceAgents) {
+      const existing = await this.prisma.agent.findFirst({
+        where: { tenantId: templateTenantId, name: src.name },
+      })
+      if (existing) {
+        await this.prisma.agent.update({
+          where: { id: existing.id },
+          data: {
+            role: src.role,
+            prompt: src.prompt,
+            tools: src.tools,
+            permissions: src.permissions,
+            approvalRules: src.approvalRules as any,
+            status: 'ACTIVE',
+          },
+        })
+        updated++
+      } else {
+        await this.prisma.agent.create({
+          data: {
+            tenantId: templateTenantId,
+            name: src.name,
+            role: src.role,
+            industry: src.industry,
+            prompt: src.prompt,
+            tools: src.tools,
+            permissions: src.permissions,
+            approvalRules: src.approvalRules as any,
+            avatar: src.avatar,
+            status: 'ACTIVE',
+          },
+        })
+        created++
+      }
+    }
+
+    // Mark ALL active workspace agents as shared defaults
+    const allWorkspaceAgents = await this.prisma.agent.findMany({
+      where: { tenantId: templateTenantId, status: 'ACTIVE' },
+      select: { id: true },
+    })
+    const templateTenant = await this.prisma.tenant.findUnique({ where: { id: templateTenantId } })
+    const settings = { ...((templateTenant?.settings as Record<string, unknown>) ?? {}) }
+    settings.sharedDefaultAgentIds = allWorkspaceAgents.map((a) => a.id)
+    await this.prisma.tenant.update({ where: { id: templateTenantId }, data: { settings } })
+
+    const sourceTenant = await this.prisma.tenant.findUnique({
+      where: { id: data.sourceTenantId },
+      select: { name: true },
+    })
+
+    return {
+      success: true,
+      sourceTenant: sourceTenant?.name ?? data.sourceTenantId,
+      created,
+      updated,
+      totalShared: allWorkspaceAgents.length,
+      message: `Synced ${sourceAgents.length} agent(s) from "${sourceTenant?.name}" — ${created} created, ${updated} updated. All ${allWorkspaceAgents.length} workspace agents are now shared defaults.`,
+    }
+  }
+
   /** Clone shared-default agents into a child tenant (skips duplicates by templateId or name+role). */
   private async cloneSharedDefaultAgents(
     sourceTenantId: string,
@@ -1069,5 +1160,104 @@ export class SuperAdminService {
       clonedAgents,
       verificationLink, // Remove this in production, only send via email
     }
+  }
+
+  // ── Tenant Owner Password Reset ───────────────────────────────────
+
+  async resetTenantOwnerPassword(tenantId: string) {
+    const owner = await this.prisma.user.findFirst({
+      where: { tenantId, role: 'TENANT_OWNER' },
+      select: { id: true, email: true, name: true },
+    })
+    if (!owner) throw new NotFoundException('Tenant owner not found')
+
+    // Expire any active tokens for this user
+    await this.prisma.passwordResetToken.updateMany({
+      where: { userId: owner.id, usedAt: null },
+      data: { expiresAt: new Date() },
+    })
+
+    const crypto = require('crypto')
+    const token = crypto.randomBytes(32).toString('hex')
+    await this.prisma.passwordResetToken.create({
+      data: {
+        userId: owner.id,
+        token,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+      },
+    })
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
+    const resetLink = `${frontendUrl}/reset-password?token=${token}`
+
+    return {
+      success: true,
+      owner: { email: owner.email, name: owner.name },
+      resetLink,
+      expiresIn: '7 days',
+    }
+  }
+
+  // ── Provision Key Management ─────────────────────────────────────  async getProvisionKey(adminId: string) {
+    const admin = await this.prisma.user.findUnique({
+      where: { id: adminId },
+      select: { provisionKey: true, role: true },
+    })
+    if (!admin || admin.role !== 'SCOPED_ADMIN') throw new NotFoundException('Scoped admin not found')
+    return { provisionKey: admin.provisionKey ?? null }
+  }
+
+  async generateProvisionKey(adminId: string) {
+    const admin = await this.prisma.user.findUnique({ where: { id: adminId }, select: { role: true } })
+    if (!admin || admin.role !== 'SCOPED_ADMIN') throw new NotFoundException('Scoped admin not found')
+
+    const crypto = require('crypto')
+    const key = `pk_live_${crypto.randomBytes(24).toString('hex')}`
+    await this.prisma.user.update({ where: { id: adminId }, data: { provisionKey: key } })
+    return { provisionKey: key }
+  }
+
+  /** Called by the public /provision/tenant endpoint — no JWT, identified by provision key. */
+  async provisionTenantByKey(
+    provisionKey: string,
+    data: {
+      companyName: string
+      slug?: string
+      ownerName: string
+      ownerEmail: string
+      industry?: string
+      phone?: string
+    },
+  ) {
+    // Look up scoped admin by provision key
+    const admin = await this.prisma.user.findUnique({
+      where: { provisionKey },
+      select: { id: true, role: true, isActive: true },
+    })
+    if (!admin || admin.role !== 'SCOPED_ADMIN' || !admin.isActive) {
+      throw new BadRequestException('Invalid or inactive provision key')
+    }
+
+    // Auto-generate slug from company name if not provided
+    const slug =
+      data.slug ||
+      data.companyName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '')
+        .substring(0, 48) +
+        `-${Date.now().toString(36)}`
+
+    return this.createTenantWithVerification(
+      {
+        name: data.companyName,
+        slug,
+        ownerName: data.ownerName,
+        ownerEmail: data.ownerEmail,
+        industry: data.industry,
+      },
+      admin.id,
+      'SCOPED_ADMIN',
+    )
   }
 }

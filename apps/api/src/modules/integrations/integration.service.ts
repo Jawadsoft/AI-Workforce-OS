@@ -17,6 +17,7 @@ export class IntegrationService {
     ownerEmail: string
     industry?: string
     externalTenantId?: string
+    scopedAdminEmail?: string  // If provided, assigns tenant to this scoped admin and clones their default agents
   }) {
     // Check if user already exists (idempotent provisioning)
     const existingUser = await this.prisma.user.findUnique({
@@ -133,6 +134,84 @@ export class IntegrationService {
       verificationUrl,
     })
 
+    // If scopedAdminEmail provided, assign the new tenant to that scoped admin
+    // and clone their default workspace agents into it
+    let clonedAgents = 0
+    let scopedAdminAssigned: string | null = null
+
+    if (data.scopedAdminEmail) {
+      const scopedAdmin = await this.prisma.user.findUnique({
+        where: { email: data.scopedAdminEmail },
+        select: { id: true, role: true, isActive: true, tenantId: true },
+      })
+
+      if (scopedAdmin && scopedAdmin.role === 'SCOPED_ADMIN' && scopedAdmin.isActive) {
+        // Assign tenant to scoped admin
+        await this.prisma.superAdminTenantAccess.upsert({
+          where: {
+            adminUserId_tenantId: { adminUserId: scopedAdmin.id, tenantId: tenant.id },
+          },
+          create: { adminUserId: scopedAdmin.id, tenantId: tenant.id, assignedBy: scopedAdmin.id },
+          update: {},
+        })
+
+        // Find scoped admin's template workspace (their own tenantId if it is the template)
+        const adminTenant = await this.prisma.tenant.findUnique({
+          where: { id: scopedAdmin.tenantId },
+          select: { id: true, settings: true },
+        })
+        const adminSettings = (adminTenant?.settings as Record<string, unknown>) ?? {}
+
+        if (adminSettings.isScopedAdminTemplate === true) {
+          const templateTenantId = scopedAdmin.tenantId
+
+          // Find shared default agents
+          const allAgents = await this.prisma.agent.findMany({
+            where: { tenantId: templateTenantId, status: 'ACTIVE' },
+          })
+          const sharedIds = new Set<string>(
+            Array.isArray(adminSettings.sharedDefaultAgentIds)
+              ? (adminSettings.sharedDefaultAgentIds as string[]).filter((id) =>
+                  allAgents.some((a) => a.id === id),
+                )
+              : allAgents.map((a) => a.id), // treat all active agents as shared if no explicit list
+          )
+          const agentsToClone = allAgents.filter((a) => sharedIds.has(a.id))
+
+          // Clone into new tenant (skip duplicates by name)
+          const existingNames = new Set(
+            (
+              await this.prisma.agent.findMany({
+                where: { tenantId: tenant.id },
+                select: { name: true },
+              })
+            ).map((a) => a.name.toLowerCase()),
+          )
+
+          for (const src of agentsToClone) {
+            if (existingNames.has(src.name.toLowerCase())) continue
+            await this.prisma.agent.create({
+              data: {
+                tenantId: tenant.id,
+                name: src.name,
+                role: src.role,
+                industry: src.industry,
+                avatar: src.avatar,
+                prompt: src.prompt,
+                tools: src.tools,
+                permissions: src.permissions,
+                approvalRules: src.approvalRules as any,
+                status: 'ACTIVE',
+              },
+            })
+            clonedAgents++
+          }
+        }
+
+        scopedAdminAssigned = data.scopedAdminEmail
+      }
+    }
+
     return {
       success: true,
       tenant: {
@@ -145,8 +224,12 @@ export class IntegrationService {
         email: user.email,
         name: user.name,
       },
+      scopedAdminAssigned,
+      clonedAgents,
       verificationUrl,
-      message: 'Tenant provisioned successfully. User must verify email to activate account.',
+      message: scopedAdminAssigned
+        ? `Tenant provisioned and assigned to ${scopedAdminAssigned}. ${clonedAgents} default agent(s) cloned.`
+        : 'Tenant provisioned successfully. User must verify email to activate account.',
     }
   }
 

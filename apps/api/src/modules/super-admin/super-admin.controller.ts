@@ -182,6 +182,12 @@ export class SuperAdminController {
     return this.service.listPendingTenants(req.user?.allowedTenantIds)
   }
 
+  @Post('tenants/:id/reset-owner-password')
+  @ApiOperation({ summary: 'Generate a password reset link for the tenant owner' })
+  resetTenantOwnerPassword(@Param('id') id: string) {
+    return this.service.resetTenantOwnerPassword(id)
+  }
+
   @Post('tenants/:id/approve')
   @ApiOperation({ summary: 'Approve a pending tenant signup' })
   approveTenant(@Param('id') id: string, @Req() req: any) {
@@ -384,6 +390,12 @@ export class SuperAdminController {
     )
   }
 
+  @Post('template-workspace/sync-from-tenant')
+  @ApiOperation({ summary: 'Copy agents from a managed tenant into the default workspace and mark all as shared defaults' })
+  syncDefaultsFromTenant(@Req() req: any, @Body() body: { sourceTenantId: string; adminId?: string; replaceExisting?: boolean }) {
+    return this.service.syncDefaultsFromTenant({ id: req.user.id, role: req.user.role }, body)
+  }
+
   @Delete('template-workspace/agents/:id')
   @ApiOperation({ summary: 'Remove an agent from the default workspace' })
   deleteTemplateWorkspaceAgent(
@@ -528,6 +540,20 @@ export class SuperAdminController {
   @ApiOperation({ summary: 'Remove an image from a Help Guide article' })
   deleteHelpImage(@Param('imageId') imageId: string) {
     return this.help.deleteImage(imageId)
+  }
+
+  // ── Provision Key Management (SCOPED_ADMIN only) ──────────────────
+
+  @Get('provision-key')
+  @ApiOperation({ summary: 'Get current provision key for the logged-in scoped admin' })
+  getProvisionKey(@Req() req: any) {
+    return this.service.getProvisionKey(req.user.id)
+  }
+
+  @Post('provision-key/generate')
+  @ApiOperation({ summary: 'Generate (or rotate) the provision key for the logged-in scoped admin' })
+  generateProvisionKey(@Req() req: any) {
+    return this.service.generateProvisionKey(req.user.id)
   }
 }
 

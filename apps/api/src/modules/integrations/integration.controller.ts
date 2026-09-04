@@ -8,7 +8,8 @@ class ProvisionTenantDto {
   @IsString() ownerName: string
   @IsEmail() ownerEmail: string
   @IsOptional() @IsString() industry?: string
-  @IsOptional() @IsString() externalTenantId?: string // StormBuddi tenant ID
+  @IsOptional() @IsString() externalTenantId?: string  // StormBuddi tenant ID
+  @IsOptional() @IsEmail() scopedAdminEmail?: string   // Assign to this scoped admin + clone their agents
 }
 
 class SuspendTenantDto {

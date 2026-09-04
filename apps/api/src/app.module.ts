@@ -40,6 +40,7 @@ import { StormModule } from './modules/storm/storm.module'
 import { TicketsModule } from './modules/tickets/tickets.module'
 import { TicketProcessorModule } from './modules/tickets/ticket-processor.module'
 import { OperationsModule } from './modules/tickets/operations.module'
+import { ProvisionModule } from './modules/provision/provision.module'
 import { ScheduleModule } from '@nestjs/schedule'
 
 @Module({
@@ -93,6 +94,7 @@ import { ScheduleModule } from '@nestjs/schedule'
     TicketsModule,
     forwardRef(() => TicketProcessorModule),
     OperationsModule,
+    ProvisionModule,
   ],
 })
 export class AppModule {}

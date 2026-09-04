@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { Sparkles, ArrowRight, CheckCircle } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth.store'
@@ -23,10 +24,12 @@ export function useOnboardingStatus() {
 
 export function OnboardingBanner() {
   const { user } = useAuthStore()
+  const pathname = usePathname()
   const { data, isLoading } = useOnboardingStatus()
 
-  // Only show to tenant owners and admins
+  // Only show to tenant owners and admins, not on the onboarding page itself
   if (!user?.role || !['TENANT_OWNER', 'TENANT_ADMIN'].includes(user.role)) return null
+  if (pathname === '/onboarding') return null
   if (isLoading || !data || data.complete) return null
 
   const steps = [

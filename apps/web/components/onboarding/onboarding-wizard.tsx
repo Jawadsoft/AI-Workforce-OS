@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Zap, CheckCircle, Loader2, ChevronRight, ChevronLeft, Globe, Sparkles, AlertCircle } from 'lucide-react'
 import { resolveAvatarUrl } from '@/lib/utils'
@@ -35,6 +36,7 @@ const STEPS = ['Website', 'Industry', 'CRM', 'Business Profile', 'Generate']
 
 export function OnboardingWizard() {
   const router = useRouter()
+  const qc = useQueryClient()
   const [step, setStep] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
@@ -407,7 +409,10 @@ export function OnboardingWizard() {
                     ))}
                   </div>
                   <button
-                    onClick={() => router.push('/dashboard')}
+                    onClick={async () => {
+                      await qc.invalidateQueries({ queryKey: ['onboarding-status'] })
+                      router.push('/dashboard')
+                    }}
                     className="w-full bg-primary text-primary-foreground rounded-md py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
                   >
                     Go to Dashboard →

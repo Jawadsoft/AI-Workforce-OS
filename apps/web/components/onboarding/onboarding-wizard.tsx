@@ -34,7 +34,7 @@ const GUIDE_CRMS = ['HUBSPOT', 'SALESFORCE', 'JOBNIMBUS', 'LARAVEL', 'ZOHO', 'CU
 
 const STEPS = ['Website', 'Industry', 'CRM', 'Business Profile', 'Generate']
 
-export function OnboardingWizard() {
+export function OnboardingWizard({ onClose }: { onClose?: () => void } = {}) {
   const router = useRouter()
   const qc = useQueryClient()
   const [step, setStep] = useState(0)
@@ -143,6 +143,14 @@ export function OnboardingWizard() {
         <div className="fixed inset-0 bg-background/80 flex items-center justify-center z-50">
           <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
+      )}
+      {onClose && (
+        <button
+          onClick={onClose}
+          className="fixed top-4 right-4 z-50 text-muted-foreground hover:text-foreground transition-colors text-sm px-3 py-1.5 rounded-md border border-border bg-background/80 backdrop-blur-sm"
+        >
+          ✕ Close
+        </button>
       )}
       <div className="w-full max-w-2xl">
         {/* Header */}
@@ -442,7 +450,11 @@ export function OnboardingWizard() {
                   <button
                     onClick={async () => {
                       await qc.invalidateQueries({ queryKey: ['onboarding-status'] })
-                      router.push('/dashboard')
+                      if (onClose) {
+                        onClose()
+                      } else {
+                        router.push('/dashboard')
+                      }
                     }}
                     className="w-full bg-primary text-primary-foreground rounded-md py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
                   >

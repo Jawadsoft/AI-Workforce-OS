@@ -13,10 +13,10 @@ export function RoleGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const { user, isAuthenticated, fetchMe } = useAuthStore()
-  const [onboardingCheckDone, setOnboardingCheckDone] = useState(false)
+  const [ready, setReady] = useState(false)
 
   const isTenantUser = !!user && TENANT_ROLES.includes(user.role)
-  const { data: onboardingData, isLoading: onboardingLoading, isError: onboardingError } = useOnboardingStatus()
+  const { isLoading: onboardingLoading, isError: onboardingError } = useOnboardingStatus()
 
   useEffect(() => {
     if (!isAuthenticated) fetchMe()
@@ -29,34 +29,16 @@ export function RoleGate({ children }: { children: React.ReactNode }) {
     }
   }, [user?.role, pathname, router])
 
-  // Auto-redirect tenant users to onboarding if setup is incomplete
+  // Mark ready once we have user + onboarding check resolved (or timed out)
   useEffect(() => {
-    if (!isTenantUser) {
-      setOnboardingCheckDone(true)
-      return
-    }
-    if (pathname === '/onboarding') {
-      setOnboardingCheckDone(true)
-      return
-    }
-    if (onboardingError) {
-      // Query failed — don't block the user, let them in
-      setOnboardingCheckDone(true)
-      return
-    }
-    if (onboardingData) {
-      if (!onboardingData.complete) {
-        router.replace('/onboarding')
-        // Don't mark done yet — keep spinner briefly while navigating
-        return
-      }
-      setOnboardingCheckDone(true)
-    }
-  }, [isTenantUser, onboardingData, onboardingError, pathname, router])
+    if (!user) return
+    if (!isTenantUser) { setReady(true); return }
+    if (!onboardingLoading || onboardingError) setReady(true)
+  }, [user, isTenantUser, onboardingLoading, onboardingError])
 
-  // Safety valve: after 4 seconds always unblock, even if query is still pending
+  // Safety valve — always unblock after 4 seconds
   useEffect(() => {
-    const t = setTimeout(() => setOnboardingCheckDone(true), 4000)
+    const t = setTimeout(() => setReady(true), 4000)
     return () => clearTimeout(t)
   }, [])
 
@@ -70,8 +52,7 @@ export function RoleGate({ children }: { children: React.ReactNode }) {
     )
   }
 
-  // For tenant users: hold rendering until check resolves (or timeout fires)
-  if (isTenantUser && !onboardingCheckDone && (onboardingLoading || (onboardingData && !onboardingData.complete))) {
+  if (!ready) {
     return (
       <div className="flex flex-col items-center justify-center h-60 gap-2 text-muted-foreground">
         <Loader2 className="w-5 h-5 animate-spin" />

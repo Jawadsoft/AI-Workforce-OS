@@ -386,6 +386,68 @@ export class EmailService {
     })
   }
 
+  // ── Template: Tenant Approval Request (for scoped admin) ─────────
+
+  async sendTenantApprovalRequest(params: {
+    to: string
+    adminName: string
+    tenantName: string
+    ownerName: string
+    ownerEmail: string
+    industry?: string
+    approveUrl: string
+    rejectUrl: string
+  }): Promise<void> {
+    const safe = (v: string) => this.escapeHtml(v ?? '')
+    await this.send({
+      to: params.to,
+      subject: `New Client Signup: ${params.tenantName} — Approve or Reject`,
+      html: this.wrapEmail(`
+        <h2 style="color:#1e293b;margin-bottom:8px;">🏢 New Client Signup</h2>
+        <p style="color:#64748b;">Hi ${safe(params.adminName)},</p>
+        <p style="color:#64748b;">A new client has been provisioned under your account and is waiting for your approval before they can access the platform.</p>
+
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin:24px 0;">
+          <table style="width:100%;font-size:14px;border-collapse:collapse;">
+            <tr>
+              <td style="color:#64748b;padding:6px 0;width:130px;">Company</td>
+              <td style="color:#1e293b;font-weight:600;">${safe(params.tenantName)}</td>
+            </tr>
+            <tr>
+              <td style="color:#64748b;padding:6px 0;">Owner</td>
+              <td style="color:#1e293b;">${safe(params.ownerName)}</td>
+            </tr>
+            <tr>
+              <td style="color:#64748b;padding:6px 0;">Email</td>
+              <td style="color:#1e293b;">${safe(params.ownerEmail)}</td>
+            </tr>
+            ${params.industry ? `<tr>
+              <td style="color:#64748b;padding:6px 0;">Industry</td>
+              <td style="color:#1e293b;">${safe(params.industry)}</td>
+            </tr>` : ''}
+          </table>
+        </div>
+
+        <p style="color:#64748b;font-size:14px;margin-bottom:8px;">Click a button to take action. These links are single-use and expire in <strong>7 days</strong>.</p>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${params.approveUrl}"
+             style="background:#16a34a;color:#fff;padding:13px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block;margin-right:12px;">
+            ✅ Approve Client
+          </a>
+          <a href="${params.rejectUrl}"
+             style="background:#dc2626;color:#fff;padding:13px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block;">
+            ❌ Reject
+          </a>
+        </div>
+
+        <p style="color:#94a3b8;font-size:12px;">If the buttons don't work, copy and paste the approve link:<br>
+          <a href="${params.approveUrl}" style="color:#2563eb;word-break:break-all;">${params.approveUrl}</a>
+        </p>
+      `),
+    })
+  }
+
   // ── Template: Approval Required ──────────────────────────────────
 
   async sendApprovalRequired(params: {

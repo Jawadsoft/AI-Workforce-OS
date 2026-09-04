@@ -18,6 +18,7 @@ model Tenant {
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
   isApproved            Boolean                  @default(false)
+  approvalToken         String?                  @unique
   tickets               ActivityTicket[]
   agents                Agent[]
   escalationRules       AgentEscalationRule[]

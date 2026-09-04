@@ -6,6 +6,7 @@ import * as bcrypt from 'bcryptjs'
 import { AutonomyService } from '../../common/autonomy/autonomy.service'
 import { AutonomyMode } from '../../common/autonomy/autonomy.constants'
 import { BrainService } from '../brain/brain.service'
+import { EmailService } from '../email/email.service'
 
 @Injectable()
 export class SuperAdminService {
@@ -15,6 +16,7 @@ export class SuperAdminService {
     private readonly prisma: PrismaService,
     private readonly autonomy: AutonomyService,
     private readonly brainService: BrainService,
+    private readonly emailService: EmailService,
   ) {}
 
   // ── Platform stats ────────────────────────────────────────────────
@@ -1097,6 +1099,9 @@ export class SuperAdminService {
     }
 
     // Create tenant (not approved yet)
+    const crypto = require('crypto')
+    const approvalToken = crypto.randomBytes(32).toString('hex')
+
     const tenant = await this.prisma.tenant.create({
       data: {
         name: data.name,
@@ -1104,11 +1109,11 @@ export class SuperAdminService {
         industry: data.industry as any,
         isApproved: false,
         isActive: false,
+        approvalToken,
       },
     })
 
     // Generate verification token
-    const crypto = require('crypto')
     const verificationToken = crypto.randomBytes(32).toString('hex')
     const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
 
@@ -1162,6 +1167,7 @@ export class SuperAdminService {
       tenant: { id: tenant.id, name: tenant.name, slug: tenant.slug },
       owner: { id: owner.id, email: owner.email, name: owner.name },
       clonedAgents,
+      approvalToken,
       verificationLink, // Remove this in production, only send via email
     }
   }
@@ -1280,6 +1286,73 @@ export class SuperAdminService {
       })
     }
 
+    // Send approval email to scoped admin (fire-and-forget)
+    setImmediate(async () => {
+      try {
+        const adminUser = await this.prisma.user.findUnique({
+          where: { id: admin.id },
+          select: { email: true, name: true },
+        })
+        if (adminUser?.email) {
+          const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
+          const apiUrl = process.env.API_URL || `${frontendUrl}/api/v1`
+          const base = `${apiUrl}/provision/approve?token=${result.approvalToken}`
+          await this.emailService.sendTenantApprovalRequest({
+            to: adminUser.email,
+            adminName: adminUser.name ?? 'Admin',
+            tenantName: result.tenant.name,
+            ownerName: data.ownerName,
+            ownerEmail: data.ownerEmail,
+            industry: data.industry,
+            approveUrl: `${base}&action=approve`,
+            rejectUrl: `${base}&action=reject`,
+          })
+          this.logger.log(`Approval email sent to ${adminUser.email} for tenant ${result.tenant.id}`)
+        }
+      } catch (err: any) {
+        this.logger.warn(`Approval email failed for tenant ${result.tenant.id}: ${err.message}`)
+      }
+    })
+
     return { ...result, brainEnrichQueued: !!data.websiteUrl }
+  }
+
+  // ── One-click approval token handler ─────────────────────────────
+
+  async handleApprovalToken(token: string, action: 'approve' | 'reject') {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { approvalToken: token },
+      select: { id: true, name: true, isApproved: true },
+    })
+
+    if (!tenant) {
+      throw new BadRequestException('This approval link is invalid or has already been used.')
+    }
+
+    if (action === 'approve') {
+      await this.prisma.tenant.update({
+        where: { id: tenant.id },
+        data: { isApproved: true, isActive: true, approvalToken: null },
+      })
+      await this.prisma.user.updateMany({
+        where: { tenantId: tenant.id },
+        data: { isActive: true },
+      })
+      this.logger.log(`Tenant "${tenant.name}" approved via email link`)
+    } else {
+      // Clear token first so parallel clicks don't double-delete
+      await this.prisma.tenant.update({
+        where: { id: tenant.id },
+        data: { approvalToken: null },
+      })
+      await this.prisma.user.updateMany({
+        where: { tenantId: tenant.id },
+        data: { isActive: false },
+      })
+      await this.prisma.tenant.delete({ where: { id: tenant.id } })
+      this.logger.log(`Tenant "${tenant.name}" rejected via email link`)
+    }
+
+    return { tenantName: tenant.name }
   }
 }

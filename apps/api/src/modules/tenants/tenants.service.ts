@@ -325,10 +325,13 @@ export class TenantsService {
     ])
     const settings = (tenant?.settings as Record<string, unknown>) ?? {}
     const brain = (settings.brain as Record<string, unknown>) ?? null
-    const complete = !!(settings.onboardingComplete)
     const hasIndustry = !!tenant?.industry
     const hasBrain = !!(brain && (brain.companyName || brain.companyDescription || brain.services))
     const hasAgents = agentCount > 0
+
+    // Complete if explicitly flagged OR if tenant already has agents + industry
+    // (covers tenants created before the onboarding wizard existed)
+    const complete = !!(settings.onboardingComplete) || (hasIndustry && hasAgents)
 
     return { complete, hasIndustry, hasBrain, hasAgents }
   }

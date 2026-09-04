@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { useAuthStore } from '@/stores/auth.store'
 import { canAccessPath, defaultHomeForRole } from '@/lib/roles'
@@ -13,10 +13,10 @@ export function RoleGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const { user, isAuthenticated, fetchMe } = useAuthStore()
+  const [onboardingCheckDone, setOnboardingCheckDone] = useState(false)
 
   const isTenantUser = !!user && TENANT_ROLES.includes(user.role)
-  // Only fetch onboarding status for tenant users (saves requests for super/scoped admins)
-  const { data: onboardingData, isLoading: onboardingLoading } = useOnboardingStatus()
+  const { data: onboardingData, isLoading: onboardingLoading, isError: onboardingError } = useOnboardingStatus()
 
   useEffect(() => {
     if (!isAuthenticated) fetchMe()
@@ -31,12 +31,34 @@ export function RoleGate({ children }: { children: React.ReactNode }) {
 
   // Auto-redirect tenant users to onboarding if setup is incomplete
   useEffect(() => {
-    if (!isTenantUser) return
-    if (pathname === '/onboarding') return
-    if (onboardingData && !onboardingData.complete) {
-      router.replace('/onboarding')
+    if (!isTenantUser) {
+      setOnboardingCheckDone(true)
+      return
     }
-  }, [isTenantUser, onboardingData, pathname, router])
+    if (pathname === '/onboarding') {
+      setOnboardingCheckDone(true)
+      return
+    }
+    if (onboardingError) {
+      // Query failed — don't block the user, let them in
+      setOnboardingCheckDone(true)
+      return
+    }
+    if (onboardingData) {
+      if (!onboardingData.complete) {
+        router.replace('/onboarding')
+        // Don't mark done yet — keep spinner briefly while navigating
+        return
+      }
+      setOnboardingCheckDone(true)
+    }
+  }, [isTenantUser, onboardingData, onboardingError, pathname, router])
+
+  // Safety valve: after 4 seconds always unblock, even if query is still pending
+  useEffect(() => {
+    const t = setTimeout(() => setOnboardingCheckDone(true), 4000)
+    return () => clearTimeout(t)
+  }, [])
 
   // ── Render guards ─────────────────────────────────────────────────
 
@@ -48,23 +70,12 @@ export function RoleGate({ children }: { children: React.ReactNode }) {
     )
   }
 
-  // For tenant users: hold rendering until we know their onboarding state
-  // This prevents the dashboard flashing before the redirect fires
-  if (isTenantUser && onboardingLoading) {
+  // For tenant users: hold rendering until check resolves (or timeout fires)
+  if (isTenantUser && !onboardingCheckDone && (onboardingLoading || (onboardingData && !onboardingData.complete))) {
     return (
       <div className="flex flex-col items-center justify-center h-60 gap-2 text-muted-foreground">
         <Loader2 className="w-5 h-5 animate-spin" />
         <p className="text-xs">Loading your workspace…</p>
-      </div>
-    )
-  }
-
-  // Redirect is in flight — keep spinner visible
-  if (isTenantUser && onboardingData && !onboardingData.complete && pathname !== '/onboarding') {
-    return (
-      <div className="flex flex-col items-center justify-center h-60 gap-2 text-muted-foreground">
-        <Loader2 className="w-5 h-5 animate-spin" />
-        <p className="text-xs">Setting up your workspace…</p>
       </div>
     )
   }

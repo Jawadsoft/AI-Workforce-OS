@@ -1198,7 +1198,9 @@ export class SuperAdminService {
     }
   }
 
-  // ── Provision Key Management ─────────────────────────────────────  async getProvisionKey(adminId: string) {
+  // ── Provision Key Management ─────────────────────────────────────
+
+  async getProvisionKey(adminId: string) {
     const admin = await this.prisma.user.findUnique({
       where: { id: adminId },
       select: { provisionKey: true, role: true },

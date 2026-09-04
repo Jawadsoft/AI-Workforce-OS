@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -44,6 +44,7 @@ export function OnboardingWizard() {
   const [brainResult, setBrainResult] = useState<any>(null)
   const [analyzeError, setAnalyzeError] = useState('')
   const [showGuide, setShowGuide] = useState(false)
+  const [prefilled, setPrefilled] = useState(false)
 
   const [form, setForm] = useState({
     websiteUrl: '',
@@ -54,6 +55,25 @@ export function OnboardingWizard() {
     businessRules: '',
     brandVoice: 'Professional and helpful',
   })
+
+  // Load existing tenant settings to pre-populate the form
+  useEffect(() => {
+    api.get('/tenants/settings').then((r) => {
+      const s = r.data?.settings ?? {}
+      const ind = r.data?.industry ?? ''
+      setForm((f) => ({
+        ...f,
+        industry: ind || f.industry,
+        crm: s.crm || f.crm,
+        services: s.services || f.services,
+        locations: s.locations || f.locations,
+        businessRules: s.businessRules || f.businessRules,
+        brandVoice: s.brandVoice || f.brandVoice,
+        websiteUrl: s.brand?.website || f.websiteUrl,
+      }))
+      setPrefilled(true)
+    }).catch(() => setPrefilled(true))
+  }, [])
 
   const canNext = () => {
     if (step === 0) return true // website step is optional
@@ -119,6 +139,11 @@ export function OnboardingWizard() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
+      {!prefilled && (
+        <div className="fixed inset-0 bg-background/80 flex items-center justify-center z-50">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      )}
       <div className="w-full max-w-2xl">
         {/* Header */}
         <div className="text-center mb-8">
@@ -127,8 +152,14 @@ export function OnboardingWizard() {
               <Zap className="w-5 h-5 text-primary-foreground" />
             </div>
           </div>
-          <h1 className="text-2xl font-semibold">Set up your AI Workforce</h1>
-          <p className="text-muted-foreground text-sm mt-1">Takes less than 2 minutes</p>
+          <h1 className="text-2xl font-semibold">
+            {form.industry ? 'Finish setting up your workspace' : 'Set up your AI Workforce'}
+          </h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            {form.industry
+              ? 'Your AI agents are ready — just complete your business profile'
+              : 'Takes less than 2 minutes'}
+          </p>
         </div>
 
         {/* Progress */}

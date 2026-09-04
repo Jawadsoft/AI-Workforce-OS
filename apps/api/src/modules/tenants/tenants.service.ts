@@ -31,17 +31,26 @@ export class TenantsService {
     businessRules?: string
     brandVoice?: string
   }) {
+    // Merge into existing settings to preserve brain, SMTP, and other config
+    const existing = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { settings: true },
+    })
+    const current = (existing?.settings as Record<string, unknown>) ?? {}
+
     return this.prisma.tenant.update({
       where: { id: tenantId },
       data: {
         industry: data.industry as any,
         settings: {
+          ...current,
           crm: data.crm,
           services: data.services,
           locations: data.locations ?? '',
           businessRules: data.businessRules ?? '',
           brandVoice: data.brandVoice ?? 'Professional and helpful',
           onboardingComplete: true,
+          requiresOnboarding: false,
         },
       },
     })
@@ -329,10 +338,16 @@ export class TenantsService {
     const hasBrain = !!(brain && (brain.companyName || brain.companyDescription || brain.services))
     const hasAgents = agentCount > 0
 
-    // Complete if explicitly flagged OR if tenant already has agents + industry
-    // (covers tenants created before the onboarding wizard existed)
-    const complete = !!(settings.onboardingComplete) || (hasIndustry && hasAgents)
+    // requiresOnboarding is set when a tenant is provisioned via API
+    // It forces the onboarding wizard even if agents/industry already exist
+    const requiresOnboarding = !!(settings.requiresOnboarding)
 
-    return { complete, hasIndustry, hasBrain, hasAgents }
+    // Complete if explicitly flagged, OR if tenant already has agents + industry
+    // and was NOT provisioned with requiresOnboarding (covers pre-wizard tenants)
+    const complete = !requiresOnboarding && (
+      !!(settings.onboardingComplete) || (hasIndustry && hasAgents)
+    )
+
+    return { complete, hasIndustry, hasBrain, hasAgents, requiresOnboarding }
   }
 }

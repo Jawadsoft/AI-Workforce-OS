@@ -119,7 +119,8 @@ export class SuperAdminService {
     this.checkTenantAccess(id, allowedTenantIds)
     const tenant = await this.prisma.tenant.findUnique({ where: { id } })
     if (!tenant) throw new NotFoundException('Tenant not found')
-    await this.prisma.user.updateMany({ where: { tenantId: id }, data: { isActive: false } })
+    // Delete users explicitly before deleting the tenant (prevents orphaned email records)
+    await this.prisma.user.deleteMany({ where: { tenantId: id } })
     await this.prisma.tenant.delete({ where: { id } })
     return { success: true, message: 'Tenant rejected and removed' }
   }
@@ -166,6 +167,8 @@ export class SuperAdminService {
 
   async deleteTenant(id: string, allowedTenantIds: string[] | null = null) {
     this.checkTenantAccess(id, allowedTenantIds)
+    // Explicitly delete users first to ensure no orphaned email records
+    await this.prisma.user.deleteMany({ where: { tenantId: id } })
     await this.prisma.tenant.delete({ where: { id } })
     return { success: true, message: 'Tenant deleted' }
   }
@@ -1110,6 +1113,7 @@ export class SuperAdminService {
         isApproved: false,
         isActive: false,
         approvalToken,
+        settings: { requiresOnboarding: true },
       },
     })
 

@@ -12,6 +12,7 @@ interface OnboardingStatus {
   hasBrain: boolean
   hasAgents: boolean
   hasIndustry: boolean
+  requiresOnboarding?: boolean
 }
 
 export function useOnboardingStatus() {
